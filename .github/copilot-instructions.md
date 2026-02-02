@@ -1,10 +1,14 @@
 # Copilot Instructions - HRC Robot Collision Detection Library
 
+> **Copyright (c) 2026 Guangdong Huayan Robotics Co., Ltd.**  
+> **Website**: https://www.huayan-robotics.com  
+> **Contact**: yuesj@huayan-robotics.com
+
 ## 项目概述
 
 这是一个**人机协作(HRC)机器人碰撞检测算法库**的测试工程，包含两个主要组件：
 1. **HRC碰撞检测库** - 用于验证碰撞检测算法的性能和资源消耗
-2. **码垛运动规划系统** - 世界顶尖水平的协作机器人运动规划器
+2. **码垛运动规划系统** - 世界顶尖水平的协作机器人运动规划器（适用于 Elfin 系列协作机器人）
 
 ## 架构要点
 

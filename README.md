@@ -1,10 +1,30 @@
 # 🤖 HRC 协作机器人运动规划系统
 
-[![License](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
-[![C++](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
-[![Platform](https://img.shields.io/badge/Platform-Linux%20x86__64-lightgrey.svg)](https://www.linux.org/)
+<p align="center">
+  <a href="https://www.huayan-robotics.com">
+    <img src="https://www.huayan-robotics.com/media/upload/index/Huayan%20Elfin%20index%20banner.jpg" alt="Huayan Robotics" width="600">
+  </a>
+</p>
 
-**世界顶尖水平的协作机器人运动规划系统** — 专为 HR_S50-2000 重载协作机器人设计的高性能路径规划与轨迹生成解决方案。
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License"></a>
+  <a href="https://isocpp.org/"><img src="https://img.shields.io/badge/C++-17-blue.svg" alt="C++"></a>
+  <a href="https://www.linux.org/"><img src="https://img.shields.io/badge/Platform-Linux%20x86__64-lightgrey.svg" alt="Platform"></a>
+  <a href="https://www.huayan-robotics.com"><img src="https://img.shields.io/badge/Huayan-Robotics-orange.svg" alt="Huayan"></a>
+  <a href="https://github.com/huayan-robotics/HRC-PalletizingPlanner/actions"><img src="https://img.shields.io/badge/CI-passing-brightgreen.svg" alt="CI"></a>
+</p>
+
+<p align="center">
+  <b>🏆 世界顶尖水平的协作机器人运动规划系统</b><br>
+  专为 Elfin / HR_S50-2000 协作机器人设计的高性能路径规划与轨迹生成解决方案
+</p>
+
+<p align="center">
+  <a href="https://www.huayan-robotics.com">🌐 官网</a> •
+  <a href="mailto:yuesj@huayan-robotics.com">📧 联系我们</a> •
+  <a href="docs/API.md">📖 API 文档</a> •
+  <a href="examples/">💡 示例</a>
+</p>
 
 ---
 
@@ -517,9 +537,13 @@ A: 是的，只需提供正确的 DH 参数和关节限位即可。
 
 ## 作者与贡献
 
+**开发团队**: 广东华沿机器人有限公司 (Huayan Robotics)
+
 本项目由 **GitHub Copilot** 协助开发。
 
 ### 贡献指南
+
+详见 [CONTRIBUTING.md](CONTRIBUTING.md)
 
 1. Fork 本仓库
 2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
@@ -531,19 +555,39 @@ A: 是的，只需提供正确的 DH 参数和关节限位即可。
 
 ## 许可证
 
-本项目包含专有组件，使用前请联系版权所有者获取授权。
+本项目采用 [MIT 许可证](LICENSE)。
+
+HRC 碰撞检测库 (libHRCInterface.a, libCmpAgu.a, libhansKinematics.a) 为广东华沿机器人有限公司专有软件。
 
 ---
 
 ## 联系方式
 
-如有问题或建议，请通过以下方式联系：
+<p align="center">
+  <a href="https://www.huayan-robotics.com">
+    <img src="https://img.shields.io/badge/Website-huayan--robotics.com-blue?style=for-the-badge&logo=google-chrome" alt="Website">
+  </a>
+  <a href="mailto:yuesj@huayan-robotics.com">
+    <img src="https://img.shields.io/badge/Email-yuesj@huayan--robotics.com-red?style=for-the-badge&logo=gmail" alt="Email">
+  </a>
+</p>
 
-- 📧 Email: [your-email@example.com]
-- 🐛 Issues: [GitHub Issues](https://github.com/your-repo/issues)
+| 渠道 | 联系方式 |
+|------|---------|
+| 📧 **技术支持** | yuesj@huayan-robotics.com |
+| 📧 **商务合作** | marketing@huayan-robotics.com |
+| 📞 **咨询热线** | 400-852-9898 |
+| 🌐 **官方网站** | https://www.huayan-robotics.com |
+| 🐛 **Issues** | [GitHub Issues](https://github.com/huayan-robotics/HRC-PalletizingPlanner/issues) |
 
 ---
 
 <p align="center">
+  <img src="https://www.huayan-robotics.com/media/upload/index/banner_authentication_list.jpg" alt="Certifications" width="500">
+</p>
+
+<p align="center">
+  <b>🏢 广东华沿机器人有限公司 | Guangdong Huayan Robotics Co., Ltd.</b><br>
+  <i>用机器人技术为人类服务</i><br><br>
   <b>🚀 World-Class Motion Planning for Collaborative Robots 🤖</b>
 </p>

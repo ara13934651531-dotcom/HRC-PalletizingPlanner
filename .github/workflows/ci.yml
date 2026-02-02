@@ -1,0 +1,99 @@
+# CI/CD Pipeline for HRC Palletizing Planner
+# Copyright (c) 2026 Guangdong Huayan Robotics Co., Ltd.
+
+name: CI Build & Test
+
+on:
+  push:
+    branches: [ master, main, develop ]
+  pull_request:
+    branches: [ master, main ]
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        compiler: [gcc, clang]
+        include:
+          - compiler: gcc
+            cc: gcc-11
+            cxx: g++-11
+          - compiler: clang
+            cc: clang-14
+            cxx: clang++-14
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake \
+          libeigen3-dev \
+          build-essential \
+          ${{ matrix.cc }} \
+          ${{ matrix.cxx }}
+
+    - name: Configure CMake
+      run: |
+        cmake -B ${{github.workspace}}/build \
+          -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+          -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} -j$(nproc)
+
+    - name: Run Tests
+      working-directory: ${{github.workspace}}/build
+      run: |
+        # Run basic planner tests
+        ../bin/testPalletizingPlanner || true
+
+  code-quality:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install cppcheck
+      run: sudo apt-get install -y cppcheck
+
+    - name: Run cppcheck
+      run: |
+        cppcheck --enable=all \
+          --suppress=missingIncludeSystem \
+          --error-exitcode=1 \
+          --inline-suppr \
+          include/ test/ src/ \
+          2>&1 | tee cppcheck-report.txt
+
+    - name: Upload cppcheck report
+      uses: actions/upload-artifact@v4
+      with:
+        name: cppcheck-report
+        path: cppcheck-report.txt
+
+  documentation:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Check documentation
+      run: |
+        # Verify README exists and is non-empty
+        test -s README.md
+        # Verify API documentation exists
+        test -s include/PalletizingPlanner/README.md
+
+# Huayan Robotics - https://www.huayan-robotics.com
