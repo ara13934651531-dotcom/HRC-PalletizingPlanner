@@ -494,6 +494,12 @@ run('testS50.m')
 
 ### 动态碰撞动画
 
+<p align="center">
+  <img src="docs/images/S50_3D_dynamic.gif" alt="HR_S50 动态碰撞检测" width="600">
+  <br>
+  <em>HR_S50-2000 动态碰撞检测演示 - 从安全姿态过渡到折叠姿态</em>
+</p>
+
 ```matlab
 % 运行 HR_S50 动态测试 (3条轨迹)
 run('testS50_Dynamic.m')

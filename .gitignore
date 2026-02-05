@@ -37,3 +37,6 @@ __pycache__/
 !docs/*.png
 !docs/*.jpg
 !docs/*.gif
+!docs/images/*.png
+!docs/images/*.jpg
+!docs/images/*.gif
