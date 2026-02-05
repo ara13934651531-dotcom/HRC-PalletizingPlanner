@@ -1,0 +1,96 @@
+{
+    "RobType": "dual_arm",
+    "DH": {
+            "d1": 0.3075,
+            "d4": 0.324,
+            "d6": 0.175,
+            "a2": 0.266
+         },
+   
+    "base": {
+        "start": [0, 0, -0.02],
+        "end": [0, 0, 0.30],
+        "radius": 0.075,
+        "type": "capsule",
+        "referenceFrame": "base_stand"
+            },
+    "l_lowerArm": {
+        "start": [0.01, 0, -0.105],
+        "end": [-0.28, 0, -0.105],
+        "radius": 0.06,
+        "type": "capsule",
+        "referenceFrame": "coor_left1"
+    },
+    "l_elbow": {
+        "start": [0, 0, 0],
+        "end": [0, 0, 0.12],
+        "radius": 0.06,
+        "type": "capsule",
+        "referenceFrame": "coor_left2"
+    },
+    "l_upperArm": {
+        "start": [0, 0, -0.09],
+        "end": [0, 0.15, -0.09],
+        "radius": 0.04,
+        "type": "capsule",
+        "referenceFrame": "coor_left3"
+    },
+    "l_wrist": {
+        "offset": [0, 0, 0.05],
+        "radius": 0.09,
+        "type": "sphere",
+        "referenceFrame": "coor_left4"
+    },
+    "r_lowerArm": {
+        "start": [0.01, 0, -0.105],
+        "end": [-0.28, 0, -0.105],
+        "radius": 0.05,
+        "type": "capsule",
+        "referenceFrame": "coor_right1"
+    },
+    "r_elbow": {
+        "start": [0, 0, 0],
+        "end": [0, 0, 0.12],
+        "radius": 0.06,
+        "type": "capsule",
+        "referenceFrame": "coor_right2"
+    },
+    "r_upperArm": {
+        "start": [0, 0, -0.09],
+        "end": [0, 0.15, -0.09],
+        "radius": 0.04,
+        "type": "capsule",
+        "referenceFrame": "coor_right3"
+    },
+    "r_wrist": {
+        "offset": [0, 0, 0.05],
+        "radius": 0.09,
+        "type": "sphere",
+        "referenceFrame": "coor_right4"
+        },
+
+    "truck":{
+      "length": 0.08,
+      "width": 0.18,
+      "height": 0.4,
+      "offset":[0.01,0,-0.175],
+      "radius":0.09
+    },
+
+    "head": {
+         "length": 0.14,
+         "width": 0.06,
+         "height": 0.15,
+         "offset":[0.05,0,0.25],
+         "radius":0.05
+    },
+
+    "plane": {
+     "length": 1.0,
+     "width": 1.2,
+     "height": 0.01,
+     "offset":[0.1,0,-0.41],
+     "radius":0.01
+         }
+}
+    

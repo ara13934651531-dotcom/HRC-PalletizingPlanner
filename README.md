@@ -49,9 +49,11 @@
 本项目包含两个核心组件：
 
 ### 1. HRC 碰撞检测库
+
 用于验证人机协作(Human-Robot Collaboration)场景下碰撞检测算法的性能和资源消耗。
 
 ### 2. 码垛运动规划系统 ⭐
+
 **世界顶尖水平**的协作机器人运动规划器，专为工业码垛场景优化设计。
 
 ```
@@ -70,27 +72,32 @@
 ## 核心特性
 
 ### 🚀 高性能路径规划
+
 - **Informed RRT*** - 椭球体采样加速收敛
 - **BIT*** (Batch Informed Trees) - 批量采样优化
 - **KD-Tree 加速** - O(log n) 最近邻搜索，**30x 加速**
 
 ### 🛡️ 全方位碰撞检测
+
 - 自碰撞检测（机器人本体）
 - 环境障碍物检测
 - 安全平面与 OBB 区域约束
 - **碰撞缓存** - **18x 加速**
 
 ### 📈 路径优化
+
 - 随机捷径优化 - 最短路径
 - B-Spline 平滑 - 5次样条保证加速度连续
 - 曲率约束 - 确保可执行性
 
 ### ⏱️ 时间参数化
+
 - S曲线速度规划（七段式）
 - 梯形速度规划
 - **预留 TOPP-RA 接口** - 时间最优轨迹
 
 ### 🔧 任务级优化
+
 - TSP 任务序列优化
 - 2-opt 局部搜索
 - 多目标点高效排序
@@ -114,16 +121,16 @@
 
 ### 核心模块
 
-| 模块 | 文件 | 描述 |
-|------|------|------|
-| **Types** | `Types.hpp` | 核心数据类型（JointConfig, Path, BSpline等） |
-| **RobotModel** | `RobotModel.hpp` | HR_S50-2000 运动学模型 |
-| **CollisionChecker** | `CollisionChecker.hpp` | HRC碰撞检测封装 |
-| **PathPlanner** | `PathPlanner.hpp` | Informed RRT* / BIT* 规划 |
-| **PathOptimizer** | `PathOptimizer.hpp` | 捷径优化 + B-Spline平滑 |
-| **TimeParameterization** | `TimeParameterization.hpp` | S曲线时间参数化 |
-| **TaskSequencer** | `TaskSequencer.hpp` | TSP任务序列优化 |
-| **PalletizingPlanner** | `PalletizingPlanner.hpp` | 顶层API接口 |
+| 模块                           | 文件                         | 描述                                         |
+| ------------------------------ | ---------------------------- | -------------------------------------------- |
+| **Types**                | `Types.hpp`                | 核心数据类型（JointConfig, Path, BSpline等） |
+| **RobotModel**           | `RobotModel.hpp`           | HR_S50-2000 运动学模型                       |
+| **CollisionChecker**     | `CollisionChecker.hpp`     | HRC碰撞检测封装                              |
+| **PathPlanner**          | `PathPlanner.hpp`          | Informed RRT* / BIT* 规划                    |
+| **PathOptimizer**        | `PathOptimizer.hpp`        | 捷径优化 + B-Spline平滑                      |
+| **TimeParameterization** | `TimeParameterization.hpp` | S曲线时间参数化                              |
+| **TaskSequencer**        | `TaskSequencer.hpp`        | TSP任务序列优化                              |
+| **PalletizingPlanner**   | `PalletizingPlanner.hpp`   | 顶层API接口                                  |
 
 ---
 
@@ -131,27 +138,27 @@
 
 ### 🏆 世界级性能基准
 
-| 指标 | 目标 | 实测 | 状态 |
-|------|------|------|------|
-| 简单场景规划 | < 100 ms | **0.04 ms** | ✅ |
-| 中等距离规划 | < 500 ms | **20-37 ms** | ✅ |
-| 大范围运动规划 | < 2 s | **238 ms** | ✅ |
-| 复杂场景规划 | < 2 s | **662 ms** | ✅ |
-| 完整流水线 | - | **135 ms** | ✅ |
-| KD-Tree 加速比 | > 10x | **30.01x** | ✅ |
-| 缓存加速比 | > 5x | **18.09x** | ✅ |
-| 成功率 | > 95% | **99.5%** | ✅ |
+| 指标           | 目标     | 实测               | 状态 |
+| -------------- | -------- | ------------------ | ---- |
+| 简单场景规划   | < 100 ms | **0.04 ms**  | ✅   |
+| 中等距离规划   | < 500 ms | **20-37 ms** | ✅   |
+| 大范围运动规划 | < 2 s    | **238 ms**   | ✅   |
+| 复杂场景规划   | < 2 s    | **662 ms**   | ✅   |
+| 完整流水线     | -        | **135 ms**   | ✅   |
+| KD-Tree 加速比 | > 10x    | **30.01x**   | ✅   |
+| 缓存加速比     | > 5x     | **18.09x**   | ✅   |
+| 成功率         | > 95%    | **99.5%**    | ✅   |
 
 ### 鲁棒性验证结果
 
-| 测试类别 | 成功率 |
-|---------|--------|
-| 随机配置泛化测试 | 96.7% |
-| 边界条件测试 | 100% |
-| 奇异位置测试 | 100% |
-| 数值稳定性测试 | 100% |
-| 路径质量一致性 | 100% |
-| 连续规划压力测试 | 100% |
+| 测试类别         | 成功率 |
+| ---------------- | ------ |
+| 随机配置泛化测试 | 96.7%  |
+| 边界条件测试     | 100%   |
+| 奇异位置测试     | 100%   |
+| 数值稳定性测试   | 100%   |
+| 路径质量一致性   | 100%   |
+| 连续规划压力测试 | 100%   |
 
 **最终评级: ⭐⭐⭐⭐⭐ WORLD-CLASS**
 
@@ -230,7 +237,7 @@ int main() {
         std::cout << "规划成功!" << std::endl;
         std::cout << "路径长度: " << result.pathLength << " rad" << std::endl;
         std::cout << "规划时间: " << result.planningTime << " s" << std::endl;
-        
+      
         // 5. 获取平滑样条用于控制
         BSpline spline = result.smoothedSpline;
         for (double t = 0; t <= 1.0; t += 0.01) {
@@ -238,7 +245,7 @@ int main() {
             // 发送给机器人控制器...
         }
     }
-    
+  
     return 0;
 }
 ```
@@ -290,13 +297,13 @@ for (const auto& task : optimizedSequence) {
 
 ### 测试程序说明
 
-| 测试程序 | 说明 |
-|---------|------|
-| `testPalletizingPlanner` | 综合功能测试 - 运动学、碰撞检测、规划、优化 |
-| `testPerformanceBenchmark` | 性能基准 - KD-Tree、缓存效率、规划模式对比 |
-| `testRobustnessValidation` | 鲁棒性验证 - 12类边界条件和极端情况测试 |
-| `testCollisionDetectionTime` | 碰撞检测性能 - CPU/内存/堆栈使用分析 |
-| `testHighPerformance` | 高性能规划器集成测试 |
+| 测试程序                       | 说明                                        |
+| ------------------------------ | ------------------------------------------- |
+| `testPalletizingPlanner`     | 综合功能测试 - 运动学、碰撞检测、规划、优化 |
+| `testPerformanceBenchmark`   | 性能基准 - KD-Tree、缓存效率、规划模式对比  |
+| `testRobustnessValidation`   | 鲁棒性验证 - 12类边界条件和极端情况测试     |
+| `testCollisionDetectionTime` | 碰撞检测性能 - CPU/内存/堆栈使用分析        |
+| `testHighPerformance`        | 高性能规划器集成测试                        |
 
 ### 可视化工具
 
@@ -311,36 +318,36 @@ python3 scripts/visualize_path.py path_data.csv
 
 ### HR_S50-2000 机器人参数
 
-| 参数 | 值 | 单位 |
-|------|-----|------|
-| 自由度 | 6 | DOF |
-| 最大负载 | 50 | kg |
-| 臂展 | 2000 | mm |
-| 重复定位精度 | ±0.05 | mm |
+| 参数         | 值     | 单位 |
+| ------------ | ------ | ---- |
+| 自由度       | 6      | DOF  |
+| 最大负载     | 50     | kg   |
+| 臂展         | 2000   | mm   |
+| 重复定位精度 | ±0.05 | mm   |
 
 ### DH 参数 (mm)
 
-| 参数 | d1 | d2 | d3 | d4 | d5 | d6 | a2 | a3 |
-|------|-----|-----|-----|-----|-----|-----|------|------|
-| 值 | 296.5 | 336.2 | 239.0 | 158.5 | 158.5 | 134.5 | 900.0 | 941.5 |
+| 参数 | d1    | d2    | d3    | d4    | d5    | d6    | a2    | a3    |
+| ---- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- |
+| 值   | 296.5 | 336.2 | 239.0 | 158.5 | 158.5 | 134.5 | 900.0 | 941.5 |
 
 ### 关节限位
 
-| 关节 | J1 | J2 | J3 | J4 | J5 | J6 |
-|------|-----|-----|-----|-----|-----|-----|
-| 最小 (°) | -360 | -190 | -165 | -360 | -360 | -360 |
-| 最大 (°) | +360 | +10 | +165 | +360 | +360 | +360 |
-| 最大速度 (°/s) | 120 | 120 | 120 | 180 | 180 | 180 |
+| 关节            | J1   | J2   | J3   | J4   | J5   | J6   |
+| --------------- | ---- | ---- | ---- | ---- | ---- | ---- |
+| 最小 (°)       | -360 | -190 | -165 | -360 | -360 | -360 |
+| 最大 (°)       | +360 | +10  | +165 | +360 | +360 | +360 |
+| 最大速度 (°/s) | 120  | 120  | 120  | 180  | 180  | 180  |
 
 ### 单位规范
 
-| 类型 | 单位 |
-|------|------|
-| 位置坐标 | mm (毫米) |
-| DH参数/关节角度 | deg (度) |
-| TCP姿态 | rad (弧度) |
-| 速度 | mm/s |
-| 碰撞距离 | m (米) |
+| 类型            | 单位       |
+| --------------- | ---------- |
+| 位置坐标        | mm (毫米)  |
+| DH参数/关节角度 | deg (度)   |
+| TCP姿态         | rad (弧度) |
+| 速度            | mm/s       |
+| 碰撞距离        | m (米)     |
 
 ---
 
@@ -402,18 +409,18 @@ X86_test/
 
 ### 外部依赖
 
-| 依赖 | 版本 | 用途 |
-|------|------|------|
-| Eigen3 | 3.3+ | 线性代数运算、四元数 |
-| pthread | - | 多线程支持 |
+| 依赖    | 版本 | 用途                 |
+| ------- | ---- | -------------------- |
+| Eigen3  | 3.3+ | 线性代数运算、四元数 |
+| pthread | -    | 多线程支持           |
 
 ### 内部依赖 (预编译库)
 
-| 库 | 说明 |
-|----|------|
-| `libHRCInterface.a` | HRC碰撞检测算法核心实现 |
-| `libCmpAgu.a` | AGU (Algorithm Generation Unit) 组件 |
-| `libhansKinematics.a` | 机器人运动学计算库 |
+| 库                      | 说明                                 |
+| ----------------------- | ------------------------------------ |
+| `libHRCInterface.a`   | HRC碰撞检测算法核心实现              |
+| `libCmpAgu.a`         | AGU (Algorithm Generation Unit) 组件 |
+| `libhansKinematics.a` | 机器人运动学计算库                   |
 
 > ⚠️ **注意**: 内部库为闭源预编译版本，仅支持 Linux x86_64 平台。
 
@@ -457,6 +464,7 @@ sudo pacman -S eigen
 ### S曲线时间参数化
 
 七段式速度曲线:
+
 1. 加加速段 (jerk > 0)
 2. 匀加速段 (jerk = 0, acc = max)
 3. 减加速段 (jerk < 0)
@@ -515,21 +523,24 @@ RobotModel myRobot(params);
 ## 常见问题
 
 ### Q: 为什么会看到大量 "---1---" 输出？
+
 A: 这是 HRC 库的内部调试输出，不影响功能。可以重定向 stderr 来过滤。
 
 ### Q: 如何调整规划速度与质量的平衡？
+
 A: 调整 `PlannerConfig` 中的 `maxIterations` 和 `stepSize` 参数。
 
 ### Q: 支持其他机器人型号吗？
+
 A: 是的，只需提供正确的 DH 参数和关节限位即可。
 
 ---
 
 ## 版本历史
 
-| 版本 | 日期 | 说明 |
-|------|------|------|
-| 1.0.0 | 2026-01-29 | 初始版本发布 |
+| 版本  | 日期       | 说明               |
+| ----- | ---------- | ------------------ |
+| 1.0.0 | 2026-01-29 | 初始版本发布       |
 | 1.1.0 | 2026-01-29 | 添加高性能优化模块 |
 | 1.2.0 | 2026-01-29 | 完成鲁棒性测试验证 |
 
@@ -572,13 +583,13 @@ HRC 碰撞检测库 (libHRCInterface.a, libCmpAgu.a, libhansKinematics.a) 为广
   </a>
 </p>
 
-| 渠道 | 联系方式 |
-|------|---------|
-| 📧 **技术支持** | yuesj@huayan-robotics.com |
-| 📧 **商务合作** | marketing@huayan-robotics.com |
-| 📞 **咨询热线** | 400-852-9898 |
-| 🌐 **官方网站** | https://www.huayan-robotics.com |
-| 🐛 **Issues** | [GitHub Issues](https://github.com/huayan-robotics/HRC-PalletizingPlanner/issues) |
+| 渠道                 | 联系方式                                                                       |
+| -------------------- | ------------------------------------------------------------------------------ |
+| 📧**技术支持** | yuesj@huayan-robotics.com                                                      |
+| 📧**商务合作** | marketing@huayan-robotics.com                                                  |
+| 📞**咨询热线** | 400-852-9898                                                                   |
+| 🌐**官方网站** | https://www.huayan-robotics.com                                                |
+| 🐛**Issues**   | [GitHub Issues](https://github.com/huayan-robotics/HRC-PalletizingPlanner/issues) |
 
 ---
 

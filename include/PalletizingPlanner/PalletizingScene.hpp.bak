@@ -1,0 +1,346 @@
+/**
+ * @file PalletizingScene.hpp
+ * @brief 码垛场景构建器 - 基于实际工作站照片
+ * @author HRC Palletizing Team
+ * @date 2026-02-02
+ * 
+ * Copyright (c) 2026 Guangdong Huayan Robotics Co., Ltd.
+ */
+
+#ifndef PALLETIZING_SCENE_HPP
+#define PALLETIZING_SCENE_HPP
+
+#include <Eigen/Dense>
+#include <vector>
+#include <string>
+#include <memory>
+
+namespace palletizing {
+
+/**
+ * @brief 3D几何体基类
+ */
+struct Geometry {
+    Eigen::Vector3d position;  ///< 位置 (mm)
+    Eigen::Vector3d size;      ///< 尺寸 (mm)
+    Eigen::Vector3d color;     ///< RGB颜色 (0-1)
+    std::string name;          ///< 名称
+    
+    Geometry() : position(0, 0, 0), size(1, 1, 1), color(0.5, 0.5, 0.5) {}
+};
+
+/**
+ * @brief 长方体
+ */
+struct Box : public Geometry {
+    Box(const Eigen::Vector3d& pos, const Eigen::Vector3d& size, 
+        const Eigen::Vector3d& color, const std::string& name = "Box") {
+        this->position = pos;
+        this->size = size;
+        this->color = color;
+        this->name = name;
+    }
+};
+
+/**
+ * @brief 圆柱体
+ */
+struct Cylinder : public Geometry {
+    double radius;  ///< 半径 (mm)
+    double height;  ///< 高度 (mm)
+    
+    Cylinder(const Eigen::Vector3d& pos, double r, double h, 
+             const Eigen::Vector3d& color, const std::string& name = "Cylinder") {
+        this->position = pos;
+        this->radius = r;
+        this->height = h;
+        this->size = Eigen::Vector3d(r*2, r*2, h);
+        this->color = color;
+        this->name = name;
+    }
+};
+
+/**
+ * @brief 码垛框架结构
+ */
+struct PalletizingFrame {
+    Eigen::Vector3d position;      ///< 框架位置 (mm)
+    Eigen::Vector3d outer_size;    ///< 外部尺寸 (mm)
+    double grid_spacing;           ///< 网格间距 (mm)
+    double bar_diameter;           ///< 杆直径 (mm)
+    Eigen::Vector3d color;         ///< 蓝色
+    
+    std::vector<Cylinder> vertical_bars;    ///< 立柱
+    std::vector<Cylinder> horizontal_bars;  ///< 横杆
+    
+    PalletizingFrame(const Eigen::Vector3d& pos = Eigen::Vector3d(1100, 400, 750),
+                     const Eigen::Vector3d& size = Eigen::Vector3d(1800, 1200, 2400),
+                     double spacing = 200.0,
+                     double diameter = 30.0)
+        : position(pos), outer_size(size), grid_spacing(spacing),
+          bar_diameter(diameter), color(0.25, 0.55, 0.95) {
+        generateStructure();
+    }
+    
+private:
+    void generateStructure() {
+        // 4根主立柱
+        double radius = bar_diameter / 2.0;
+        std::vector<std::pair<double, double>> corners = {
+            {0, 0}, {outer_size.x(), 0}, 
+            {0, outer_size.y()}, {outer_size.x(), outer_size.y()}
+        };
+        
+        for (const auto& [dx, dy] : corners) {
+            Eigen::Vector3d pos = position + Eigen::Vector3d(dx, dy, outer_size.z()/2);
+            vertical_bars.emplace_back(pos, radius, outer_size.z(), color, "Pillar");
+        }
+        
+        // 增加中间立柱 (X方向每600mm一根)
+        for (double x = 600; x < outer_size.x(); x += 600) {
+            Eigen::Vector3d pos1 = position + Eigen::Vector3d(x, 0, outer_size.z()/2);
+            Eigen::Vector3d pos2 = position + Eigen::Vector3d(x, outer_size.y(), outer_size.z()/2);
+            vertical_bars.emplace_back(pos1, radius*0.8, outer_size.z(), color, "Pillar_Mid");
+            vertical_bars.emplace_back(pos2, radius*0.8, outer_size.z(), color, "Pillar_Mid");
+        }
+        
+        // 横向杆 (网格结构)
+        int num_bars = static_cast<int>(outer_size.z() / grid_spacing);
+        for (int i = 0; i <= num_bars; ++i) {
+            double z = position.z() + i * grid_spacing;
+            if (z > position.z() + outer_size.z()) break;
+            
+            // X方向横杆
+            Eigen::Vector3d bar_pos1(position.x() + outer_size.x()/2, 
+                                     position.y(), z);
+            horizontal_bars.emplace_back(bar_pos1, radius*0.6, outer_size.x(), 
+                                        color, "CrossBar_X");
+            Eigen::Vector3d bar_pos3(position.x() + outer_size.x()/2, 
+                                     position.y() + outer_size.y(), z);
+            horizontal_bars.emplace_back(bar_pos3, radius*0.6, outer_size.x(), 
+                                        color, "CrossBar_X");
+            
+            // Y方向横杆
+            Eigen::Vector3d bar_pos2(position.x(), 
+                                     position.y() + outer_size.y()/2, z);
+            horizontal_bars.emplace_back(bar_pos2, radius*0.6, outer_size.y(), 
+                                        color, "CrossBar_Y");
+            Eigen::Vector3d bar_pos4(position.x() + outer_size.x(), 
+                                     position.y() + outer_size.y()/2, z);
+            horizontal_bars.emplace_back(bar_pos4, radius*0.6, outer_size.y(), 
+                                        color, "CrossBar_Y");
+        }
+    }
+};
+
+/**
+ * @brief 码垛场景类
+ */
+class PalletizingScene {
+public:
+    /**
+     * @brief 构造函数
+     */
+    PalletizingScene() {
+        // 默认不添加任何物体，通过方法逐个添加
+    }
+    
+    /**
+     * @brief 添加电控柜平台 (匹配真实照片：白色机身+操作屏)
+     * @param height 平台高度 (mm)，默认750mm
+     */
+    void addPlatform(double height = 750.0) {
+        Eigen::Vector3d size(800, 600, height);
+        Eigen::Vector3d pos(0, 0, height/2);
+        Eigen::Vector3d color(0.92, 0.92, 0.94);  // 灰白色 (匹配真实电控柜照片)
+        
+        platform_ = std::make_shared<Box>(pos, size, color, "Platform");
+        platform_height_ = height;
+        
+        // 添加操作屏幕 (前面板) - 模拟真实电控柜的屏幕
+        // 假设前面板朝向 -Y 方向
+        Eigen::Vector3d screen_size(300, 20, 200); // 宽30cm，厚2cm，高20cm
+        Eigen::Vector3d screen_pos(0, -300, height - 150); // 位于前表面上方
+        Eigen::Vector3d screen_color(0.2, 0.2, 0.2); // 深灰色屏幕
+        screen_ = std::make_shared<Box>(screen_pos, screen_size, screen_color, "ControlScreen");
+    }
+    
+    /**
+     * @brief 添加码垛框架
+     * @param pos 位置 (mm) - 框架左下角坐标
+     * @param size 尺寸 (mm) - 长×宽×高
+     */
+    void addPalletizingFrame(const Eigen::Vector3d& pos = Eigen::Vector3d(1100, 400, 750),
+                            const Eigen::Vector3d& size = Eigen::Vector3d(1800, 1200, 2400)) {
+        // 如果Z坐标未指定或为默认值，则使用平台高度
+        Eigen::Vector3d frame_pos = pos;
+        if (frame_pos.z() == 750.0) {
+            frame_pos.z() = platform_height_;
+        }
+        frame_ = std::make_shared<PalletizingFrame>(frame_pos, size);
+    }
+    
+    /**
+     * @brief 添加流水线
+     */
+    void addConveyor() {
+        Eigen::Vector3d size(3000, 600, 50);
+        // 调整位置：Y = -1200mm (更靠近机器人，符合视觉观察 1.2m)
+        Eigen::Vector3d pos(300, -1200, platform_height_ + size.z()/2);
+        Eigen::Vector3d color(0.95, 0.95, 0.98);  // 白色
+        
+        conveyor_ = std::make_shared<Box>(pos, size, color, "Conveyor");
+    }
+
+    /**
+     * @brief 在流水线上添加箱子 (褐色 Neurio 箱子)
+     * @param num_boxes 箱子数量
+     * @param box_size 箱子尺寸 (mm) - 默认符合照片参数
+     */
+    void addBoxesOnConveyor(int num_boxes = 3, 
+                           const Eigen::Vector3d& box_size = Eigen::Vector3d(400, 300, 250)) {
+        Eigen::Vector3d color(0.65, 0.45, 0.30);  // 浅褐色/纸板色 (匹配Neurio箱子)
+        
+        double conveyor_y = -1200;  // 流水线Y坐标
+        double conveyor_surface_z = platform_height_ + 50;  // 流水线表面高度
+        double spacing = box_size.y() + 100;  // 箱子间距
+        
+        for (int i = 0; i < num_boxes; ++i) {
+            double y_offset = i * spacing;
+            Eigen::Vector3d pos(
+                300,  // X位置：流水线中心附近
+                conveyor_y + y_offset,  // Y位置：沿流水线排列
+                conveyor_surface_z + box_size.z() / 2  // Z位置：箱子中心
+            );
+            boxes_.emplace_back(pos, box_size, color, "Box_" + std::to_string(i));
+        }
+    }
+    
+    /**
+     * @brief 在码垛区添加已码放的箱子
+     * @param layer 层数
+     * @param boxes_per_layer 每层箱子数
+     */
+    void addPalletizedBoxes(int num_layers = 2, int boxes_per_layer = 4) {
+        Eigen::Vector3d box_size(400, 300, 250);
+        Eigen::Vector3d color(0.65, 0.45, 0.30);  // 浅褐色
+        
+        double start_x = frame_->position.x() + 200;
+        double start_y = frame_->position.y() + 200;
+        double layer_height = box_size.z() + 10;  // 10mm间隔
+        
+        for (int layer = 0; layer < num_layers; ++layer) {
+            double z = platform_height_ + layer * layer_height + box_size.z()/2;
+            
+            // 简单的2x2排列
+            int cols = 2;
+            int rows = boxes_per_layer / cols;
+            
+            for (int r = 0; r < rows; ++r) {
+                for (int c = 0; c < cols; ++c) {
+                    Eigen::Vector3d pos(
+                        start_x + c * (box_size.x() + 50),
+                        start_y + r * (box_size.y() + 50),
+                        z
+                    );
+                    palletized_boxes_.emplace_back(
+                        pos, box_size, color, 
+                        "Palletized_L" + std::to_string(layer) + "_" + std::to_string(r*cols+c)
+                    );
+                }
+            }
+        }
+    }
+    
+    /**
+     * @brief 获取所有障碍物
+     */
+    std::vector<std::shared_ptr<Geometry>> getAllObstacles() const {
+        std::vector<std::shared_ptr<Geometry>> obstacles;
+        
+        if (platform_) obstacles.push_back(platform_);
+        if (screen_) obstacles.push_back(screen_);
+        if (conveyor_) obstacles.push_back(conveyor_);
+        
+        // 添加框架立柱
+        if (frame_) {
+            for (const auto& bar : frame_->vertical_bars) {
+                obstacles.push_back(std::make_shared<Cylinder>(bar));
+            }
+            // 添加框架横杆也作为障碍物
+            for (const auto& bar : frame_->horizontal_bars) {
+                obstacles.push_back(std::make_shared<Cylinder>(bar));
+            }
+        }
+        
+        // 添加箱子
+        for (const auto& box : boxes_) {
+            obstacles.push_back(std::make_shared<Box>(box));
+        }
+        for (const auto& box : palletized_boxes_) {
+            obstacles.push_back(std::make_shared<Box>(box));
+        }
+        
+        return obstacles;
+    }
+    
+    /**
+     * @brief 获取码垛工作区范围
+     */
+    struct WorkingZone {
+        Eigen::Vector3d min;
+        Eigen::Vector3d max;
+    };
+    
+    WorkingZone getPalletizingZone() const {
+        if (!frame_) {
+            return {{0, 0, 0}, {0, 0, 0}};
+        }
+        
+        return {
+            {frame_->position.x() + 30, 
+             frame_->position.y() + 30, 
+             frame_->position.z()},
+            {frame_->position.x() + frame_->outer_size.x() - 30,
+             frame_->position.y() + frame_->outer_size.y() - 30,
+             frame_->position.z() + frame_->outer_size.z() - 30}
+        };
+    }
+    
+    /**
+     * @brief 导出场景为PLY格式
+     */
+    bool exportToPLY(const std::string& filename) const;
+    
+    /**
+     * @brief 导出场景配置为YAML
+     */
+    bool exportToYAML(const std::string& filename) const;
+    
+    /**
+     * @brief 获取平台高度
+     */
+    double getPlatformHeight() const { return platform_height_; }
+    
+    /**
+     * @brief 获取机器人基座位置
+     */
+    Eigen::Vector3d getRobotBasePosition() const {
+        return Eigen::Vector3d(0, 0, platform_height_);
+    }
+    
+private:
+    double platform_height_ = 750.0;  ///< 平台高度
+    
+    std::shared_ptr<Box> platform_;    ///< 电控柜平台
+    std::shared_ptr<Box> screen_;      ///< 控制屏
+    std::shared_ptr<Box> conveyor_;    ///< 流水线
+    std::shared_ptr<PalletizingFrame> frame_;  ///< 码垛框架
+    
+    std::vector<Box> boxes_;            ///< 流水线上的箱子
+    std::vector<Box> palletized_boxes_; ///< 已码放的箱子
+};
+
+} // namespace palletizing
+
+#endif // PALLETIZING_SCENE_HPP

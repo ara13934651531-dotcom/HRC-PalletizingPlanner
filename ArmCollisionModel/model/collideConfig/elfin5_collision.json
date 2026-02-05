@@ -1,0 +1,43 @@
+{
+    "RobType": "elfin5",
+    "DH": {
+        "d1": 0.220,
+        "d4": 0.420,
+        "d6": 0.1565,
+        "a2": 0.380
+    },
+    "base": {
+        "start": [0, 0, 0.05],
+        "end": [0, 0, 0.2],
+        "radius": 0.1,
+        "type": "capsule",
+        "referenceFrame": "BaseFrame"
+    },
+    "lowerArm": {
+        "start": [-0.01, 0, -0.125],
+        "end": [-0.38, 0, -0.125],
+        "radius": 0.06,
+        "type": "capsule",
+        "referenceFrame": "LowerArmFrame"
+    },
+    "elbow": {
+        "start": [0, 0, -0.03],
+        "end": [0, 0, 0.15],
+        "radius": 0.08,
+        "type": "capsule",
+        "referenceFrame": "ElbowFrame"
+    },
+    "upperArm": {
+        "start": [0, 0, -0.09],
+        "end": [0, 0.2, -0.09],
+        "radius": 0.045,
+        "type": "capsule",
+        "referenceFrame": "UpperArmFrame"
+    },
+    "wrist": {
+        "offset": [0, -0.025, 0.05],
+        "radius": 0.11,
+        "type": "sphere",
+        "referenceFrame": "WristFrame"
+    }
+}

@@ -100,30 +100,32 @@ struct SceneConfig {
     static SceneConfig defaultPalletizing() {
         SceneConfig scene;
         
-        // 机器人平台高度约800mm
-        scene.platformHeight = 0.8;
-        scene.robotBasePose = Pose6D::fromEulerZYX(0, 0, 0.8, 0, 0, 0);
+        // Robot Platform Height 750mm
+        scene.platformHeight = 0.75;
+        scene.robotBasePose = Pose6D::fromEulerZYX(0, 0, 0.75, 0, 0, 0);
         
-        // 添加集装箱区域 (机器人左前方)
+        // Pallet Zone (Inside Frame)
+        // Frame starts X=1.1, Center X=2.0. Center Y=1.0.
         PalletZone pallet;
-        pallet.pose = Pose6D::fromEulerZYX(-0.8, 0.8, 0, 0, 0, 0);
+        pallet.pose = Pose6D::fromEulerZYX(2.0, 1.0, 0, 0, 0, 0);
         pallet.length = 1.2;
         pallet.width = 1.0;
         pallet.height = 2.0;
         scene.palletZones.push_back(pallet);
         
-        // 流水线 (机器人前方)
+        // Conveyor (Front Right)
+        // Center (0.3, -1.2). Height 0.8 (Solid block for safety)
         ConveyorBelt belt;
-        belt.pose = Pose6D::fromEulerZYX(0.8, 0, 0.4, 0, 0, 0);
-        belt.length = 2.0;
+        belt.pose = Pose6D::fromEulerZYX(0.3, -1.2, 0.4, 0, 0, 0);
+        belt.length = 3.0;
         belt.width = 0.6;
         belt.height = 0.8;
         scene.conveyor = belt;
         
-        // 地面安全平面
+        // Ground
         SafePlane ground;
         ground.id = 0;
-        ground.pose = Pose6D::fromEulerZYX(0, 0, 0, 0, 0, 0);  // Z=0平面
+        ground.pose = Pose6D::fromEulerZYX(0, 0, 0, 0, 0, 0);  // Z=0 Plane
         ground.name = "Ground";
         scene.safePlanes.push_back(ground);
         

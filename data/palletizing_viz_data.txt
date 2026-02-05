@@ -1,0 +1,10 @@
+# Palletizing Visualization Data
+# Pallet Positions (layer row col x y z)
+0 0 0 -160 890 275
+0 0 1 160 890 275
+0 1 0 -160 1310 275
+0 1 1 160 1310 275
+1 0 0 -160 890 525
+1 0 1 160 890 525
+1 1 0 -160 1310 525
+1 1 1 160 1310 525
