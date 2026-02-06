@@ -1,0 +1,655 @@
+#!/usr/bin/env python3
+"""
+HR_S50-2000 Palletizing Workstation - World-Class 3D Visualization
+===================================================================
+
+严格按照S50碰撞模型参数和实物照片(2026.01.29)进行渲染：
+- 白灰色机械臂主体 (RGB: 0.92, 0.92, 0.94)
+- 清晰的黑色关节边界环
+- 末端执行器水平，吸盘朝下对准箱子
+- 无地板，清晰视图
+
+Copyright (c) 2026 Guangdong Huayan Robotics Co., Ltd.
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+import os
+
+# ============ Matplotlib Settings ============
+plt.rcParams['font.family'] = 'DejaVu Sans'
+plt.rcParams['axes.unicode_minus'] = False
+# Suppress font warnings
+import warnings
+warnings.filterwarnings('ignore', category=RuntimeWarning)
+
+# ============ S50 DH Parameters (mm) - from S50_collision.json ============
+DH = {
+    'd1': 296.5,    # Base to J1
+    'd2': 336.2,    # Shoulder offset  
+    'd3': 239.0,    # Elbow offset
+    'd4': 158.5,    # Wrist 1 offset
+    'd5': 158.5,    # Wrist 2 offset
+    'd6': 134.5,    # Flange offset
+    'a2': 900.0,    # Upper arm length
+    'a3': 941.5,    # Forearm length
+}
+
+# S50 Collision Geometry (mm) - LOCAL coordinates in each frame
+COLLISION = {
+    'base': {'p1': [0, 0, 30], 'p2': [0, 0, 336.2], 'r': 130, 'frame': 'T00'},
+    'lowerArm': {'p1': [0, 0, 280], 'p2': [900, 0, 280], 'r': 130, 'frame': 'T02'},
+    'elbow': {'p1': [-20, 0, 80], 'p2': [941.5, 0, 80], 'r': 100, 'frame': 'T03'},
+    'upperArm': {'p1': [0, 0, -60], 'p2': [0, 0, 120], 'r': 60, 'frame': 'T04'},
+    'wrist': {'center': [0, 0, 30], 'r': 120, 'frame': 'T05'},
+}
+
+# ============ Colors - 严格按照实物照片 ============
+# 机械臂主体：白灰色（不是纯白，接近照片中的颜色）
+ROBOT_BODY = (0.92, 0.92, 0.94)      # 白灰色主体
+JOINT_HOUSING = (0.06, 0.06, 0.08)   # 关节壳体 - 近黑色
+JOINT_RING = (0.02, 0.02, 0.04)      # 关节边界环 - 纯黑
+SUCTION_CUP = (0.18, 0.62, 0.58)     # 吸盘青绿色
+CABINET_GREEN = (0.12, 0.42, 0.25)   # 机柜深绿色
+FRAME_BLUE = (0.30, 0.60, 0.90)      # 框架蓝色
+BOX_BROWN = (0.58, 0.40, 0.22)       # 箱子棕色
+CONVEYOR_GRAY = (0.35, 0.35, 0.38)   # 传送带深灰
+
+
+# ============ DH Transformation ============
+def dh_matrix(theta, d, a, alpha):
+    """Standard DH transformation - matches MATLAB FK_SSerial.m exactly"""
+    c, s = np.cos(theta), np.sin(theta)
+    ca, sa = np.cos(alpha), np.sin(alpha)
+    return np.array([
+        [c, -s*ca,  s*sa, a*c],
+        [s,  c*ca, -c*sa, a*s],
+        [0,    sa,    ca,   d],
+        [0,     0,     0,   1]
+    ])
+
+
+def fk_s50(q_rad, base_z=750):
+    """
+    Forward Kinematics for S50 using verified DH parameters
+    This version matches the working search script configuration
+    """
+    # DH参数 (mm) - 与搜索脚本验证过的完全一致
+    d1, d2, d3, d4, d5, d6 = 296.5, 336.2, 239.0, 158.5, 158.5, 134.5
+    a2, a3 = 900.0, 941.5
+    
+    # DH表格: [theta_offset, d, a, alpha]
+    # 这是标准的S-Serial DH参数，经过测试验证
+    dh_params = [
+        [0, d1+d2, 0, -np.pi/2],           # Joint 1: Base rotation
+        [-np.pi/2, 0, a2, 0],              # Joint 2: Shoulder (offset -90°)
+        [0, 0, a3, 0],                     # Joint 3: Elbow
+        [-np.pi/2, d3+d4, 0, -np.pi/2],    # Joint 4: Wrist 1 (offset -90°)
+        [0, 0, 0, -np.pi/2],               # Joint 5: Wrist 2
+        [np.pi, d5+d6, 0, 0]               # Joint 6: Flange (offset 180°)
+    ]
+    
+    # Base transform (机柜高度)
+    T_base = np.eye(4)
+    T_base[2, 3] = base_z
+    
+    T_list = [T_base.copy()]
+    T = T_base.copy()
+    
+    for i, (th_off, d, a, alpha) in enumerate(dh_params):
+        T = T @ dh_matrix(q_rad[i] + th_off, d, a, alpha)
+        T_list.append(T.copy())
+    
+    return {
+        'T00': T_list[0], 'T01': T_list[1], 'T02': T_list[2], 
+        'T03': T_list[3], 'T04': T_list[4], 'T05': T_list[5], 
+        'T06': T_list[6]
+    }
+
+
+def transform_point(T, p):
+    """Transform point by matrix"""
+    return (T @ np.array([*p, 1]))[:3]
+
+
+# ============ High-Quality Drawing Functions ============
+def draw_smooth_capsule(ax, p1, p2, radius, color, alpha=0.95, n_seg=24, n_cap=8):
+    """Draw high-quality capsule with smooth shading"""
+    p1, p2 = np.array(p1), np.array(p2)
+    vec = p2 - p1
+    length = np.linalg.norm(vec)
+    
+    if length < 1:
+        # Sphere
+        u, v = np.mgrid[0:2*np.pi:24j, 0:np.pi:12j]
+        x = p1[0] + radius * np.cos(u) * np.sin(v)
+        y = p1[1] + radius * np.sin(u) * np.sin(v)
+        z = p1[2] + radius * np.cos(v)
+        ax.plot_surface(x, y, z, color=color, alpha=alpha, linewidth=0, 
+                       antialiased=True)
+        return
+    
+    d = vec / length
+    if abs(d[2]) < 0.9:
+        perp1 = np.cross(d, [0, 0, 1])
+    else:
+        perp1 = np.cross(d, [1, 0, 0])
+    perp1 = perp1 / np.linalg.norm(perp1)
+    perp2 = np.cross(d, perp1)
+    
+    theta = np.linspace(0, 2*np.pi, n_seg + 1)
+    
+    # Cylinder body
+    for i in range(n_seg):
+        c1, s1 = np.cos(theta[i]), np.sin(theta[i])
+        c2, s2 = np.cos(theta[i+1]), np.sin(theta[i+1])
+        
+        v1 = p1 + radius * (c1*perp1 + s1*perp2)
+        v2 = p1 + radius * (c2*perp1 + s2*perp2)
+        v3 = p2 + radius * (c2*perp1 + s2*perp2)
+        v4 = p2 + radius * (c1*perp1 + s1*perp2)
+        
+        ax.add_collection3d(Poly3DCollection(
+            [[v1, v2, v3, v4]], facecolors=color, alpha=alpha,
+            edgecolors='none', linewidths=0
+        ))
+    
+    # Hemispherical caps
+    for center, direction in [(p1, -d), (p2, d)]:
+        for i_phi in range(n_cap):
+            phi1 = i_phi * (np.pi/2) / n_cap
+            phi2 = (i_phi + 1) * (np.pi/2) / n_cap
+            r1, r2 = radius * np.cos(phi1), radius * np.cos(phi2)
+            z1, z2 = radius * np.sin(phi1), radius * np.sin(phi2)
+            
+            for i in range(n_seg):
+                c1, s1 = np.cos(theta[i]), np.sin(theta[i])
+                c2, s2 = np.cos(theta[i+1]), np.sin(theta[i+1])
+                
+                v1 = center + direction*z1 + r1*(c1*perp1 + s1*perp2)
+                v2 = center + direction*z1 + r1*(c2*perp1 + s2*perp2)
+                v3 = center + direction*z2 + r2*(c2*perp1 + s2*perp2)
+                v4 = center + direction*z2 + r2*(c1*perp1 + s1*perp2)
+                
+                ax.add_collection3d(Poly3DCollection(
+                    [[v1, v2, v3, v4]], facecolors=color, alpha=alpha,
+                    edgecolors='none', linewidths=0
+                ))
+
+
+def draw_cylinder(ax, center, axis, radius, height, color, alpha=0.95, n_seg=24):
+    """Draw oriented cylinder"""
+    center = np.array(center)
+    axis = np.array(axis)
+    axis = axis / np.linalg.norm(axis)
+    
+    if abs(axis[2]) < 0.9:
+        perp1 = np.cross(axis, [0, 0, 1])
+    else:
+        perp1 = np.cross(axis, [1, 0, 0])
+    perp1 = perp1 / np.linalg.norm(perp1)
+    perp2 = np.cross(axis, perp1)
+    
+    p_bot = center - axis * (height / 2)
+    p_top = center + axis * (height / 2)
+    theta = np.linspace(0, 2*np.pi, n_seg + 1)
+    
+    for i in range(n_seg):
+        c1, s1 = np.cos(theta[i]), np.sin(theta[i])
+        c2, s2 = np.cos(theta[i+1]), np.sin(theta[i+1])
+        
+        v1 = p_bot + radius * (c1*perp1 + s1*perp2)
+        v2 = p_bot + radius * (c2*perp1 + s2*perp2)
+        v3 = p_top + radius * (c2*perp1 + s2*perp2)
+        v4 = p_top + radius * (c1*perp1 + s1*perp2)
+        
+        ax.add_collection3d(Poly3DCollection(
+            [[v1, v2, v3, v4]], facecolors=color, alpha=alpha,
+            edgecolors=(0.03, 0.03, 0.03), linewidths=0.15
+        ))
+    
+    # Caps
+    for p_center in [p_bot, p_top]:
+        cap = [p_center + radius*(np.cos(t)*perp1 + np.sin(t)*perp2) for t in theta[:-1]]
+        ax.add_collection3d(Poly3DCollection([cap], facecolors=color, alpha=alpha,
+                                             edgecolors=(0.05, 0.05, 0.05), linewidths=0.1))
+
+
+def draw_joint_ring(ax, center, axis, inner_r, outer_r, thickness, color=JOINT_RING, n_seg=32):
+    """Draw distinct joint boundary ring"""
+    center = np.array(center)
+    axis = np.array(axis) / np.linalg.norm(axis)
+    
+    if abs(axis[2]) < 0.9:
+        perp1 = np.cross(axis, [0, 0, 1])
+    else:
+        perp1 = np.cross(axis, [1, 0, 0])
+    perp1 = perp1 / np.linalg.norm(perp1)
+    perp2 = np.cross(axis, perp1)
+    
+    theta = np.linspace(0, 2*np.pi, n_seg + 1)
+    half_t = thickness / 2
+    
+    for i in range(n_seg):
+        c1, s1 = np.cos(theta[i]), np.sin(theta[i])
+        c2, s2 = np.cos(theta[i+1]), np.sin(theta[i+1])
+        
+        # Outer surface
+        o_b1 = center - axis*half_t + outer_r*(c1*perp1 + s1*perp2)
+        o_b2 = center - axis*half_t + outer_r*(c2*perp1 + s2*perp2)
+        o_t1 = center + axis*half_t + outer_r*(c1*perp1 + s1*perp2)
+        o_t2 = center + axis*half_t + outer_r*(c2*perp1 + s2*perp2)
+        
+        ax.add_collection3d(Poly3DCollection(
+            [[o_b1, o_b2, o_t2, o_t1]], facecolors=color, alpha=0.98, edgecolors='none'
+        ))
+        
+        # Top and bottom faces
+        i_b1 = center - axis*half_t + inner_r*(c1*perp1 + s1*perp2)
+        i_b2 = center - axis*half_t + inner_r*(c2*perp1 + s2*perp2)
+        i_t1 = center + axis*half_t + inner_r*(c1*perp1 + s1*perp2)
+        i_t2 = center + axis*half_t + inner_r*(c2*perp1 + s2*perp2)
+        
+        ax.add_collection3d(Poly3DCollection([[i_t1, i_t2, o_t2, o_t1]], 
+                                             facecolors=color, alpha=0.98, edgecolors='none'))
+        ax.add_collection3d(Poly3DCollection([[i_b1, i_b2, o_b2, o_b1]], 
+                                             facecolors=color, alpha=0.98, edgecolors='none'))
+
+
+def draw_box(ax, center, size, color, alpha=0.85, edge_color='k', lw=0.4):
+    """Draw solid box"""
+    cx, cy, cz = center
+    dx, dy, dz = size
+    
+    v = np.array([
+        [cx-dx/2, cy-dy/2, cz-dz/2], [cx+dx/2, cy-dy/2, cz-dz/2],
+        [cx+dx/2, cy+dy/2, cz-dz/2], [cx-dx/2, cy+dy/2, cz-dz/2],
+        [cx-dx/2, cy-dy/2, cz+dz/2], [cx+dx/2, cy-dy/2, cz+dz/2],
+        [cx+dx/2, cy+dy/2, cz+dz/2], [cx-dx/2, cy+dy/2, cz+dz/2],
+    ])
+    
+    faces = [[v[i] for i in f] for f in [
+        [0,1,5,4], [2,3,7,6], [0,3,7,4], [1,2,6,5], [0,1,2,3], [4,5,6,7]
+    ]]
+    ax.add_collection3d(Poly3DCollection(faces, facecolors=color, alpha=alpha,
+                                         edgecolors=edge_color, linewidths=lw))
+
+
+# ============ Robot Drawing ============
+def draw_robot(ax, q_deg, base_z=750):
+    """
+    Draw HR_S50-2000 with world-class quality
+    严格按照照片中的外观：白灰色主体 + 黑色关节边界
+    """
+    q_rad = np.radians(q_deg)
+    T = fk_s50(q_rad, base_z)
+    
+    # === BASE (T00 frame) ===
+    T00 = T['T00']
+    p1_base = transform_point(T00, COLLISION['base']['p1'])
+    p2_base = transform_point(T00, COLLISION['base']['p2'])
+    r_base = COLLISION['base']['r']
+    draw_smooth_capsule(ax, p1_base, p2_base, r_base, ROBOT_BODY, n_seg=28)
+    
+    # Base mounting plate
+    draw_cylinder(ax, (0, 0, base_z + 18), [0,0,1], r_base + 25, 36, JOINT_HOUSING)
+    draw_joint_ring(ax, (0, 0, base_z + 38), [0,0,1], r_base - 10, r_base + 28, 8)
+    
+    # === JOINT 1 ===
+    p_j1 = T['T01'][:3, 3]
+    axis_j1 = T['T01'][:3, 2]
+    draw_cylinder(ax, p_j1, axis_j1, r_base + 15, 60, JOINT_HOUSING)
+    draw_joint_ring(ax, p_j1 + axis_j1*32, axis_j1, r_base - 5, r_base + 18, 10)
+    draw_joint_ring(ax, p_j1 - axis_j1*32, axis_j1, r_base - 5, r_base + 18, 10)
+    
+    # === LOWER ARM (T02 frame) ===
+    T02 = T['T02']
+    p1_lower = transform_point(T02, COLLISION['lowerArm']['p1'])
+    p2_lower = transform_point(T02, COLLISION['lowerArm']['p2'])
+    r_lower = COLLISION['lowerArm']['r']
+    draw_smooth_capsule(ax, p1_lower, p2_lower, r_lower, ROBOT_BODY, n_seg=28)
+    
+    # === JOINT 2 (Shoulder) ===
+    p_j2 = T02[:3, 3]
+    axis_j2 = T02[:3, 2]
+    draw_cylinder(ax, p_j2, axis_j2, r_lower + 20, 100, JOINT_HOUSING)
+    draw_joint_ring(ax, p_j2 + axis_j2*52, axis_j2, r_lower - 5, r_lower + 24, 12)
+    draw_joint_ring(ax, p_j2 - axis_j2*52, axis_j2, r_lower - 5, r_lower + 24, 12)
+    
+    # Shoulder connector (J1 to J2)
+    p_j1_pos = T['T01'][:3, 3]
+    draw_smooth_capsule(ax, p_j1_pos, p_j2, 90, JOINT_HOUSING, n_seg=20)
+    
+    # === ELBOW (T03 frame) ===
+    T03 = T['T03']
+    p1_elbow = transform_point(T03, COLLISION['elbow']['p1'])
+    p2_elbow = transform_point(T03, COLLISION['elbow']['p2'])
+    r_elbow = COLLISION['elbow']['r']
+    draw_smooth_capsule(ax, p1_elbow, p2_elbow, r_elbow, ROBOT_BODY, n_seg=28)
+    
+    # === JOINT 3 (Elbow) ===
+    p_j3 = T03[:3, 3]
+    axis_j3 = T03[:3, 2]
+    draw_cylinder(ax, p_j3, axis_j3, r_elbow + 25, 80, JOINT_HOUSING)
+    draw_joint_ring(ax, p_j3 + axis_j3*42, axis_j3, r_elbow - 5, r_elbow + 28, 12)
+    draw_joint_ring(ax, p_j3 - axis_j3*42, axis_j3, r_elbow - 5, r_elbow + 28, 12)
+    
+    # === UPPER ARM (T04 frame) ===
+    T04 = T['T04']
+    p1_upper = transform_point(T04, COLLISION['upperArm']['p1'])
+    p2_upper = transform_point(T04, COLLISION['upperArm']['p2'])
+    r_upper = COLLISION['upperArm']['r']
+    draw_smooth_capsule(ax, p1_upper, p2_upper, r_upper, ROBOT_BODY, n_seg=24)
+    
+    # === JOINT 4 ===
+    p_j4 = T04[:3, 3]
+    axis_j4 = T04[:3, 2]
+    draw_cylinder(ax, p_j4, axis_j4, r_upper + 35, 65, JOINT_HOUSING)
+    draw_joint_ring(ax, p_j4 + axis_j4*35, axis_j4, r_upper, r_upper + 38, 10)
+    draw_joint_ring(ax, p_j4 - axis_j4*35, axis_j4, r_upper, r_upper + 38, 10)
+    
+    # Wrist connector (J3 to J4)
+    draw_smooth_capsule(ax, p_j3, p_j4, 58, JOINT_HOUSING, n_seg=18)
+    
+    # === WRIST (T05 frame) ===
+    T05 = T['T05']
+    p_wrist = transform_point(T05, COLLISION['wrist']['center'])
+    r_wrist = COLLISION['wrist']['r']
+    draw_smooth_capsule(ax, p_wrist, p_wrist, r_wrist, ROBOT_BODY, n_seg=28)
+    
+    # === JOINT 5 ===
+    p_j5 = T05[:3, 3]
+    axis_j5 = T05[:3, 2]
+    draw_cylinder(ax, p_j5, axis_j5, r_upper + 30, 58, JOINT_HOUSING)
+    draw_joint_ring(ax, p_j5 + axis_j5*32, axis_j5, r_upper, r_upper + 33, 10)
+    draw_joint_ring(ax, p_j5 - axis_j5*32, axis_j5, r_upper, r_upper + 33, 10)
+    
+    # === JOINT 6 / FLANGE ===
+    T06 = T['T06']
+    tcp = T06[:3, 3]
+    axis_tcp = T06[:3, 2]
+    draw_cylinder(ax, tcp, axis_tcp, 82, 55, JOINT_HOUSING)
+    draw_joint_ring(ax, tcp + axis_tcp*28, axis_tcp, 45, 85, 10)
+    
+    # === SUCTION CUP TOOL ===
+    # 吸盘沿工具Z轴方向延伸
+    tool_length = 180
+    tool_tip = tcp + axis_tcp * tool_length
+    
+    # 工具主体
+    draw_smooth_capsule(ax, tcp + axis_tcp*35, tool_tip - axis_tcp*30, 55, SUCTION_CUP, n_seg=20)
+    
+    # 吸盘盘面（末端圆盘）
+    draw_cylinder(ax, tool_tip - axis_tcp*10, axis_tcp, 95, 25, SUCTION_CUP)
+    draw_cylinder(ax, tool_tip, axis_tcp, 100, 12, (0.22, 0.68, 0.62))
+    
+    # TCP marker
+    ax.scatter(*tcp, c='red', s=120, marker='*', zorder=10, label='TCP')
+    
+    # Debug output
+    print("\n" + "="*60)
+    print("HR_S50-2000 关节位置 (mm)")
+    print("="*60)
+    for i, name in enumerate(['T00', 'T01', 'T02', 'T03', 'T04', 'T05', 'T06']):
+        pos = T[name][:3, 3]
+        print(f"  {name}: ({pos[0]:8.1f}, {pos[1]:8.1f}, {pos[2]:8.1f})")
+    print(f"  吸盘末端: ({tool_tip[0]:8.1f}, {tool_tip[1]:8.1f}, {tool_tip[2]:8.1f})")
+    print(f"  工具Z轴: ({axis_tcp[0]:6.3f}, {axis_tcp[1]:6.3f}, {axis_tcp[2]:6.3f})")
+    print("="*60)
+    
+    return T, tool_tip
+
+
+# ============ Scene Components ============
+def draw_cabinet(ax, height=750):
+    """Draw cabinet / robot base
+    
+    如果height=0，画一个简单的圆形底座
+    如果height>0，画完整的机柜
+    """
+    if height < 50:
+        # 简单底座 - 机器人直接安装在地面上
+        # 画一个圆盘作为机器人底座
+        theta = np.linspace(0, 2*np.pi, 32)
+        base_r = 200
+        base_h = 30
+        x = base_r * np.cos(theta)
+        y = base_r * np.sin(theta)
+        z_bottom = np.zeros_like(theta)
+        z_top = np.ones_like(theta) * base_h
+        
+        # Bottom circle
+        verts_b = [[x[i], y[i], 0] for i in range(len(theta))]
+        ax.add_collection3d(Poly3DCollection([verts_b], color=CABINET_GREEN, alpha=0.9))
+        
+        # Top circle
+        verts_t = [[x[i], y[i], base_h] for i in range(len(theta))]
+        ax.add_collection3d(Poly3DCollection([verts_t], color=CABINET_GREEN, alpha=0.9))
+        
+        # Side
+        for i in range(len(theta) - 1):
+            verts = [
+                [x[i], y[i], 0], [x[i+1], y[i+1], 0],
+                [x[i+1], y[i+1], base_h], [x[i], y[i], base_h]
+            ]
+            ax.add_collection3d(Poly3DCollection([verts], color=CABINET_GREEN, alpha=0.85, edgecolor='darkgreen', linewidth=0.3))
+    else:
+        # 完整机柜
+        draw_box(ax, (0, 0, height/2), (400, 420, height), CABINET_GREEN, 0.92, 'darkgreen')
+        draw_box(ax, (0, 0, height + 12), (440, 440, 24), (0.22, 0.22, 0.25), 0.96)
+        # Touch screen
+        draw_box(ax, (0, -210 - 15, height - 100), (190, 28, 130), (0.65, 0.82, 0.48), 0.95)
+        # E-stop button
+        draw_cylinder(ax, (0, -210 - 12, height - 290), [0, -1, 0], 30, 38, (0.88, 0.08, 0.08))
+
+
+def draw_frame(ax, x_center=-900, y_center=-800, h=2100):
+    """Draw blue palletizing frame - simplified structure (left side of robot, -Y direction)"""
+    w, d = 1000, 850
+    
+    # 仅绘制四个垂直立柱(简化,去掉细小分支)
+    for dx in [-w/2 + 35, w/2 - 35]:
+        for dy in [y_center - d/2 + 35, y_center + d/2 - 35]:
+            draw_cylinder(ax, (x_center + dx, dy, h/2), [0,0,1], 42, h, FRAME_BLUE)
+    
+    # 顶部横梁(关键结构)
+    draw_box(ax, (x_center, y_center - d/2 + 35, h - 50), (w, 80, 100), FRAME_BLUE, 0.88)
+    draw_box(ax, (x_center, y_center + d/2 - 35, h - 50), (w, 80, 100), FRAME_BLUE, 0.88)
+    draw_box(ax, (x_center - w/2 + 35, y_center, h - 50), (80, d, 100), FRAME_BLUE, 0.88)
+    draw_box(ax, (x_center + w/2 - 35, y_center, h - 50), (80, d, 100), FRAME_BLUE, 0.88)
+    
+    # 底部平台
+    draw_box(ax, (x_center, y_center, 60), (w - 100, d - 100, 120), FRAME_BLUE, 0.82)
+    
+    # 去掉细小的网格面板,只保留主体结构
+
+
+def draw_conveyor(ax, x_pos=900, base_z=0, length=1400, width=420):
+    """Draw roller conveyor with boxes
+    
+    传送带设计:
+    - base_z: 地面高度（通常为0）
+    - 支架高度: 约800mm（使表面在850mm左右）
+    - 表面高度: base_z + 850mm
+    """
+    # 传送带表面高度 (使箱子顶部接近机械臂末端1029mm)
+    surface_z = base_z + 850
+    
+    # Side rails
+    rail_height = 70
+    draw_box(ax, (x_pos - width/2 + 22, 0, surface_z - rail_height/2), 
+             (44, length, rail_height), CONVEYOR_GRAY, 0.90)
+    draw_box(ax, (x_pos + width/2 - 22, 0, surface_z - rail_height/2), 
+             (44, length, rail_height), CONVEYOR_GRAY, 0.90)
+    
+    # Rollers
+    n_rollers = int(length / 55)
+    for i in range(n_rollers):
+        y = -length/2 + 28 + i * 55
+        draw_box(ax, (x_pos, y, surface_z), (width - 55, 32, 22), (0.18, 0.18, 0.20), 0.85)
+    
+    # Support legs (从地面到传送带底部)
+    leg_h = surface_z - rail_height - 20
+    if leg_h > 50:
+        for dx in [-width/3, width/3]:
+            for dy in [-length/3, length/3]:
+                draw_box(ax, (x_pos + dx, dy, base_z + leg_h/2), (55, 55, leg_h), CONVEYOR_GRAY, 0.85)
+    
+    return surface_z + 12
+
+
+def draw_boxes_on_conveyor(ax, x_pos, surface_z, n_boxes=3):
+    """Draw boxes on conveyor"""
+    box_size = (270, 330, 180)
+    
+    for i, y in enumerate([-380, 0, 380][:n_boxes]):
+        draw_box(ax, (x_pos, y, surface_z + box_size[2]/2), box_size, BOX_BROWN, 0.88, 'saddlebrown', 0.5)
+    
+    return surface_z + box_size[2]  # Return box top height
+
+
+# ============ Main ============
+def visualize_scene(timeout_sec=25):
+    """Create world-class visualization"""
+    fig = plt.figure(figsize=(15, 12))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # 场景布局（所有物体从地面z=0开始）
+    # 机柜高度：根据照片，机柜大约750mm高
+    # 但为了让机械臂能够到传送带上的箱子，我们需要调整比例
+    #
+    # 实际计算：
+    # - 机械臂基座到末端（向下时）最低约1029mm（base_z=0时）
+    # - 如果机柜高度=0（机器人基座在地面），末端z=1029
+    # - 箱子顶部应该接近末端，所以传送带表面应该在约850mm
+    #
+    # 为了符合照片比例，设置：
+    # - 机柜高度 = 0 (机器人安装在地面基座上)
+    # - 传送带支架使表面高度约850mm，箱子顶部约1030mm
+    
+    cabinet_height = 0  # 简化：机器人基座在地面
+    
+    # 画一个简单的底座代替机柜
+    draw_cabinet(ax, cabinet_height)
+    
+    # 传送带和箱子（从地面开始）
+    conv_x = 900
+    # 传送带支架高度使表面约850mm
+    conv_surface = draw_conveyor(ax, x_pos=conv_x, base_z=0, length=1400, width=420)
+    box_top = draw_boxes_on_conveyor(ax, conv_x, conv_surface, 3)
+    
+    # 蓝色框架 - 在机械臂左后方
+    draw_frame(ax, x_center=-500, y_center=650, h=2100)
+    
+    # ===================================================================
+    # 机械臂姿态 - 最终配置 (迭代7 - 完成)
+    # ===================================================================
+    # 配置: [-30, -15, 105, 0, 90, 0]
+    # 
+    # 验证结果 (base_z=0):
+    # - 工具Z轴: (0, 0, -1) ✓ 完美垂直朝下
+    # - 吸盘末端: (812, -10, 1029) mm
+    #   - X=812 在传送带中心(900)附近 ✓
+    #   - Y=-10 接近中心线 ✓  
+    #   - Z=1029 略低于箱子顶部(1042)，是合理的抓取位置 ✓
+    #
+    # 关节角物理含义:
+    # J1 = -30°: 基座旋转使臂指向+X偏-Y方向（朝向传送带）
+    # J2 = -15°: 肩关节使上臂略微抬起
+    # J3 = 105°: 肘关节弯曲使前臂向下
+    # J4 = 0°: 腕1不旋转
+    # J5 = 90°: 腕2弯曲使末端执行器垂直向下
+    # J6 = 0°: 法兰不旋转
+    #
+    # 此配置模拟机械臂准备从传送带上抓取箱子的姿态
+    # ===================================================================
+    
+    q_deg = [-30, -15, 105, 0, 90, 0]
+    T_result, tool_tip = draw_robot(ax, q_deg, cabinet_height)
+    
+    # 验证：检查工具末端位置
+    print(f"\n目标箱子顶部高度: {box_top:.1f} mm")
+    print(f"吸盘末端Z: {tool_tip[2]:.1f} mm")
+    print(f"吸盘末端X: {tool_tip[0]:.1f} mm (传送带中心: {conv_x})")
+    
+    # Check tool orientation
+    axis_tcp = T_result['T06'][:3, 2]
+    if axis_tcp[2] < -0.5:
+        print("✓ 吸盘朝下 (工具Z轴指向-Z)")
+    else:
+        print("✗ 吸盘方向需要调整")
+    
+    # Axis labels
+    ax.set_xlabel('X (mm) - Conveyor', fontsize=11, labelpad=10)
+    ax.set_ylabel('Y (mm) - Frame', fontsize=11, labelpad=10)
+    ax.set_zlabel('Z (mm) - Height', fontsize=11, labelpad=10)
+    ax.set_title('HR_S50-2000 Palletizing Workstation\n(S50 Collision Model, Photo 2026.01.29)', 
+                 fontsize=13, fontweight='bold')
+    
+    # View settings
+    ax.set_xlim([-800, 1500])
+    ax.set_ylim([-600, 1400])
+    ax.set_zlim([0, 2300])
+    ax.view_init(elev=22, azim=-48)
+    
+    # Legend and info
+    ax.legend(loc='upper right', fontsize=10)
+    ax.text2D(0.02, 0.98, 
+              "Components:\n"
+              "- Green: Cabinet\n"
+              "- White-Gray: S50 Robot\n"
+              "- Blue: Frame\n"
+              "- Gray: Conveyor\n"
+              "- Brown: Boxes",
+              transform=ax.transAxes, fontsize=9, verticalalignment='top',
+              bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.85))
+    
+    plt.tight_layout()
+    
+    # Save images
+    output_dir = 'data/sim3d'
+    os.makedirs(output_dir, exist_ok=True)
+    
+    plt.savefig(os.path.join(output_dir, 'palletizing_scene.png'), 
+                dpi=200, bbox_inches='tight', facecolor='white')
+    print(f"\n[OK] 已保存: {output_dir}/palletizing_scene.png")
+    
+    # Generate multiple views for comparison
+    views = [
+        {'azim': -48, 'elev': 22, 'name': 'main'},
+        {'azim': -135, 'elev': 20, 'name': 'back'},
+        {'azim': 30, 'elev': 25, 'name': 'right'},
+        {'azim': 0, 'elev': 85, 'name': 'top'},
+        {'azim': -48, 'elev': 5, 'name': 'low'},
+        {'azim': -90, 'elev': 15, 'name': 'side'},
+    ]
+    for v in views:
+        ax.view_init(elev=v['elev'], azim=v['azim'])
+        plt.savefig(os.path.join(output_dir, f"scene_{v['name']}.png"),
+                    dpi=160, bbox_inches='tight', facecolor='white')
+    print(f"[OK] 已保存 {len(views)} 个视角")
+    
+    ax.view_init(elev=22, azim=-48)
+    
+    if timeout_sec > 0:
+        print(f"\n窗口将在 {timeout_sec} 秒后自动关闭...")
+        timer = fig.canvas.new_timer(interval=timeout_sec * 1000)
+        timer.add_callback(lambda: plt.close(fig))
+        timer.start()
+    
+    plt.show()
+    return fig, ax
+
+
+if __name__ == '__main__':
+    import matplotlib
+    matplotlib.use('Agg')  # Non-interactive backend for faster rendering
+    
+    print("="*60)
+    print("HR_S50-2000 Palletizing Workstation Visualization")
+    print("Strict S50 collision model parameters")
+    print("Final iteration - tool pointing DOWN, near box top")
+    print("="*60)
+    visualize_scene(timeout_sec=0)  # No window display

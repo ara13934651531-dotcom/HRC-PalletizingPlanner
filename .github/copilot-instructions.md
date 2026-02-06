@@ -2,115 +2,104 @@
 
 > **Copyright (c) 2026 Guangdong Huayan Robotics Co., Ltd.**
 
-## 项目架构
+## 架构概览
 
-三层系统: **C++ 规划器** (header-only) + **HRC 碰撞库** (闭源 C) + **MATLAB/Python 可视化**
+三层系统: **C++17 header-only 规划器** (`include/PalletizingPlanner/*.hpp`) + **HRC 碰撞库** (闭源 C 静态库) + **MATLAB/Python 可视化**
 
 ```
-PalletizingPlanner.hpp     ← 顶层API (palletizing命名空间)
-├── PathPlanner.hpp        ← Informed RRT* / BIT*
-├── PathOptimizer.hpp      ← B-Spline平滑
-├── TimeParameterization.hpp ← S曲线时间参数化
+PalletizingPlanner.hpp     ← 顶层API (palletizing 命名空间，全部扁平)
+├── PathPlanner.hpp        ← Informed RRT* / BIT* (含 KDTree.hpp)
+├── PathOptimizer.hpp      ← B-Spline平滑 (De Boor算法)
+├── TimeParameterization.hpp ← S曲线七段式时间参数化
 ├── CollisionChecker.hpp   ← 封装HRC C接口 (extern "C")
-└── RobotModel.hpp         ← DH正运动学
+├── CollisionCache.hpp     ← FNV-1a哈希 + LRU淘汰 (mutex线程安全)
+├── TaskSequencer.hpp      ← TSP任务序列优化 (2-opt)
+└── RobotModel.hpp         ← DH正运动学 (标准DH变换)
 ```
 
-## ⚠️ 关键单位约定（必读）
+数据流: 用户传入 `JointConfig`(deg) → 内部转 rad → PathPlanner 采样+碰撞检测 → PathOptimizer B-Spline平滑 → TimeParameterization S曲线 → 输出轨迹
 
-| 类型 | 单位 | 示例 |
-|------|------|------|
-| DH参数/坐标 | **mm** | `d1 = 296.5`, `a2 = 900.0` |
-| 关节角（API） | **deg** | `JointConfig::fromDegrees({0, -90, 30, ...})` |
-| 关节角（内部/HRC） | **rad** | `config.q[i]` 内部存储弧度 |
-| HRC碰撞几何 | **mm** | 胶囊体`[7]`, 球体`[4]` |
-| 碰撞距离 | **m** | `distance = 0.05` 表示 5cm |
+## ⚠️ 关键单位约定（必读 - 最常见错误源）
+
+| 位置 | 关节角 | 坐标/距离 |
+|------|--------|----------|
+| 用户API `JointConfig::fromDegrees()` | **deg** | — |
+| 内部存储 `config.q[i]` / 路径文件 | **rad** | — |
+| HRC `updateACAreaConstrainPackageInterface()` | **deg** | — |
+| DH参数 / 碰撞几何 | — | **mm** |
+| `SceneConfig` / `OBBObstacle.lwh` | — | **m** |
+| HRC碰撞距离返回值 | — | **m** |
 
 ## 构建与测试
 
 ```bash
-# 构建 (输出到 bin/)
-mkdir -p build && cd build && cmake .. && make -j
-
-# 运行测试
-./bin/testPalletizingPlanner          # 综合功能
-./bin/testPerformanceBenchmark        # KD-Tree/缓存效率 (30x加速验证)
-./bin/testCollisionDetectionTime      # HRC库资源消耗分析
+mkdir -p build && cd build && cmake .. && make -j    # 输出到 bin/
+./bin/testPalletizingPlanner       # 综合功能 (7个子测试)
+./bin/testPerformanceBenchmark     # KD-Tree/缓存 30x加速验证
+./bin/testCollisionDetectionTime   # HRC库资源消耗
+./bin/testHighPerformance          # 优化前后对比 (需 pthread)
+./bin/testRobustnessValidation     # 鲁棒性泛化 (需 pthread)
 ```
 
-**CMake链接顺序 (严格)**: `libHRCInterface.a` → `libCmpAgu.a` → `libhansKinematics.a`
+**CMake链接顺序(严格)**: `libHRCInterface.a` → `libCmpAgu.a` → `libhansKinematics.a` → `stdc++` → `m` [→ `pthread`]
 
-## C++ 规划器使用
+依赖: Eigen3 (系统 `/usr/include/eigen3`), 无包管理器。仅 Linux x86_64。
 
+## C++ 代码约定
+
+- **命名**: 类 PascalCase, 方法 camelCase, 成员变量 `trailing_underscore_`, 结构体字段 camelCase 无下划线
+- **头文件**: `#pragma once`, Doxygen 文件头 (`@file`, `@brief`, `@date`), 中文注释广泛使用
+- **错误处理**: **无异常**。用返回值: `PlanningResult.status` 枚举 + `errorMessage` 字符串; `bool initialize()` 返回成功/失败
+- **核心类型**: `JointVector = Eigen::Matrix<double, 6, 1>`; `Pose6D` 含 `Position3D` + `Quaterniond`
+- **C/C++边界**: HRC接口 `extern "C" { #include <algorithmLibInterface.h> }`, 只传C数组不传C++对象; `robType`: 0=Elfin, 1=S-Serial(HR_S50)
+- **数据文件**: 空格分隔纯文本, `#` 注释头标明格式和单位, 输出到 `data/` 或项目根目录
+
+## 测试编写模式
+
+无测试框架。每个测试是独立可执行文件，自定义 `main()`:
 ```cpp
-#include "PalletizingPlanner/PalletizingPlanner.hpp"
-using namespace palletizing;
-
-PalletizingPlanner planner;
-planner.initialize();
-
-// 用户接口始终用度数
-JointConfig start = JointConfig::fromDegrees({0, -90, 30, 0, -60, 0});
-JointConfig goal = JointConfig::fromDegrees({45, -60, 45, 30, -45, 45});
-PlanningResult result = planner.planPointToPoint(start, goal);
-
-if (result.isSuccess()) {
-    // result.optimizedPath, result.smoothedSpline 可用于控制
+int main() {
+    try {
+        testFoo();  // void testXxx() 命名
+        testBar();
+    } catch (const std::exception& e) {
+        std::cerr << "异常: " << e.what() << "\n";
+        return 1;
+    }
+    return 0;
 }
 ```
+新增测试需在 `test/CMakeLists.txt` 添加 `add_executable` + 严格链接顺序。
 
-## HRC 碰撞检测库 (C接口)
+## HRC 碰撞库 (C接口)
 
 ```cpp
-extern "C" {
-#include <algorithmLibInterface.h>
-}
-
-// robType: 0=Elfin, 1=S-Serial (HR_S50)
-RTS_IEC_LREAL dh[8] = {296.5, 336.2, 239.0, 158.5, 158.5, 134.5, 900.0, 941.5};
-initACAreaConstrainPackageInterface(1, dh, baseGeom, lowerArmGeom, ...);
-
-// 周期更新 (jointPos单位: deg)
-updateACAreaConstrainPackageInterface(jointPos, jointVel);
-
-// 碰撞查询
-RTS_IEC_LINT pair[2]; RTS_IEC_LREAL dist;
-RTS_BOOL collision = checkCPSelfCollisionInterface(pair, &dist);
+extern "C" { #include <algorithmLibInterface.h> }
+// 初始化: initACAreaConstrainPackageInterface(robType=1, dh[8], 碰撞几何...)
+// 更新(每周期): updateACAreaConstrainPackageInterface(jointPos_deg, jointVel)
+// 查询: checkCPSelfCollisionInterface(pair, &dist) → RTS_BOOL
 ```
-
-**碰撞几何格式 (mm)**:
-- 胶囊体: `[start_x,y,z, end_x,y,z, radius]` (长度7)
-- 球体: `[center_x,y,z, radius]` (长度4)
+碰撞几何(mm): 胶囊体 `[sx,sy,sz, ex,ey,ez, radius]`(7), 球体 `[cx,cy,cz, radius]`(4)
 
 ## HR_S50-2000 参数
 
-```cpp
-// DH参数 (mm) - RobotDHParams::fromHRConfig()
-d1=296.5, d2=336.2, d3=239.0, d4=158.5, d5=158.5, d6=134.5, a2=900.0, a3=941.5
+DH(mm): `d1=296.5, d2=336.2, d3=239.0, d4=158.5, d5=158.5, d6=134.5, a2=900.0, a3=941.5`
+关节限位(deg): J1:±360, J2:-190~+10, J3:±165, J4-J6:±360
 
-// 关节限位 (deg)
-J1: ±360, J2: -190~+10, J3: ±165, J4-J6: ±360
-```
+## 可视化
 
-## 可视化工具
+- **Python**: `scripts/visualize_scene.py` — matplotlib, DH参数**独立硬编码**(需与C++同步), 后端 `Agg`(离线)/`TkAgg`(交互), 输出 `data/sim3d/`
+- **MATLAB**: `ArmCollisionModel/testS50*.m` — 用 `@RobotCollisionModel` 类, 碰撞配置 `model/collideConfig/S50_collision.json`, 输出 `pic/`
+- MATLAB Headless检测: `isHeadless = ~usejava('desktop')` → `set(0,'DefaultFigureVisible','off')`
 
-| 工具 | 用途 |
+## 关键文件索引
+
+| 文件 | 说明 |
 |------|------|
-| `scripts/visualize_scene.py` | Python 3D场景 (matplotlib) |
-| `ArmCollisionModel/testS50.m` | MATLAB 静态碰撞可视化 |
-| `ArmCollisionModel/testS50_Dynamic.m` | MATLAB 动态轨迹GIF |
-
-MATLAB碰撞模型配置: `ArmCollisionModel/model/collideConfig/S50_collision.json`
-
-## 代码约定
-
-1. **header-only**: 规划代码在 `include/PalletizingPlanner/*.hpp`
-2. **Eigen**: `JointVector = Eigen::Matrix<double, 6, 1>`
-3. **C/C++混合**: HRC接口用 `extern "C"` 包装，不传递 C++ 对象
-4. **平台**: 仅 Linux x86_64，堆栈监控使用 `%rsp` 寄存器
-
-## 关键文件
-
-- [HRCInterface/algorithmLibInterface.h](HRCInterface/algorithmLibInterface.h) - 50+ 碰撞检测 API
-- [include/PalletizingPlanner/Types.hpp](include/PalletizingPlanner/Types.hpp) - 核心数据类型
-- [include/PalletizingPlanner/CollisionChecker.hpp](include/PalletizingPlanner/CollisionChecker.hpp) - HRC封装
-- [examples/basic_planning_example.cpp](examples/basic_planning_example.cpp) - 使用示例
+| `include/PalletizingPlanner/Types.hpp` | 所有核心类型: JointConfig, Path, BSpline, PlanningResult |
+| `include/PalletizingPlanner/PalletizingPlanner.hpp` | 顶层API入口 |
+| `include/PalletizingPlanner/CollisionChecker.hpp` | HRC C库封装, SceneConfig定义 |
+| `HRCInterface/algorithmLibInterface.h` | 50+ 碰撞检测C接口声明 |
+| `HRCInterface/InterfaceDataStruct.h` | RTS_IEC_LREAL/LINT/BOOL 类型定义 |
+| `examples/basic_planning_example.cpp` | 完整使用示例 |
+| `test/CMakeLists.txt` | 所有测试目标和链接配置 |
