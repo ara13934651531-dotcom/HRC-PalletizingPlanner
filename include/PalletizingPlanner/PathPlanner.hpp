@@ -12,7 +12,7 @@
  * 2. 路径最短 - 配置空间度量优化
  * 3. 高效采样 - 椭球和启发式采样
  * 
- * @author GitHub Copilot
+ * @author Guangdong Huayan Robotics Co., Ltd.
  * @version 1.0.0
  * @date 2026-01-29
  */
@@ -53,6 +53,12 @@ class EllipsoidSampler {
 public:
     EllipsoidSampler(const JointConfig& start, const JointConfig& goal)
         : start_(start), goal_(goal) {
+        
+        // 默认关节限位: 使用HR_S50-2000参数
+        RobotDHParams defaultParams;
+        auto [minLimits, maxLimits] = defaultParams.getJointLimits();
+        jointMin_ = minLimits;
+        jointMax_ = maxLimits;
         
         // 计算椭球参数
         center_ = 0.5 * (start.q + goal.q);
@@ -124,9 +130,9 @@ public:
     
 private:
     JointConfig sampleUniform(std::mt19937& gen) {
-        std::uniform_real_distribution<double> dist(-M_PI, M_PI);
         JointVector q;
         for (int i = 0; i < 6; ++i) {
+            std::uniform_real_distribution<double> dist(jointMin_[i], jointMax_[i]);
             q[i] = dist(gen);
         }
         return JointConfig(q);
@@ -134,6 +140,8 @@ private:
     
     JointConfig start_, goal_;
     JointVector center_;
+    JointVector jointMin_;
+    JointVector jointMax_;
     double cMin_;
     Eigen::Matrix<double, 6, 6> rotation_;
 };
@@ -334,7 +342,7 @@ private:
                         // 建立新的父子关系
                         nodes_[neighborId].parentId = newNodeId;
                         nodes_[neighborId].costFromStart = newCost;
-                        newNode.children.push_back(neighborId);
+                        nodes_[newNodeId].children.push_back(neighborId);
                         
                         // 传播代价更新
                         propagateCostUpdate(neighborId);
@@ -623,12 +631,25 @@ private:
     }
     
     /**
-     * @brief 剪枝
+     * @brief 剪枝 - 移除代价超过阈值的节点
+     * @param threshold 代价阈值，超过此值的节点将被标记为无效
      */
     void pruneTree(double threshold) {
-        // 简化的剪枝实现
-        // 完整实现需要更复杂的数据结构
-        // 这里仅标记代价过高的节点
+        // 标记代价超过阈值的叶节点
+        // 注: 不实际删除以避免ID失效，仅断开连接
+        for (size_t i = 1; i < nodes_.size(); ++i) {  // 跳过根节点
+            if (nodes_[i].costFromStart > threshold && nodes_[i].children.empty()) {
+                // 从父节点的children列表中移除
+                int parentId = nodes_[i].parentId;
+                if (parentId >= 0 && parentId < static_cast<int>(nodes_.size())) {
+                    auto& siblings = nodes_[parentId].children;
+                    siblings.erase(
+                        std::remove(siblings.begin(), siblings.end(), static_cast<int>(i)),
+                        siblings.end());
+                }
+                nodes_[i].parentId = -1;  // 断开
+            }
+        }
     }
     
     /**

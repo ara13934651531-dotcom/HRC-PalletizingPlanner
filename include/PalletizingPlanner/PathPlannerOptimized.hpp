@@ -33,6 +33,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <chrono>
+#include <iostream>
 #include <algorithm>
 #include <thread>
 #include <atomic>
@@ -46,13 +47,13 @@ namespace palletizing {
 struct alignas(64) OptimizedRRTNode {  // 缓存行对齐
     JointConfig config;              // 关节配置 (48 bytes)
     float costFromStart = 0.0f;      // 使用float节省内存
-    int16_t parentId = -1;           // 父节点ID
-    int16_t id;                      // 节点ID
+    int32_t parentId = -1;           // 父节点ID (int32_t避免>32767溢出)
+    int32_t id;                      // 节点ID
     uint8_t validEdge : 1;           // 边是否已验证
     uint8_t reserved : 7;            // 保留位
     
     OptimizedRRTNode() : id(-1), validEdge(0), reserved(0) {}
-    OptimizedRRTNode(int16_t nodeId, const JointConfig& cfg) 
+    OptimizedRRTNode(int32_t nodeId, const JointConfig& cfg) 
         : config(cfg), id(nodeId), validEdge(0), reserved(0) {}
 };
 
@@ -60,8 +61,8 @@ struct alignas(64) OptimizedRRTNode {  // 缓存行对齐
  * @brief 懒惰碰撞检测边
  */
 struct LazyEdge {
-    int16_t fromNode;
-    int16_t toNode;
+    int32_t fromNode;
+    int32_t toNode;
     float cost;
     bool validated = false;
     bool valid = false;

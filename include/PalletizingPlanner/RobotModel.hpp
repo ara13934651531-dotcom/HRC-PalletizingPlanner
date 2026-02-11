@@ -5,7 +5,7 @@
  * 实现了基于DH参数的正/逆运动学，以及关节限位检查。
  * 针对HR_S50-2000重载协作机器人优化。
  * 
- * @author GitHub Copilot
+ * @author Guangdong Huayan Robotics Co., Ltd.
  * @version 1.0.0
  * @date 2026-01-29
  */
@@ -14,6 +14,7 @@
 
 #include "Types.hpp"
 #include <array>
+#include <random>
 #include <stdexcept>
 
 namespace palletizing {
@@ -22,15 +23,16 @@ namespace palletizing {
  * @brief HR-S50机器人DH参数和运动学配置
  */
 struct RobotDHParams {
-    // DH参数 (单位: mm, 在使用时转换为m)
-    double d1 = 296.5;   // 基座到肩关节
-    double d2 = 336.2;   // 
-    double d3 = 239.0;   //
-    double d4 = 158.5;   //
-    double d5 = 158.5;   //
-    double d6 = 134.5;   // 腕部到法兰
-    double a2 = 900.0;   // 下臂长度
-    double a3 = 941.5;   // 上臂长度
+    // DH参数 (单位: mm, 在使用时转换为m)ara
+
+    double d1 = 296.5;   // 基座到肩关节 (Joint1偏移)
+    double d2 = 336.2;   // 肩部横向偏移 (Joint2偏移)
+    double d3 = 239.0;   // 肘部横向偏移 (Joint3偏移)
+    double d4 = 158.5;   // 腕部纵向偏移 (Joint4偏移)
+    double d5 = 158.5;   // 腕部横向偏移 (Joint5偏移)
+    double d6 = 134.5;   // 腕部到法兰 (Joint6偏移)
+    double a2 = 900.0;   // 下臂长度 (Link2)
+    double a3 = 941.5;   // 上臂长度 (Link3)
     
     // 关节限位 (单位: deg, 在使用时转换为rad)
     std::array<double, 6> jointMin = {-360, -190, -165, -360, -360, -360};
@@ -128,6 +130,8 @@ public:
         
         // 使用标准DH参数计算变换矩阵
         // S系列机器人采用类UR构型
+        // ⚠️ Note: scripts/visualize_scene.py uses an equivalent but different
+        //    DH grouping (combined d values, theta offsets). Both yield same T06.
         Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
         
         // 基于UR构型的DH参数
@@ -247,7 +251,8 @@ public:
     double manipulability(const JointConfig& config) const {
         JacobianMatrix J = computeJacobian(config);
         // 使用Yoshikawa's manipulability measure
-        return std::sqrt((J * J.transpose()).determinant());
+        double det = (J * J.transpose()).determinant();
+        return std::sqrt(std::max(0.0, det));  // 数值稳定性保护
     }
     
     /**
@@ -255,10 +260,12 @@ public:
      * @return 随机配置
      */
     JointConfig randomConfig() const {
+        // 使用thread_local确保线程安全
+        static thread_local std::mt19937 tl_gen{std::random_device{}()};
         JointConfig config;
         for (int i = 0; i < 6; ++i) {
-            double range = jointMax_[i] - jointMin_[i];
-            config.q[i] = jointMin_[i] + (static_cast<double>(rand()) / RAND_MAX) * range;
+            std::uniform_real_distribution<double> dist(jointMin_[i], jointMax_[i]);
+            config.q[i] = dist(tl_gen);
         }
         return config;
     }

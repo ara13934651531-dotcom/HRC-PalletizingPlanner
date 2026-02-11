@@ -74,7 +74,21 @@ def dh_matrix(theta, d, a, alpha):
 def fk_s50(q_rad, base_z=750):
     """
     Forward Kinematics for S50 using verified DH parameters
-    This version matches the working search script configuration
+    
+    ⚠️ DH Convention Note (see also: include/PalletizingPlanner/RobotModel.hpp)
+    -----------------------------------------------------------------------
+    This Python FK uses a DIFFERENT (but equivalent) DH parameterization
+    from the C++ code. Both produce identical end-effector poses (T06).
+    
+    C++ (RobotModel.hpp):  Separate d per link, alpha signs: +π/2, 0, 0, +π/2, -π/2, 0
+    Python (here):         Combined d values (d1+d2, d3+d4, d5+d6), theta offsets (-π/2, -π/2, π)
+    
+    The Python grouping matches MATLAB FK_SSerial.m for visualization frame
+    consistency.  Collision geometry (COLLISION dict above) is defined in 
+    THIS FK's intermediate frames — do NOT change the DH table without also
+    updating all collision geometry local coordinates.
+    
+    DH Parameters (mm): d1=296.5, d2=336.2, d3=239.0, d4=158.5, d5=158.5, d6=134.5, a2=900.0, a3=941.5
     """
     # DH参数 (mm) - 与搜索脚本验证过的完全一致
     d1, d2, d3, d4, d5, d6 = 296.5, 336.2, 239.0, 158.5, 158.5, 134.5

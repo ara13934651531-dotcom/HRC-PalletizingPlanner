@@ -40,3 +40,8 @@ __pycache__/
 !docs/images/*.png
 !docs/images/*.jpg
 !docs/images/*.gif
+!data/sim3d/*.png
+!data/sim3d/*.jpg
+!data/sim3d/*.gif
+!image/**/*.png
+!image/**/*.jpg

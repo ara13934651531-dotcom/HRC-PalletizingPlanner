@@ -10,7 +10,7 @@
  * 
  * 目标: 路径最短 + 曲率平滑
  * 
- * @author GitHub Copilot
+ * @author Guangdong Huayan Robotics Co., Ltd.
  * @version 1.0.0
  * @date 2026-01-29
  */
@@ -185,7 +185,13 @@ public:
             JointVector v = next.q - prev.q;
             JointVector w = curr.q - prev.q;
             
-            double t = std::clamp(w.dot(v) / v.squaredNorm(), 0.0, 1.0);
+            double vSqNorm = v.squaredNorm();
+            if (vSqNorm < 1e-18) {
+                // prev ≈ next, 退化情况, 保留当前点
+                simplified.waypoints.push_back(path.waypoints[i]);
+                continue;
+            }
+            double t = std::clamp(w.dot(v) / vSqNorm, 0.0, 1.0);
             JointVector projection = prev.q + t * v;
             double dist = (curr.q - projection).norm();
             
@@ -307,7 +313,8 @@ public:
      * @brief 验证路径无碰撞
      */
     bool validatePath(const Path& path) const {
-        for (size_t i = 0; i < path.waypoints.size() - 1; ++i) {
+        if (path.waypoints.size() < 2) return true;  // 空路径或单点视为有效
+        for (size_t i = 0; i + 1 < path.waypoints.size(); ++i) {
             if (!checker_.isPathCollisionFree(
                     path.waypoints[i].config,
                     path.waypoints[i + 1].config,

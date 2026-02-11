@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 3.0.2)
-project(has_algorithm_export LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.14)
+project(HRC-PalletizingPlanner LANGUAGES CXX)
 
 add_compile_options(-fPIC)
 set(CMAKE_CXX_STANDARD 17)

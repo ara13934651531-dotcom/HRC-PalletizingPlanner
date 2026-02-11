@@ -138,10 +138,11 @@
 | **Types**                | `Types.hpp`                | 核心数据类型（JointConfig, Path, BSpline等） |
 | **RobotModel**           | `RobotModel.hpp`           | HR_S50-2000 运动学模型                       |
 | **CollisionChecker**     | `CollisionChecker.hpp`     | HRC碰撞检测封装                              |
-| **PathPlanner**          | `PathPlanner.hpp`          | Informed RRT* / BIT* 规划                    |
-| **PathOptimizer**        | `PathOptimizer.hpp`        | 捷径优化 + B-Spline平滑                      |
-| **TimeParameterization** | `TimeParameterization.hpp` | S曲线时间参数化                              |
+| **PathPlanner**          | `PathPlannerOptimized.hpp` | KD-Tree加速 Informed RRT* / BIT* 规划        |
+| **PathOptimizer**        | `PathOptimizerOptimized.hpp` | 捷径优化 + B-Spline平滑                    |
+| **TimeParameterization** | `TimeParameterizationOptimized.hpp` | S曲线时间参数化              |
 | **TaskSequencer**        | `TaskSequencer.hpp`        | TSP任务序列优化                              |
+| **HighPerformancePlanner** | `HighPerformancePlanner.hpp` | 高性能集成Pipeline                       |
 | **PalletizingPlanner**   | `PalletizingPlanner.hpp`   | 顶层API接口                                  |
 
 ---
@@ -182,7 +183,7 @@
 
 - **操作系统**: Linux (x86_64)
 - **编译器**: GCC 7+ (支持 C++17)
-- **CMake**: 3.10+
+- **CMake**: 3.14+
 - **Eigen3**: 线性代数库
 
 ### 构建步骤
@@ -367,11 +368,15 @@ python3 scripts/visualize_path.py path_data.csv
 
 ```
 X86_test/
-├── CMakeLists.txt              # 顶层构建配置
+├── CMakeLists.txt              # 顶层构建配置 (CMake 3.14+)
 ├── README.md                   # 本文档
+├── CHANGELOG.md                # 版本变更日志
+├── CONTRIBUTING.md             # 贡献指南
+├── LICENSE                     # MIT 许可证
 ├── .gitignore                  # Git忽略文件
 ├── .github/
-│   └── copilot-instructions.md # AI编程助手指南
+│   ├── copilot-instructions.md # AI编程助手指南
+│   └── workflows/ci.yml       # CI 构建配置
 │
 ├── HRCInterface/               # HRC碰撞检测库接口
 │   ├── algorithmLibInterface.h # 主接口 (50+ API函数)
@@ -379,21 +384,22 @@ X86_test/
 │   └── stack_utils.h           # 堆栈监控工具
 │
 ├── include/
-│   └── PalletizingPlanner/     # 运动规划系统头文件
+│   └── PalletizingPlanner/     # 运动规划系统头文件 (header-only)
 │       ├── Types.hpp           # 核心数据类型 (~450行)
 │       ├── RobotModel.hpp      # 机器人运动学 (~320行)
 │       ├── CollisionChecker.hpp# 碰撞检测封装 (~460行)
-│       ├── PathPlanner.hpp     # 路径规划算法 (~670行)
-│       ├── PathOptimizer.hpp   # 路径优化器 (~450行)
-│       ├── TimeParameterization.hpp # 时间参数化 (~425行)
-│       ├── TaskSequencer.hpp   # 任务序列优化 (~450行)
-│       ├── PalletizingPlanner.hpp   # 顶层接口 (~360行)
-│       │
-│       └── [优化版本]
-│           ├── PathPlannerOptimized.hpp
-│           ├── PathOptimizerOptimized.hpp
-│           ├── TimeParameterizationOptimized.hpp
-│           └── HighPerformancePlanner.hpp
+│       ├── CollisionCache.hpp  # FNV-1a + LRU碰撞缓存
+│       ├── KDTree.hpp          # 6D KD-Tree 最近邻搜索
+│       ├── PathPlanner.hpp     # 基础 Informed RRT* / BIT*
+│       ├── PathPlannerOptimized.hpp  # ★ KD-Tree+Cache优化规划器
+│       ├── PathOptimizer.hpp        # 基础路径优化器
+│       ├── PathOptimizerOptimized.hpp # ★ 优化版B-Spline平滑
+│       ├── TimeParameterization.hpp    # 基础时间参数化
+│       ├── TimeParameterizationOptimized.hpp # ★ 优化版S曲线
+│       ├── ParallelPathPlanner.hpp  # 并行规划器
+│       ├── HighPerformancePlanner.hpp # ★ 高性能集成Pipeline
+│       ├── TaskSequencer.hpp        # TSP任务序列优化
+│       └── PalletizingPlanner.hpp   # ★ 顶层API接口
 │
 ├── lib/                        # 预编译静态库
 │   ├── libHRCInterface.a       # HRC碰撞检测核心
@@ -402,11 +408,15 @@ X86_test/
 │
 ├── test/                       # 测试程序
 │   ├── CMakeLists.txt
-│   ├── testCollisionDetectionTime.cpp
-│   ├── testPalletizingPlanner.cpp
-│   ├── testHighPerformance.cpp
-│   ├── testPerformanceBenchmark.cpp
-│   └── testRobustnessValidation.cpp
+│   ├── testPalletizingPlanner.cpp    # 综合功能测试 (7子测试)
+│   ├── testHighPerformance.cpp       # 高性能规划器测试
+│   ├── testPerformanceBenchmark.cpp  # KD-Tree/缓存基准测试
+│   ├── testRobustnessValidation.cpp  # 鲁棒性验证 (1000+配置)
+│   └── testCollisionDetectionTime.cpp # 碰撞检测性能分析
+│
+├── examples/                   # 使用示例
+│   ├── basic_planning_example.cpp    # 基础点对点规划
+│   └── palletizing_example.cpp       # 码垛任务规划
 │
 ├── scripts/                    # Python可视化脚本
 │   ├── visualize_path.py       # 关节空间路径可视化
@@ -415,14 +425,12 @@ X86_test/
 │   └── visualize_palletizing.py# 码垛场景可视化
 │
 ├── ArmCollisionModel/          # MATLAB 碰撞可视化模块
-│   ├── RobotCollisionModel.m   # 核心类定义
+│   ├── @RobotCollisionModel/   # 核心碰撞模型类
 │   ├── testS50.m               # HR_S50 静态碰撞测试
 │   ├── testS50_Dynamic.m       # HR_S50 动态碰撞动画
-│   ├── testS50_Palletizing.m   # ★ 码垛工作站仿真 v7.0 (3箱连续)
+│   ├── testS50_Palletizing_v11.m # ★ 码垛工作站仿真 v7.0
 │   ├── testSSerial.m           # S系列机器人测试
-│   ├── testDynamic.m           # 通用动态测试
 │   ├── testElfin.m             # Elfin系列测试
-│   ├── dual_armRobotCollisionModel.m  # 双臂机器人
 │   ├── model/                  # URDF模型和碰撞配置
 │   │   ├── urdf/               # URDF描述文件
 │   │   ├── meshes/             # STL网格文件
@@ -430,8 +438,11 @@ X86_test/
 │   └── collisionVisual/        # 可视化辅助函数
 │
 ├── data/                       # 输出数据文件
+│   └── sim3d/                  # Python 3D可视化输出
 ├── docs/                       # 文档资源
-├── examples/                   # 使用示例
+│   ├── API.md                  # API参考文档
+│   ├── PROJECT_ANALYSIS.md     # 项目分析与改进计划
+│   └── ITERATION_PLAN.md       # 迭代开发计划
 ├── build/                      # 构建输出 (git忽略)
 └── bin/                        # 可执行文件 (git忽略)
 ```
@@ -880,6 +891,7 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 | 1.3.1 | 2026-01-30 | 添加动态碰撞动画、无头模式支持 |
 | 1.4.0 | 2026-02-04 | Python 3D 场景可视化、多模型对比 |
 | 2.0.0 | 2026-02-05 | ★ 码垛工作站仿真 v7.0: 3箱连续码垛演示, 传送带(-Y→+Y), 蓝色框架+托盘, 紧密码垛布局, 20帧完整流程, 0碰撞 |
+| 2.1.0 | 2026-02-09 | 代码质量全面升级: mt19937随机数、int32_t节点ID、关节限位采样、pruneTree实现、OptimizedPathPlanner集成、8段码垛路径、锁粒度优化、CMake 3.14、零编译警告 |
 
 ---
 
@@ -887,7 +899,7 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 
 **开发团队**: 广东华沿机器人有限公司 (Huayan Robotics)
 
-本项目由 **GitHub Copilot** 协助开发。
+本项目由广东华沿机器人有限公司研发团队开发。
 
 ### 贡献指南
 

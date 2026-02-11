@@ -5,7 +5,7 @@
  * 整合所有子模块，提供简洁的码垛任务规划接口。
  * 特别针对Pick-and-Place任务优化。
  * 
- * @author GitHub Copilot
+ * @author Guangdong Huayan Robotics Co., Ltd.
  * @version 1.0.0
  * @date 2026-01-29
  */
@@ -16,11 +16,13 @@
 #include "RobotModel.hpp"
 #include "CollisionChecker.hpp"
 #include "PathPlanner.hpp"
+#include "PathPlannerOptimized.hpp"
 #include "PathOptimizer.hpp"
 
 #include <memory>
 #include <vector>
 #include <functional>
+#include <fstream>
 
 namespace palletizing {
 
@@ -87,6 +89,12 @@ class PalletizingPlanner {
 public:
     using ProgressCallback = std::function<void(int current, int total, const std::string& status)>;
     
+    // 禁止复制和移动，避免内部引用悬空
+    PalletizingPlanner(const PalletizingPlanner&) = delete;
+    PalletizingPlanner& operator=(const PalletizingPlanner&) = delete;
+    PalletizingPlanner(PalletizingPlanner&&) = delete;
+    PalletizingPlanner& operator=(PalletizingPlanner&&) = delete;
+    
     /**
      * @brief 构造函数
      * @param robotParams 机器人参数
@@ -95,6 +103,7 @@ public:
         : robot_(robotParams),
           checker_(robot_),
           pathPlanner_(robot_, checker_),
+          optimizedPlanner_(robot_, checker_),
           optimizer_(robot_, checker_) {
     }
     
@@ -149,7 +158,7 @@ public:
         Path completePath;
         
         for (size_t i = 0; i < keyConfigs.size() - 1; ++i) {
-            PlanningResult segResult = pathPlanner_.plan(keyConfigs[i], keyConfigs[i + 1]);
+            PlanningResult segResult = optimizedPlanner_.plan(keyConfigs[i], keyConfigs[i + 1]);
             
             if (!segResult.isSuccess()) {
                 result.errorMessage = "Failed to plan segment " + std::to_string(i) + 
@@ -191,7 +200,7 @@ public:
      * @return 规划结果
      */
     PlanningResult planPointToPoint(const JointConfig& start, const JointConfig& goal) {
-        PlanningResult result = pathPlanner_.plan(start, goal);
+        PlanningResult result = optimizedPlanner_.plan(start, goal);
         
         if (result.isSuccess()) {
             result = optimizer_.optimize(result.rawPath);
@@ -226,7 +235,7 @@ public:
             PalletizingTask task = tasks[i];
             
             // 规划从当前位置到抓取位置的路径
-            PlanningResult toPickResult = pathPlanner_.plan(currentConfig, task.pickConfig);
+            PlanningResult toPickResult = optimizedPlanner_.plan(currentConfig, task.pickConfig);
             
             if (!toPickResult.isSuccess()) {
                 PalletizingResult failResult;
@@ -239,6 +248,18 @@ public:
             PalletizingResult taskResult = planPickAndPlace(task);
             
             if (taskResult.success) {
+                // 将到达抓取位置的路径合并到任务结果的接近路径前面
+                Path combinedPath;
+                for (const auto& wp : toPickResult.rawPath.waypoints) {
+                    combinedPath.waypoints.push_back(wp);
+                }
+                // 避免重复第一个点
+                for (size_t j = 1; j < taskResult.completePath.waypoints.size(); ++j) {
+                    combinedPath.waypoints.push_back(taskResult.completePath.waypoints[j]);
+                }
+                taskResult.completePath = combinedPath;
+                taskResult.approachPath = toPickResult.rawPath;
+                
                 currentConfig = task.placeConfig;
             }
             
@@ -273,7 +294,10 @@ public:
      */
     void savePathToFile(const Path& path, const std::string& filename) const {
         std::ofstream file(filename);
-        if (!file.is_open()) return;
+        if (!file.is_open()) {
+            std::cerr << "[PalletizingPlanner] 无法打开文件: " << filename << "\n";
+            return;
+        }
         
         file << "# Palletizing Path\n";
         file << "# Format: q1 q2 q3 q4 q5 q6 (radians)\n";
@@ -322,31 +346,76 @@ public:
 private:
     /**
      * @brief 生成关键配置点序列
+     * 
+     * 生成完整的8段码垛路径关键点:
+     * 1. 抓取预位置 (接近偏移)
+     * 2. 抓取位置
+     * 3. 抓取后提升位置 (安全高度)
+     * 4. 转移路径中间点 (高安全高度)
+     * 5. 放置预位置上方 (安全高度)
+     * 6. 放置预位置 (接近偏移)
+     * 7. 放置位置
+     * 8. 撤退位置 (安全高度)
      */
     std::vector<JointConfig> generateKeyConfigs(const PalletizingTask& task) {
         std::vector<JointConfig> configs;
         
-        // 简化版: 直接使用给定的抓取和放置配置
-        // 完整版应该包含接近点、安全高度点等
+        // 计算抓取和放置位姿的FK末端位置，用于生成中间路径点
+        Pose6D pickPose = robot_.forwardKinematics(task.pickConfig);
+        Pose6D placePose = robot_.forwardKinematics(task.placeConfig);
         
-        // 1. 当前位置 (如果有)
-        // 2. 抓取预位置
-        // 3. 抓取位置
-        // 4. 抓取后提升位置
-        // 5. 转移路径中间点
-        // 6. 放置预位置
-        // 7. 放置位置
-        // 8. 撤退位置
+        // 利用位姿偏移生成接近/撤退配置
+        // 使用简化的沿Z轴偏移方式 (适用于顶部接近的码垛场景)
+        auto offsetConfig = [&](const JointConfig& baseConfig, double zOffset) -> JointConfig {
+            // 通过微调J5关节实现近似Z方向偏移
+            // 注: 精确的笛卡尔偏移需要IK, 这里使用关节空间近似
+            JointConfig offset = baseConfig;
+            // J2和J3协同调整实现竖直方向偏移
+            double adjustAngle = std::atan2(zOffset, robot_.getParams().a2 / 1000.0);
+            offset.q[1] -= adjustAngle;  // J2向上抬
+            offset.q[2] += adjustAngle * 0.5;  // J3补偿
+            return robot_.clampToLimits(offset);
+        };
         
+        double approachH = task.approachOffset;
+        double safeH = task.safeHeight;
+        
+        // 1. 抓取预位置 (从上方接近, 偏移approachOffset)
+        configs.push_back(offsetConfig(task.pickConfig, approachH));
+        
+        // 2. 抓取位置
         configs.push_back(task.pickConfig);
+        
+        // 3. 抓取后提升到安全高度
+        configs.push_back(offsetConfig(task.pickConfig, safeH));
+        
+        // 4. 转移路径中间点 (在安全高度平面上的线性插值中点)
+        JointConfig midTransfer;
+        JointConfig liftPick = offsetConfig(task.pickConfig, safeH);
+        JointConfig liftPlace = offsetConfig(task.placeConfig, safeH);
+        midTransfer.q = 0.5 * (liftPick.q + liftPlace.q);
+        midTransfer = robot_.clampToLimits(midTransfer);
+        configs.push_back(midTransfer);
+        
+        // 5. 放置上方安全高度
+        configs.push_back(offsetConfig(task.placeConfig, safeH));
+        
+        // 6. 放置预位置 (从上方接近)
+        configs.push_back(offsetConfig(task.placeConfig, approachH));
+        
+        // 7. 放置位置
         configs.push_back(task.placeConfig);
+        
+        // 8. 撤退位置 (提升到安全高度)
+        configs.push_back(offsetConfig(task.placeConfig, safeH));
         
         return configs;
     }
     
     RobotModel robot_;
     CollisionChecker checker_;
-    PathPlanner pathPlanner_;
+    PathPlanner pathPlanner_;           // 基础规划器 (备用)
+    OptimizedPathPlanner optimizedPlanner_;  // 高性能规划器 (默认)
     PathOptimizer optimizer_;
     
     SceneConfig scene_;

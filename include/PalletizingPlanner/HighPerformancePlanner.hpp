@@ -16,7 +16,7 @@
  * - 复杂场景: < 1 s
  * - 极端场景: < 5 s
  * 
- * @author GitHub Copilot
+ * @author Guangdong Huayan Robotics Co., Ltd.
  * @version 2.0.0 - World-Class Performance
  * @date 2026-01-29
  */

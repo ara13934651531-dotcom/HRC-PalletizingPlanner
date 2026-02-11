@@ -7,7 +7,7 @@
  * - 路径和轨迹数据结构
  * - 规划器配置参数
  * 
- * @author GitHub Copilot
+ * @author Guangdong Huayan Robotics Co., Ltd.
  * @version 1.0.0
  * @date 2026-01-29
  */
@@ -93,6 +93,7 @@ struct JointConfig {
     JointConfig() : q(JointVector::Zero()) {}
     explicit JointConfig(const JointVector& joints) : q(joints) {}
     JointConfig(std::initializer_list<double> list) {
+        q = JointVector::Zero();  // 确保未赋值的关节初始化为0
         int i = 0;
         for (double val : list) {
             if (i < 6) q[i++] = val;
@@ -244,8 +245,9 @@ struct BSpline {
         
         for (int r = 1; r <= degree; ++r) {
             for (int j = degree; j >= r; --j) {
-                double alpha = (t - knotVector[k - degree + j]) / 
-                              (knotVector[k + 1 + j - r] - knotVector[k - degree + j]);
+                double denom = knotVector[k + 1 + j - r] - knotVector[k - degree + j];
+                double alpha = (denom < 1e-12) ? 0.0 :
+                              (t - knotVector[k - degree + j]) / denom;
                 d[j] = (1.0 - alpha) * d[j - 1] + alpha * d[j];
             }
         }
@@ -259,15 +261,36 @@ struct BSpline {
         
         double h = 1e-6;
         if (order == 1) {
-            auto p1 = evaluate(std::min(t + h, 1.0));
-            auto p0 = evaluate(std::max(t - h, 0.0));
-            return (p1.q - p0.q) / (2 * h);
+            // 边界处使用前向/后向差分，内部使用中心差分
+            if (t <= h) {
+                auto p1 = evaluate(t + h);
+                auto p0 = evaluate(t);
+                return (p1.q - p0.q) / h;
+            } else if (t >= 1.0 - h) {
+                auto p1 = evaluate(t);
+                auto p0 = evaluate(t - h);
+                return (p1.q - p0.q) / h;
+            } else {
+                auto p1 = evaluate(t + h);
+                auto p0 = evaluate(t - h);
+                return (p1.q - p0.q) / (2 * h);
+            }
         }
         
         // 高阶导数递归
-        auto d1 = derivative(std::min(t + h, 1.0), order - 1);
-        auto d0 = derivative(std::max(t - h, 0.0), order - 1);
-        return (d1 - d0) / (2 * h);
+        if (t <= h) {
+            auto d1 = derivative(t + h, order - 1);
+            auto d0 = derivative(t, order - 1);
+            return (d1 - d0) / h;
+        } else if (t >= 1.0 - h) {
+            auto d1 = derivative(t, order - 1);
+            auto d0 = derivative(t - h, order - 1);
+            return (d1 - d0) / h;
+        } else {
+            auto d1 = derivative(t + h, order - 1);
+            auto d0 = derivative(t - h, order - 1);
+            return (d1 - d0) / (2 * h);
+        }
     }
     
     /// 计算曲率 (用于评估平滑度)
@@ -288,6 +311,13 @@ struct BSpline {
     /// 采样曲线
     Path sample(int numPoints) const {
         Path path;
+        if (numPoints <= 0) return path;
+        if (numPoints == 1) {
+            Waypoint wp(evaluate(0.5));
+            wp.pathParam = 0.5;
+            path.waypoints.push_back(wp);
+            return path;
+        }
         path.waypoints.reserve(numPoints);
         
         for (int i = 0; i < numPoints; ++i) {
@@ -311,16 +341,16 @@ enum class PlannerType {
     RRTStar,       // RRT* (渐进最优)
     InformedRRTStar,  // Informed RRT* (椭球采样)
     BITStar,       // Batch Informed Trees
-    LazyPRM,       // 延迟概率路线图
-    ABITStar       // Advanced BIT*
+    LazyPRM,       // 延迟概率路线图 [未实现 - 预留]
+    ABITStar       // Advanced BIT* [未实现 - 预留]
 };
 
 /// 路径优化器类型
 enum class OptimizerType {
     Shortcut,        // 捷径优化
     BSplineSmooth,   // B-Spline平滑
-    STOMP,           // 随机轨迹优化
-    CHOMP,           // 协变哈密顿优化
+    STOMP,           // 随机轨迹优化 [未实现 - 预留]
+    CHOMP,           // 协变哈密顿优化 [未实现 - 预留]
     Hybrid           // 混合优化
 };
 
@@ -394,6 +424,7 @@ struct PlanningResult {
     int nodesExplored = 0;          // 探索节点数
     double pathLength = 0.0;        // 最终路径长度
     double maxCurvature = 0.0;      // 最大曲率
+    std::string errorMessage;         // 错误描述信息
     
     bool isSuccess() const { return status == PlanningStatus::Success; }
     
@@ -420,9 +451,8 @@ namespace utils {
 
 /// 角度归一化到 [-π, π]
 inline double normalizeAngle(double angle) {
-    while (angle > M_PI) angle -= 2 * M_PI;
-    while (angle < -M_PI) angle += 2 * M_PI;
-    return angle;
+    // 使用std::remainder避免极大角度导致的无限循环
+    return std::remainder(angle, 2.0 * M_PI);
 }
 
 /// 关节角归一化

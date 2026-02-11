@@ -7,7 +7,7 @@
  * 2. 多层码垛模式生成
  * 3. 任务执行状态管理
  * 
- * @author GitHub Copilot
+ * @author Guangdong Huayan Robotics Co., Ltd.
  * @version 1.0.0
  * @date 2026-01-29
  */
@@ -233,10 +233,17 @@ private:
         int a = (i == 0) ? 0 : order[i - 1] + 1;
         int b = order[i] + 1;
         int c = order[j] + 1;
-        int d = (j == n - 1) ? 0 : order[j + 1] + 1;  // 回到起点或下一个
+        // 开放路径模式: j==n-1时无后继边, 不计算回路
+        if (j == n - 1) {
+            // 仅比较前半段变化
+            double before = dist[a][b];
+            double after = dist[a][c];
+            return after - before;
+        }
+        int d_next = order[j + 1] + 1;
         
-        double before = dist[a][b] + dist[c][d];
-        double after = dist[a][c] + dist[b][d];
+        double before = dist[a][b] + dist[c][d_next];
+        double after = dist[a][c] + dist[b][d_next];
         
         return after - before;
     }
@@ -288,12 +295,12 @@ public:
             double theta = std::atan2(positions_[i].pose.position.y(),
                                       positions_[i].pose.position.x());
             task.placeConfig = JointConfig::fromDegrees({
-                theta * 180 / M_PI,
-                -45 - positions_[i].layer * 5,
-                30,
-                0,
-                -75 + positions_[i].layer * 5,
-                theta * 180 / M_PI
+                theta * 180.0 / M_PI,
+                -45.0 - static_cast<double>(positions_[i].layer) * 5.0,
+                30.0,
+                0.0,
+                -75.0 + static_cast<double>(positions_[i].layer) * 5.0,
+                theta * 180.0 / M_PI
             });
             
             tasks.push_back(task);

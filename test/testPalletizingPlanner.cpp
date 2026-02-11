@@ -263,7 +263,7 @@ void testPathPlanner() {
         printPlanningStats(result);
         
         // 保存原始路径
-        savePathForVisualization(result.rawPath, "raw_path.txt");
+        savePathForVisualization(result.rawPath, "data/raw_path.txt");
     } else {
         std::cout << COLOR_RED << "✗ 规划失败: " << result.statusString() << COLOR_RESET << "\n";
     }
@@ -330,9 +330,9 @@ void testPathOptimizer() {
     std::cout << "  最大曲率: " << std::setprecision(6) << optResult.maxCurvature << "\n";
     
     // 保存可视化数据
-    savePathForVisualization(planResult.rawPath, "path_raw.txt");
-    savePathForVisualization(optResult.optimizedPath, "path_optimized.txt");
-    saveBSplineForVisualization(optResult.smoothedSpline, "path_spline.txt");
+    savePathForVisualization(planResult.rawPath, "data/path_raw.txt");
+    savePathForVisualization(optResult.optimizedPath, "data/path_optimized.txt");
+    saveBSplineForVisualization(optResult.smoothedSpline, "data/path_spline.txt");
 }
 
 /**
@@ -397,8 +397,8 @@ void testFullPalletizing() {
         std::cout << "  最大曲率: " << result.maxCurvature << "\n";
         
         // 保存结果
-        planner.savePathToFile(result.completePath, "palletizing_path.txt");
-        planner.saveSplineToFile(result.smoothedSpline, "palletizing_spline.txt");
+        planner.savePathToFile(result.completePath, "data/palletizing_path.txt");
+        planner.saveSplineToFile(result.smoothedSpline, "data/palletizing_spline.txt");
     } else {
         std::cout << COLOR_RED << "✗ 规划失败: " << result.errorMessage << COLOR_RESET << "\n";
     }
@@ -567,7 +567,7 @@ void testTimeParameterization() {
               << COLOR_RESET << "\n";
     
     // 保存轨迹
-    std::ofstream file("trajectory.txt");
+    std::ofstream file("data/trajectory.txt");
     if (file.is_open()) {
         file << "# Trajectory with time\n";
         file << "# Format: time q1 q2 q3 q4 q5 q6 v1 v2 v3 v4 v5 v6 (rad, rad/s)\n";
@@ -625,12 +625,12 @@ int main(int argc, char** argv) {
     
     printSeparator("所有测试完成");
     std::cout << "\n生成的文件:\n";
-    std::cout << "  - raw_path.txt          原始规划路径\n";
-    std::cout << "  - path_raw.txt          优化前路径\n";
-    std::cout << "  - path_optimized.txt    优化后路径\n";
-    std::cout << "  - path_spline.txt       B-Spline采样路径\n";
-    std::cout << "  - palletizing_path.txt  码垛任务路径\n";
-    std::cout << "  - palletizing_spline.txt 码垛B-Spline路径\n";
+    std::cout << "  - data/raw_path.txt          原始规划路径\n";
+    std::cout << "  - data/path_raw.txt          优化前路径\n";
+    std::cout << "  - data/path_optimized.txt    优化后路径\n";
+    std::cout << "  - data/path_spline.txt       B-Spline采样路径\n";
+    std::cout << "  - data/palletizing_path.txt  码垛任务路径\n";
+    std::cout << "  - data/palletizing_spline.txt 码垛B-Spline路径\n";
     std::cout << "\n";
     
     return 0;

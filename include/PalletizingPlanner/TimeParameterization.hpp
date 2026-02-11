@@ -9,7 +9,7 @@
  * 
  * 设计目标：为后续时间最优轨迹规划预留接口
  * 
- * @author GitHub Copilot
+ * @author Guangdong Huayan Robotics Co., Ltd.
  * @version 1.0.0
  * @date 2026-01-29
  */
@@ -94,14 +94,14 @@ enum class VelocityProfileType {
 struct TimeParameterizationConfig {
     VelocityProfileType profileType = VelocityProfileType::SCurve;
     
-    // 速度限制 (rad/s)
-    JointVector maxVelocity;
+    // 速度限制 (rad/s) - 默认安全值避免未初始化
+    JointVector maxVelocity = (JointVector() << 2.0, 2.0, 2.0, 3.0, 3.0, 3.0).finished();
     
     // 加速度限制 (rad/s^2)
-    JointVector maxAcceleration;
+    JointVector maxAcceleration = (JointVector() << 5.0, 5.0, 5.0, 8.0, 8.0, 8.0).finished();
     
     // Jerk限制 (rad/s^3) - 用于S曲线
-    JointVector maxJerk;
+    JointVector maxJerk = (JointVector() << 50.0, 50.0, 50.0, 80.0, 80.0, 80.0).finished();
     
     // 速度缩放因子 [0, 1]
     double velocityScaling = 0.8;
@@ -310,6 +310,11 @@ private:
                 
                 segmentTime = std::max(segmentTime, t_joint);
             }
+            
+            // 五次多项式 smootherStep 的峰值速度因子为 1.875 (ds/dτ在τ=0.5处=30/16)
+            // S曲线计算的时间假设峰值速度=v_max, 但实际插值峰值=1.875*Δq/T
+            // 需要放大segmentTime以确保实际插值不超限
+            segmentTime *= 1.875;
             
             segmentTime = std::max(segmentTime, 0.001);
             

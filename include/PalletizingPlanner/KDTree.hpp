@@ -8,7 +8,7 @@
  * - 支持6维关节空间
  * - 缓存友好的内存布局
  * 
- * @author GitHub Copilot
+ * @author Guangdong Huayan Robotics Co., Ltd.
  * @version 1.0.0
  * @date 2026-01-29
  */

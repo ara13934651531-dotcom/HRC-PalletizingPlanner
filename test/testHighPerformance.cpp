@@ -462,7 +462,7 @@ void testHighPerformancePlanner() {
         result.performance.print();
         
         // 保存结果
-        std::ofstream trajFile("high_perf_trajectory.txt");
+        std::ofstream trajFile("data/high_perf_trajectory.txt");
         if (trajFile.is_open()) {
             trajFile << "# High Performance Trajectory\n";
             trajFile << "# time q1 q2 q3 q4 q5 q6 (rad)\n";

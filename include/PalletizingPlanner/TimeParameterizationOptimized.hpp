@@ -8,7 +8,7 @@
  * - 增量式计算
  * - 缓存优化
  * 
- * @author GitHub Copilot
+ * @author Guangdong Huayan Robotics Co., Ltd.
  * @version 2.0.0 - Performance Optimized
  * @date 2026-01-29
  */

@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 3.0.2)
-project(testHansAlgorithm)
+cmake_minimum_required(VERSION 3.14)
+project(HRC-PalletizingPlanner-Tests)
 
 add_compile_options(-fPIC)
 
@@ -79,4 +79,32 @@ target_link_libraries(testRobustnessValidation
   stdc++
   m
   pthread
+)
+
+# ============================================================================
+# Examples
+# ============================================================================
+
+# 基础规划示例
+add_executable(basicPlanningExample
+  ${CMAKE_SOURCE_DIR}/examples/basic_planning_example.cpp
+)
+target_link_libraries(basicPlanningExample
+  libHRCInterface.a
+  libCmpAgu.a
+  libhansKinematics.a
+  stdc++
+  m
+)
+
+# 码垛示例
+add_executable(palletizingExample
+  ${CMAKE_SOURCE_DIR}/examples/palletizing_example.cpp
+)
+target_link_libraries(palletizingExample
+  libHRCInterface.a
+  libCmpAgu.a
+  libhansKinematics.a
+  stdc++
+  m
 )

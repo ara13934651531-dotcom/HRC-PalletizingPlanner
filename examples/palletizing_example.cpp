@@ -59,14 +59,27 @@ int main() {
     }
 
     // 3. 使用 TSP 优化任务序列
-    std::cout << "🔄 优化任务序列 (TSP + 2-opt)...\n";
-    TaskSequencer sequencer;
-    auto optimizedSequence = sequencer.optimizeSequence(placePoints);
+    std::cout << "🔄 优化码垛任务序列...\n";
+    
+    // 构建PalletizingTask列表
+    std::vector<PalletizingTask> tasks;
+    for (int i = 0; i < 9; ++i) {
+        PalletizingTask task;
+        task.taskId = i;
+        task.pickConfig = pickPoints[i];
+        task.placeConfig = placePoints[i];
+        task.description = "Task " + std::to_string(i + 1);
+        tasks.push_back(task);
+    }
+    
+    TaskSequencer sequencer(planner);
+    JointConfig homeConfig = JointConfig::fromDegrees({0, -60, 45, 0, -75, 0});
+    auto optimizedTasks = sequencer.optimizeSequence(tasks, homeConfig);
     
     std::cout << "   优化后顺序: ";
-    for (size_t i = 0; i < optimizedSequence.size(); ++i) {
-        std::cout << optimizedSequence[i] + 1;
-        if (i < optimizedSequence.size() - 1) std::cout << " → ";
+    for (size_t i = 0; i < optimizedTasks.size(); ++i) {
+        std::cout << optimizedTasks[i].taskId + 1;
+        if (i < optimizedTasks.size() - 1) std::cout << " → ";
     }
     std::cout << "\n\n";
 
@@ -77,15 +90,15 @@ int main() {
     int successCount = 0;
     double totalTime = 0.0;
 
-    for (size_t i = 0; i < 3; ++i) {  // 演示前3个任务
-        size_t taskIdx = optimizedSequence[i];
+    for (size_t i = 0; i < 3 && i < optimizedTasks.size(); ++i) {  // 演示前3个任务
+        const auto& task = optimizedTasks[i];
         
         auto startTime = std::chrono::high_resolution_clock::now();
         
         // 规划 取料点 → 放料点
         PlanningResult result = planner.planPointToPoint(
-            pickPoints[taskIdx], 
-            placePoints[taskIdx]
+            task.pickConfig, 
+            task.placeConfig
         );
         
         auto endTime = std::chrono::high_resolution_clock::now();
@@ -94,11 +107,11 @@ int main() {
 
         if (result.isSuccess()) {
             successCount++;
-            std::cout << "   ✅ 任务 " << taskIdx + 1 << ": " 
+            std::cout << "   ✅ 任务 " << task.taskId + 1 << ": " 
                       << std::fixed << std::setprecision(1) << planTime << " ms, "
                       << result.optimizedPath.size() << " 路径点\n";
         } else {
-            std::cout << "   ❌ 任务 " << taskIdx + 1 << ": 规划失败\n";
+            std::cout << "   ❌ 任务 " << task.taskId + 1 << ": 规划失败\n";
         }
     }
 

@@ -8,7 +8,7 @@
  * - LRU淘汰策略
  * - 线程安全选项
  * 
- * @author GitHub Copilot
+ * @author Guangdong Huayan Robotics Co., Ltd.
  * @version 1.0.0
  * @date 2026-01-29
  */
@@ -39,9 +39,9 @@ struct CollisionCacheKey {
  */
 struct CollisionCacheKeyHash {
     size_t operator()(const CollisionCacheKey& key) const {
-        size_t hash = 0;
+        // FNV-1a 哈希 (正确的offset basis)
+        size_t hash = 14695981039346656037ULL;
         for (int i = 0; i < 6; ++i) {
-            // FNV-1a 哈希
             hash ^= static_cast<size_t>(key.discreteQ[i]);
             hash *= 0x100000001b3ULL;
         }
@@ -194,6 +194,10 @@ public:
     void clear() {
         if (config_.threadSafe) {
             std::lock_guard<std::mutex> lock(mutex_);
+            cache_.clear();
+            lruList_.clear();
+            stats_ = CacheStats();
+            return;
         }
         cache_.clear();
         lruList_.clear();
@@ -224,8 +228,9 @@ private:
         CollisionCacheKey key;
         double invRes = 1.0 / config_.resolution;
         for (int i = 0; i < 6; ++i) {
-            // 离散化到分辨率网格
-            key.discreteQ[i] = static_cast<int64_t>(std::floor(q.q[i] * invRes + 0.5));
+            // 将内部弧度转换为度后再离散化到分辨率网格
+            double deg = q.q[i] * 180.0 / M_PI;
+            key.discreteQ[i] = static_cast<int64_t>(std::floor(deg * invRes + 0.5));
         }
         return key;
     }

@@ -14,7 +14,7 @@
  *   - 分离自碰撞距离与环境碰撞距离
  *   - 新增 CollisionReport 详细碰撞报告
  * 
- * @author GitHub Copilot
+ * @author Guangdong Huayan Robotics Co., Ltd.
  * @version 2.0.0
  * @date 2026-02-05
  */
@@ -314,10 +314,12 @@ public:
             enableLinkWallCollision(true, true, true);
         }
         
-        // 设置场景障碍物
-        setupSceneObstacles(scene);
-        
+        // ★ 先标记初始化完成，再设置障碍物（内部方法需要此标志）
         initialized_ = true;
+        
+        // 设置场景障碍物（使用无锁内部版本，避免死锁）
+        setupSceneObstaclesInternal(scene);
+        
         return true;
     }
     
@@ -480,18 +482,24 @@ public:
      * @param end 目标配置
      * @param resolution 检测分辨率 [rad]
      * @return true如果整段路径无碰撞
+     * 
+     * 使用单次锁覆盖整段路径检测，避免逐点加锁的开销
      */
     bool isPathCollisionFree(const JointConfig& start, const JointConfig& end,
                              double resolution = 0.02) const {
+        if (!initialized_) return false;
+        
         double dist = start.distanceTo(end);
         int numChecks = static_cast<int>(std::ceil(dist / resolution)) + 1;
         numChecks = std::max(numChecks, 2);
+        
+        std::lock_guard<std::mutex> lock(mutex_);
         
         for (int i = 0; i <= numChecks; ++i) {
             double t = static_cast<double>(i) / numChecks;
             JointConfig interpolated = robot_.interpolate(start, end, t);
             
-            if (!isCollisionFree(interpolated)) {
+            if (!isCollisionFreeUnlocked(interpolated)) {
                 return false;
             }
         }
@@ -741,9 +749,97 @@ public:
     
 private:
     /**
-     * @brief 设置场景中的所有障碍物
+     * @brief 无锁版碰撞检测 (供已持有锁的方法内部调用)
+     * @param config 关节配置
+     * @return true如果无碰撞
      */
-    void setupSceneObstacles(const SceneConfig& scene) {
+    bool isCollisionFreeUnlocked(const JointConfig& config) const {
+        if (!robot_.isWithinLimits(config)) {
+            return false;
+        }
+        
+        RTS_IEC_LREAL jointPos[6], jointVel[6] = {0};
+        for (int i = 0; i < 6; ++i) {
+            jointPos[i] = config.q[i] * 180.0 / M_PI;
+        }
+        
+        updateACAreaConstrainPackageInterface(jointPos, jointVel);
+        
+        RTS_IEC_LINT colliderPair[2];
+        RTS_IEC_LREAL selfDistance;
+        RTS_BOOL selfCollision = checkCPSelfCollisionInterface(colliderPair, &selfDistance);
+        
+        if (selfCollision) return false;
+        if (selfDistance < safetyMargin_) return false;
+        
+        RTS_IEC_INT areaList[13] = {0};
+        RTS_IEC_BOOL tcpAllOutside = getACTCPInAreaListInterface(areaList);
+        
+        return static_cast<bool>(tcpAllOutside);
+    }
+    
+    /**
+     * @brief 添加OBB障碍物 (无锁内部版本, 供initialize调用)
+     */
+    bool addObstacleInternal(const OBBObstacle& obstacle) {
+        if (obstacle.id < 8 || obstacle.id > 12) return false;
+        
+        MC_COORD_REF pose;
+        pose.X = obstacle.pose.position.x() * 1000.0;
+        pose.Y = obstacle.pose.position.y() * 1000.0;
+        pose.Z = obstacle.pose.position.z() * 1000.0;
+        
+        Eigen::Vector3d euler = obstacle.pose.orientation.toRotationMatrix().eulerAngles(2, 1, 0);
+        pose.A = euler[2] * 180.0 / M_PI;
+        pose.B = euler[1] * 180.0 / M_PI;
+        pose.C = euler[0] * 180.0 / M_PI;
+        
+        RTS_IEC_LREAL lwh[3] = {
+            obstacle.lwh.x() * 1000.0,
+            obstacle.lwh.y() * 1000.0,
+            obstacle.lwh.z() * 1000.0
+        };
+        
+        RTS_IEC_INT result = addACOrientedBoundingBoxAreaDefindLWHInterface(
+            pose, lwh, obstacle.id
+        );
+        
+        if (result >= 0) {
+            obstacles_[obstacle.id] = obstacle;
+            return true;
+        }
+        return false;
+    }
+    
+    /**
+     * @brief 添加安全平面 (无锁内部版本, 供initialize调用)
+     */
+    bool addSafePlaneInternal(const SafePlane& plane) {
+        if (plane.id < 0 || plane.id > 7) return false;
+        
+        MC_COORD_REF pose;
+        pose.X = plane.pose.position.x() * 1000.0;
+        pose.Y = plane.pose.position.y() * 1000.0;
+        pose.Z = plane.pose.position.z() * 1000.0;
+        
+        Eigen::Vector3d euler = plane.pose.orientation.toRotationMatrix().eulerAngles(2, 1, 0);
+        pose.A = euler[2] * 180.0 / M_PI;
+        pose.B = euler[1] * 180.0 / M_PI;
+        pose.C = euler[0] * 180.0 / M_PI;
+        
+        RTS_IEC_INT result = addACHalfPlaneAreaInterface(pose, plane.id);
+        
+        if (result >= 0) {
+            safePlanes_[plane.id] = plane;
+            return true;
+        }
+        return false;
+    }
+    
+    /**
+     * @brief 设置场景中的所有障碍物 (无锁内部版本, 供initialize调用)
+     */
+    void setupSceneObstaclesInternal(const SceneConfig& scene) {
         int obbId = 8;
         
         // 添加集装箱区域作为OBB
@@ -756,7 +852,7 @@ private:
             obs.lwh = Eigen::Vector3d(pallet.length, pallet.width, pallet.height);
             obs.name = "PalletZone";
             
-            addObstacle(obs);
+            addObstacleInternal(obs);
         }
         
         // 添加流水线
@@ -771,12 +867,12 @@ private:
             );
             belt.name = "Conveyor";
             
-            addObstacle(belt);
+            addObstacleInternal(belt);
         }
         
         // 添加安全平面
         for (const auto& plane : scene.safePlanes) {
-            addSafePlane(plane);
+            addSafePlaneInternal(plane);
         }
     }
     
@@ -787,8 +883,8 @@ private:
     std::unordered_map<int, SafePlane> safePlanes_;
     
     double safetyMargin_ = 0.01;  // 默认1cm安全余量
-    bool initialized_;
-    bool linkWallEnabled_;        // v2.0: 连杆-虚拟墙检测状态
+    bool initialized_ = false;    // 确保默认为false
+    bool linkWallEnabled_ = false; // v2.0: 连杆-虚拟墙检测状态
     
     mutable std::mutex mutex_;
 };
