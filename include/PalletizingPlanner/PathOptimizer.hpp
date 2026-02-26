@@ -443,7 +443,7 @@ public:
      */
     BSpline fitWithCurvatureOptimization(const std::vector<JointConfig>& points,
                                           int numControlPoints,
-                                          double curvatureWeight = 0.1) {
+                                          [[maybe_unused]] double curvatureWeight = 0.1) {
         // 首先进行最小二乘拟合
         BSpline spline = fitLeastSquares(points, numControlPoints);
         

@@ -105,10 +105,10 @@ def load_path(filename):
     return np.array(data) if data else None
 
 def compute_tcp_path(joint_path):
-    """计算TCP轨迹"""
+    """计算TCP轨迹 (输入已是弧度, 无需再次转换)"""
     tcp_positions = []
-    for q_deg in joint_path:
-        q_rad = np.radians(q_deg)
+    for q_rad in joint_path:
+        # 数据文件存储的是弧度(rad), 直接使用
         positions = forward_kinematics(q_rad)
         tcp_positions.append(positions[-1])  # TCP位置
     return np.array(tcp_positions)

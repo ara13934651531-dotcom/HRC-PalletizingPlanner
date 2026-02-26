@@ -10,6 +10,7 @@
 #include <string>
 #include <iomanip>
 #include <cstdint>  // 新增：用于uintptr_t类型
+#include <cinttypes>  // PRIu64 / SCNu64
 
 // -------------------------- 新增：精确堆栈统计（字节单位） --------------------------
 static uintptr_t initial_stack_ptr = 0;  // 主线程栈底基准（程序启动时记录）
@@ -110,7 +111,7 @@ double getCpuUsage() {
     uint64_t totalUser, totalUserLow, totalSys, totalIdle, total;
 
     file = fopen("/proc/stat", "r");
-    fscanf(file, "cpu %llu %llu %llu %llu", &totalUser, &totalUserLow,
+    fscanf(file, "cpu %" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNu64, &totalUser, &totalUserLow,
            &totalSys, &totalIdle);
     fclose(file);
 
@@ -178,14 +179,14 @@ int main()
     // 1. 初始化栈基准（程序最开始调用，确保栈使用量最小，统计最准确）
     init_stack_benchmark();
 
-    // 2. 机器人模型初始化（保留原逻辑）
-    RTS_IEC_INT robType = 0;  // 设置为 Elfin机器人类型
-    RTS_IEC_LREAL dh[8] = {0.220, 0.420, 0.1565, 0.380};  // DH参数
-    RTS_IEC_LREAL baseGeometry[7] = {0.00, 0.00, 0.02, 0.00, 0.00, 0.23, 0.11};    // 基座几何参数
-    RTS_IEC_LREAL lowerArmGeometry[7] = {0.00, 0.00, 0.22, 0.85, 0.00, 0.22, 0.11};// 下臂几何参数
-    RTS_IEC_LREAL elbowGeometry[7] = {-0.01, 0.00, 0.06, 0.71, 0.00, 0.06, 0.08};  // 肘部几何参数
-    RTS_IEC_LREAL upperArmGeometry[7] = {0.00, 0.00, -0.05, 0.00, 0.00, 0.10, 0.05};// 上臂几何参数
-    RTS_IEC_LREAL wristGeometry[4] = {0.00, 0.00, 0.02, 0.10};  // 腕部几何参数
+    // 2. 机器人模型初始化 (HR_S50-2000)
+    RTS_IEC_INT robType = 1;  // S-Serial (HR_S50-2000)
+    RTS_IEC_LREAL dh[8] = {296.5, 336.2, 239.0, 158.5, 158.5, 134.5, 900.0, 941.5};  // DH参数 (mm)
+    RTS_IEC_LREAL baseGeometry[7]     = {0, 0, 20,  0, 0, 330,   160};   // 基座胶囊体
+    RTS_IEC_LREAL lowerArmGeometry[7] = {0, 0, 340, 900, 0, 340,  140};  // 下臂胶囊体
+    RTS_IEC_LREAL elbowGeometry[7]    = {-10, 0, 60, 941.5, 0, 60, 120}; // 肘部胶囊体
+    RTS_IEC_LREAL upperArmGeometry[7] = {0, 0, -50, 0, 0, 100,    100};  // 上臂胶囊体
+    RTS_IEC_LREAL wristGeometry[4]    = {0, 0, 20,  140};                 // 腕部球体
     RTS_IEC_LREAL jointPos[6] = {0.00, 0.00, 0.00, 0.00, 0.00, 0.00};  // 初始关节位置
     
     // 初始化碰撞检测包
@@ -214,7 +215,7 @@ int main()
     for (int i = 0; i < 100000; i++) {
         // 更新关节位置和速度，执行自碰撞检测
         updateACAreaConstrainPackageInterface(jointPos, jointVelocity);
-        RTS_BOOL ret = checkCPSelfCollisionInterface(colliderPair, &distance);
+        (void)checkCPSelfCollisionInterface(colliderPair, &distance);
         
         // 每2次迭代输出资源监控结果（避免输出过于频繁）
         if (i % 10000 == 0) {

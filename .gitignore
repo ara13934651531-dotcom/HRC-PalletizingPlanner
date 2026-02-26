@@ -30,6 +30,27 @@ __pycache__/
 *.pyo
 .pytest_cache/
 
+# 数据输出 (运行时生成, 不应提交)
+data/*.txt
+data/*.csv
+*.mat
+data/collision_viz/
+data/test_audit/
+!data/.gitkeep
+
+# MATLAB 图片输出
+ArmCollisionModel/pic/
+ArmCollisionModel/deprecated/
+
+# 弃用测试
+test/deprecated/
+
+# 大型二进制归档
+*.zip
+
+# 实验性目录
+ArmCollisionModelaa/
+
 # 可视化输出
 *.png
 *.jpg

@@ -1,4 +1,0 @@
-# Scene Obstacles for Visualization
-# Format: type name x y z rx ry rz l w h
-OBB pallet_cage -700 300 0 0 0 0 1200 1000 2200
-OBB conveyor 500 -400 0 0 0 0 800 600 450

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.14)
 project(HRC-PalletizingPlanner LANGUAGES CXX)
 
-add_compile_options(-fPIC)
+add_compile_options(-fPIC -Wall -Wextra -Wno-unused-parameter -Wno-attributes)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)

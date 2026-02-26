@@ -595,9 +595,9 @@ private:
             }
             
             // 添加新节点
-            int16_t newNodeId = static_cast<int16_t>(nodes_.size());
+            int32_t newNodeId = static_cast<int32_t>(nodes_.size());
             OptimizedRRTNode newNode(newNodeId, qNew);
-            newNode.parentId = static_cast<int16_t>(bestParent);
+            newNode.parentId = static_cast<int32_t>(bestParent);
             newNode.costFromStart = static_cast<float>(bestCost);
             newNode.validEdge = bestEdgeValidated ? 1 : 0;
             nodes_.push_back(newNode);
@@ -839,8 +839,8 @@ private:
         path.updatePathParameters();
         
         auto end = std::chrono::high_resolution_clock::now();
-        // stats_ is mutable for timing
-        const_cast<PlannerPerformanceStats&>(stats_).pathExtractionTime = 
+        // stats_ is mutable, direct access is safe
+        stats_.pathExtractionTime = 
             std::chrono::duration<double>(end - start).count();
         
         return path;

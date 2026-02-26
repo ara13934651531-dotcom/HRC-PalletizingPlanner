@@ -15,7 +15,6 @@
 #include "Types.hpp"
 #include "RobotModel.hpp"
 #include "CollisionChecker.hpp"
-#include "PathPlanner.hpp"
 #include "PathPlannerOptimized.hpp"
 #include "PathOptimizer.hpp"
 
@@ -102,7 +101,6 @@ public:
     explicit PalletizingPlanner(const RobotDHParams& robotParams = RobotDHParams::fromHRConfig())
         : robot_(robotParams),
           checker_(robot_),
-          pathPlanner_(robot_, checker_),
           optimizedPlanner_(robot_, checker_),
           optimizer_(robot_, checker_) {
     }
@@ -122,7 +120,6 @@ public:
      */
     void setConfig(const PlannerConfig& config) {
         config_ = config;
-        pathPlanner_.setConfig(config);
     }
     
     /**
@@ -361,11 +358,7 @@ private:
         std::vector<JointConfig> configs;
         
         // 计算抓取和放置位姿的FK末端位置，用于生成中间路径点
-        Pose6D pickPose = robot_.forwardKinematics(task.pickConfig);
-        Pose6D placePose = robot_.forwardKinematics(task.placeConfig);
-        
-        // 利用位姿偏移生成接近/撤退配置
-        // 使用简化的沿Z轴偏移方式 (适用于顶部接近的码垛场景)
+        // (注: 精确的笛卡尔偏移需IK, 这里使用关节空间近似)
         auto offsetConfig = [&](const JointConfig& baseConfig, double zOffset) -> JointConfig {
             // 通过微调J5关节实现近似Z方向偏移
             // 注: 精确的笛卡尔偏移需要IK, 这里使用关节空间近似
@@ -414,7 +407,6 @@ private:
     
     RobotModel robot_;
     CollisionChecker checker_;
-    PathPlanner pathPlanner_;           // 基础规划器 (备用)
     OptimizedPathPlanner optimizedPlanner_;  // 高性能规划器 (默认)
     PathOptimizer optimizer_;
     

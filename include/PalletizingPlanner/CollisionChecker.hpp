@@ -23,6 +23,7 @@
 
 #include "Types.hpp"
 #include "RobotModel.hpp"
+#include "CollisionGeometry.hpp"
 
 // HRC碰撞检测库接口
 extern "C" {
@@ -289,15 +290,19 @@ public:
         // S系列机器人 (type = 1)
         RTS_IEC_INT robType = 1;
         
-        // 连杆碰撞几何 (基于S50_collision.json实际参数, mm)
+        // 连杆碰撞几何 (统一参数来自 CollisionGeometry.hpp)
         // 胶囊体格式: [start_x, start_y, start_z, end_x, end_y, end_z, radius]
-        RTS_IEC_LREAL baseGeometry[7]     = {0, 0, 30,  0, 0, 336.2, 130};
-        RTS_IEC_LREAL lowerArmGeometry[7] = {0, 0, 280, 900, 0, 280, 130};
-        RTS_IEC_LREAL elbowGeometry[7]    = {-20, 0, 80, 941.5, 0, 80, 100};
-        RTS_IEC_LREAL upperArmGeometry[7] = {0, 0, -60, 0, 0, 120, 60};
+        RTS_IEC_LREAL baseGeometry[7], lowerArmGeometry[7], elbowGeometry[7], upperArmGeometry[7];
+        for (int i = 0; i < 7; i++) {
+            baseGeometry[i]     = S50CollisionGeometry::baseCapsule[i];
+            lowerArmGeometry[i] = S50CollisionGeometry::lowerArmCapsule[i];
+            elbowGeometry[i]    = S50CollisionGeometry::elbowCapsule[i];
+            upperArmGeometry[i] = S50CollisionGeometry::upperArmCapsule[i];
+        }
         
         // 腕部球体: [x, y, z, radius] (mm)
-        RTS_IEC_LREAL wristGeometry[4] = {0, 0, 30, 120};
+        RTS_IEC_LREAL wristGeometry[4];
+        for (int i = 0; i < 4; i++) wristGeometry[i] = S50CollisionGeometry::wristBall[i];
         
         // 初始关节位置 (deg)
         RTS_IEC_LREAL jointPos[6] = {0, 0, 0, 0, 0, 0};
@@ -608,7 +613,11 @@ public:
      */
     bool addObstacle(const OBBObstacle& obstacle) {
         if (!initialized_) return false;
-        if (obstacle.id < 8 || obstacle.id > 12) return false;
+        if (obstacle.id < 8 || obstacle.id > 12) {
+            fprintf(stderr, "[CollisionChecker] WARNING: OBB ID %d 超出范围 [8,12], "
+                    "HRC 库最多支持 5 个 OBB 障碍物\n", obstacle.id);
+            return false;
+        }
         
         std::lock_guard<std::mutex> lock(mutex_);
         

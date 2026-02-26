@@ -195,6 +195,18 @@ public:
             result.status = PlanningStatus::CollisionAtGoal;
             return result;
         }
+
+        // 相同起终点快速返回，避免不必要采样求解
+        if (start.distanceTo(goal) < 1e-8) {
+            result.rawPath.waypoints = {Waypoint(start), Waypoint(goal)};
+            result.rawPath.updatePathParameters();
+            result.status = PlanningStatus::Success;
+            result.planningTime = std::chrono::duration<double>(
+                std::chrono::high_resolution_clock::now() - startTime).count();
+            result.iterations = 0;
+            result.nodesExplored = 1;
+            return result;
+        }
         
         // 选择规划算法
         Path rawPath;

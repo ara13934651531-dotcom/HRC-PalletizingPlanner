@@ -292,7 +292,7 @@ public:
      */
     Path optimize(const Path& inputPath) {
         stats_.reset();
-        auto totalStart = std::chrono::high_resolution_clock::now();
+        [[maybe_unused]] auto totalStart = std::chrono::high_resolution_clock::now();
         
         if (inputPath.waypoints.size() < 2) {
             return inputPath;

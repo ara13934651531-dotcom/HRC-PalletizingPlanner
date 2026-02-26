@@ -23,7 +23,7 @@ namespace palletizing {
  * @brief HR-S50机器人DH参数和运动学配置
  */
 struct RobotDHParams {
-    // DH参数 (单位: mm, 在使用时转换为m)ara
+    // DH参数 (单位: mm, 在使用时转换为m)
 
     double d1 = 296.5;   // 基座到肩关节 (Joint1偏移)
     double d2 = 336.2;   // 肩部横向偏移 (Joint2偏移)

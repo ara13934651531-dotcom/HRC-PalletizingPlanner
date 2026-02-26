@@ -22,6 +22,8 @@
 #include <numeric>
 #include <fstream>
 #include <sstream>
+#include <unistd.h>
+#include <fcntl.h>
 
 #include "PalletizingPlanner/Types.hpp"
 #include "PalletizingPlanner/RobotModel.hpp"
@@ -93,12 +95,41 @@ struct TestStatistics {
 // ============================================================================
 class RobustnessValidator {
 private:
+    class ScopedStdoutSilencer {
+    public:
+        explicit ScopedStdoutSilencer(bool enable = true) : enabled_(enable) {
+            if (!enabled_) return;
+            fflush(stdout);
+            savedFd_ = dup(STDOUT_FILENO);
+            nullFd_ = open("/dev/null", O_WRONLY);
+            if (savedFd_ >= 0 && nullFd_ >= 0) {
+                dup2(nullFd_, STDOUT_FILENO);
+            } else {
+                enabled_ = false;
+            }
+        }
+        ~ScopedStdoutSilencer() {
+            if (!enabled_) return;
+            fflush(stdout);
+            if (savedFd_ >= 0) {
+                dup2(savedFd_, STDOUT_FILENO);
+                close(savedFd_);
+            }
+            if (nullFd_ >= 0) close(nullFd_);
+        }
+    private:
+        bool enabled_ = false;
+        int savedFd_ = -1;
+        int nullFd_ = -1;
+    };
+
     std::mt19937 rng_;
     RobotModel robot_;
     std::unique_ptr<CollisionChecker> collisionChecker_;
     std::unique_ptr<PathPlanner> planner_;
     std::unique_ptr<PathOptimizer> optimizer_;
     bool initialized_ = false;
+    bool silenceInnerLoopStdout_ = true;
     
     JointVector jointMin_;
     JointVector jointMax_;
@@ -113,7 +144,10 @@ public:
     bool initialize() {
         // 初始化碰撞检测
         collisionChecker_ = std::make_unique<CollisionChecker>(robot_);
-        SceneConfig scene = SceneConfig::defaultPalletizing();
+        // 鲁棒性验证使用最小场景，避免场景约束掩盖规划器本体性能
+        SceneConfig scene;
+        scene.platformHeight = 0.0;
+        scene.robotBasePose = Pose6D();
         if (!collisionChecker_->initialize(scene)) {
             std::cerr << "Failed to initialize collision checker\n";
             return false;
@@ -121,9 +155,11 @@ public:
         
         // 初始化规划器
         PlannerConfig plannerConfig;
-        plannerConfig.maxIterations = 5000;
+        plannerConfig.maxIterations = 2000;
+        plannerConfig.maxPlanningTime = 0.8;
         plannerConfig.goalBias = 0.1;
         plannerConfig.stepSize = 0.1;
+        plannerConfig.shortcutIterations = 60;
         plannerConfig.plannerType = PlannerType::InformedRRTStar;
         
         planner_ = std::make_unique<PathPlanner>(robot_, *collisionChecker_, plannerConfig);
@@ -176,25 +212,43 @@ public:
                 return false;
             }
         }
-        return collisionChecker_->isCollisionFree(config);
+        {
+            ScopedStdoutSilencer silencer(silenceInnerLoopStdout_);
+            return collisionChecker_->isCollisionFree(config);
+        }
     }
     
-    // 生成有效的随机配置对
-    std::pair<JointConfig, JointConfig> generateValidPair() {
-        JointConfig start, goal;
-        int maxAttempts = 100;
-        
-        for (int i = 0; i < maxAttempts; i++) {
-            start = generateRandomConfig();
-            if (isConfigValid(start)) break;
+    bool sampleValidConfig(JointConfig& config, int maxAttempts = 200) {
+        for (int i = 0; i < maxAttempts; ++i) {
+            JointConfig candidate = generateRandomConfig();
+            if (isConfigValid(candidate)) {
+                config = candidate;
+                return true;
+            }
         }
-        
-        for (int i = 0; i < maxAttempts; i++) {
-            goal = generateRandomConfig();
-            if (isConfigValid(goal)) break;
+        return false;
+    }
+
+    bool sampleValidBoundaryConfig(JointConfig& config, double margin = 0.05, int maxAttempts = 200) {
+        for (int i = 0; i < maxAttempts; ++i) {
+            JointConfig candidate = generateBoundaryConfig(margin);
+            if (isConfigValid(candidate)) {
+                config = candidate;
+                return true;
+            }
         }
-        
-        return {start, goal};
+        return false;
+    }
+
+    // 生成有效的随机配置对（带距离约束）
+    bool generateValidPair(JointConfig& start, JointConfig& goal,
+                          int maxAttempts = 400, double minDistance = 0.10) {
+        for (int i = 0; i < maxAttempts; ++i) {
+            if (!sampleValidConfig(start, 80)) continue;
+            if (!sampleValidConfig(goal, 80)) continue;
+            if (start.distanceTo(goal) >= minDistance) return true;
+        }
+        return false;
     }
     
     // 计算路径长度
@@ -209,6 +263,7 @@ public:
     
     // 验证路径无碰撞
     bool verifyPathCollisionFree(const Path& path, double resolution = 0.01) {
+        ScopedStdoutSilencer silencer(silenceInnerLoopStdout_);
         for (size_t i = 0; i < path.waypoints.size() - 1; i++) {
             double dist = path.waypoints[i].config.distanceTo(path.waypoints[i+1].config);
             int steps = std::max(2, static_cast<int>(std::ceil(dist / resolution)));
@@ -264,7 +319,11 @@ public:
         
         auto t1 = std::chrono::high_resolution_clock::now();
         
-        PlanningResult planResult = planner_->plan(start, goal);
+        PlanningResult planResult;
+        {
+            ScopedStdoutSilencer silencer(silenceInnerLoopStdout_);
+            planResult = planner_->plan(start, goal);
+        }
         
         auto t2 = std::chrono::high_resolution_clock::now();
         result.planTime = std::chrono::duration<double, std::milli>(t2 - t1).count();
@@ -275,7 +334,11 @@ public:
         }
         
         // 优化路径
-        PlanningResult optimizedResult = optimizer_->optimize(planResult.rawPath);
+        PlanningResult optimizedResult;
+        {
+            ScopedStdoutSilencer silencer(silenceInnerLoopStdout_);
+            optimizedResult = optimizer_->optimize(planResult.rawPath);
+        }
         
         // 验证路径
         result.pathLength = computePathLength(optimizedResult.optimizedPath);
@@ -301,7 +364,11 @@ public:
         stats.testName = "Random Configurations";
         
         for (int i = 0; i < numTests; i++) {
-            auto [start, goal] = generateValidPair();
+            JointConfig start, goal;
+            if (!generateValidPair(start, goal)) {
+                stats.recordFailure("Test " + std::to_string(i) + ": Failed to sample valid start/goal");
+                continue;
+            }
             auto result = planAndValidate(start, goal);
             
             if (result.success) {
@@ -321,11 +388,9 @@ public:
         stats.testName = "Boundary Conditions";
         
         for (int i = 0; i < numTests; i++) {
-            JointConfig start = generateBoundaryConfig(0.02);  // 2%边界
-            JointConfig goal = generateBoundaryConfig(0.02);
-            
-            // 确保起点终点有效
-            if (!isConfigValid(start) || !isConfigValid(goal)) {
+            JointConfig start, goal;
+            if (!sampleValidBoundaryConfig(start, 0.02) || !sampleValidBoundaryConfig(goal, 0.02)) {
+                stats.recordFailure("Boundary test " + std::to_string(i) + ": Failed to sample valid boundary config");
                 continue;
             }
             
@@ -350,17 +415,30 @@ public:
         std::uniform_real_distribution<double> noiseDist(-0.05, 0.05);
         
         for (int i = 0; i < numTests; i++) {
-            JointConfig start = generateRandomConfig();
-            if (!isConfigValid(start)) continue;
-            
-            // 生成接近起点的终点
-            JointVector goalJoints = start.q;
-            for (int j = 0; j < 6; j++) {
-                goalJoints[j] += noiseDist(rng_);
+            JointConfig start;
+            if (!sampleValidConfig(start)) {
+                stats.recordFailure("Short distance test " + std::to_string(i) + ": Failed to sample valid start");
+                continue;
             }
-            JointConfig goal(goalJoints);
-            
-            if (!isConfigValid(goal)) continue;
+
+            JointConfig goal;
+            bool foundGoal = false;
+            for (int attempt = 0; attempt < 80; ++attempt) {
+                JointVector goalJoints = start.q;
+                for (int j = 0; j < 6; j++) {
+                    goalJoints[j] += noiseDist(rng_);
+                }
+                JointConfig candidate(goalJoints);
+                if (isConfigValid(candidate)) {
+                    goal = candidate;
+                    foundGoal = true;
+                    break;
+                }
+            }
+            if (!foundGoal) {
+                stats.recordFailure("Short distance test " + std::to_string(i) + ": Failed to sample nearby valid goal");
+                continue;
+            }
             
             auto result = planAndValidate(start, goal);
             
@@ -381,11 +459,18 @@ public:
         stats.testName = "Same Start/Goal";
         
         for (int i = 0; i < numTests; i++) {
-            JointConfig config = generateRandomConfig();
-            if (!isConfigValid(config)) continue;
+            JointConfig config;
+            if (!sampleValidConfig(config)) {
+                stats.recordFailure("Same start/goal test " + std::to_string(i) + ": Failed to sample valid config");
+                continue;
+            }
             
             auto t1 = std::chrono::high_resolution_clock::now();
-            PlanningResult planResult = planner_->plan(config, config);
+            PlanningResult planResult;
+            {
+                ScopedStdoutSilencer silencer(silenceInnerLoopStdout_);
+                planResult = planner_->plan(config, config);
+            }
             auto t2 = std::chrono::high_resolution_clock::now();
             double time = std::chrono::duration<double, std::milli>(t2 - t1).count();
             
@@ -425,7 +510,13 @@ public:
             JointConfig start(startJoints);
             JointConfig goal(goalJoints);
             
-            if (!isConfigValid(start) || !isConfigValid(goal)) continue;
+            if (!isConfigValid(start) || !isConfigValid(goal)) {
+                bool sampled = generateValidPair(start, goal, 120, 0.40);
+                if (!sampled) {
+                    stats.recordFailure("Large motion test " + std::to_string(i) + ": Failed to sample valid large-motion pair");
+                    continue;
+                }
+            }
             
             auto result = planAndValidate(start, goal);
             
@@ -473,12 +564,22 @@ public:
             }
             JointConfig start(startJoints);
             
-            JointConfig goal = generateRandomConfig();
-            
-            if (!isConfigValid(start)) {
-                start = generateRandomConfig();
+            JointConfig goal;
+            if (!sampleValidConfig(goal)) {
+                stats.recordFailure("Singularity test " + std::to_string(i) + ": Failed to sample valid goal");
+                continue;
             }
-            if (!isConfigValid(start) || !isConfigValid(goal)) continue;
+
+            if (!isConfigValid(start)) {
+                if (!sampleValidConfig(start)) {
+                    stats.recordFailure("Singularity test " + std::to_string(i) + ": Failed to sample valid start");
+                    continue;
+                }
+            }
+            if (!isConfigValid(start) || !isConfigValid(goal)) {
+                stats.recordFailure("Singularity test " + std::to_string(i) + ": Invalid start/goal after sampling");
+                continue;
+            }
             
             auto result = planAndValidate(start, goal);
             
@@ -499,10 +600,17 @@ public:
         stats.testName = "Continuous Planning (Stress)";
         
         JointConfig current = JointConfig::fromDegrees({0, -45, 45, 0, -45, 0});
+        if (!isConfigValid(current) && !sampleValidConfig(current)) {
+            stats.recordFailure("Continuous planning: Failed to get initial valid config");
+            return stats;
+        }
         
         for (int i = 0; i < numTests; i++) {
-            JointConfig next = generateRandomConfig();
-            if (!isConfigValid(next)) continue;
+            JointConfig next;
+            if (!sampleValidConfig(next)) {
+                stats.recordFailure("Continuous test " + std::to_string(i) + ": Failed to sample next valid config");
+                continue;
+            }
             
             auto result = planAndValidate(current, next);
             
@@ -537,7 +645,12 @@ public:
             JointConfig start(startJoints);
             JointConfig goal(goalJoints);
             
-            if (!isConfigValid(start) || !isConfigValid(goal)) continue;
+            if (!isConfigValid(start) || !isConfigValid(goal)) {
+                if (!generateValidPair(start, goal, 100, 0.05)) {
+                    stats.recordFailure("Numerical test " + std::to_string(i) + ": Failed to sample valid pair");
+                    continue;
+                }
+            }
             
             auto result = planAndValidate(start, goal);
             
@@ -558,7 +671,11 @@ public:
         stats.testName = "Path Quality Consistency";
         
         for (int i = 0; i < numTests; i++) {
-            auto [start, goal] = generateValidPair();
+            JointConfig start, goal;
+            if (!generateValidPair(start, goal)) {
+                stats.recordFailure("Path consistency test " + std::to_string(i) + ": Failed to sample valid pair");
+                continue;
+            }
             
             // 对同一对起点终点规划多次
             std::vector<double> pathLengths;
@@ -607,15 +724,30 @@ public:
         stats.testName = "B-Spline Smoothing Quality";
         
         for (int i = 0; i < numTests; i++) {
-            auto [start, goal] = generateValidPair();
+            JointConfig start, goal;
+            if (!generateValidPair(start, goal)) {
+                stats.recordFailure("B-Spline test " + std::to_string(i) + ": Failed to sample valid pair");
+                continue;
+            }
             
-            PlanningResult planResult = planner_->plan(start, goal);
-            if (!planResult.isSuccess() || planResult.rawPath.waypoints.size() < 4) continue;
+            PlanningResult planResult;
+            {
+                ScopedStdoutSilencer silencer(silenceInnerLoopStdout_);
+                planResult = planner_->plan(start, goal);
+            }
+            if (!planResult.isSuccess() || planResult.rawPath.waypoints.size() < 4) {
+                stats.recordFailure("B-Spline test " + std::to_string(i) + ": Planning failed or path too short");
+                continue;
+            }
             
             auto t1 = std::chrono::high_resolution_clock::now();
             
             // 优化并获取B-Spline
-            PlanningResult optimizedResult = optimizer_->optimize(planResult.rawPath);
+            PlanningResult optimizedResult;
+            {
+                ScopedStdoutSilencer silencer(silenceInnerLoopStdout_);
+                optimizedResult = optimizer_->optimize(planResult.rawPath);
+            }
             BSpline spline = optimizedResult.smoothedSpline;
             
             auto t2 = std::chrono::high_resolution_clock::now();
@@ -662,12 +794,27 @@ public:
         TimeParameterizer parameterizer(tpConfig);
         
         for (int i = 0; i < numTests; i++) {
-            auto [start, goal] = generateValidPair();
+            JointConfig start, goal;
+            if (!generateValidPair(start, goal)) {
+                stats.recordFailure("Time param test " + std::to_string(i) + ": Failed to sample valid pair");
+                continue;
+            }
             
-            PlanningResult planResult = planner_->plan(start, goal);
-            if (!planResult.isSuccess() || planResult.rawPath.waypoints.size() < 3) continue;
+            PlanningResult planResult;
+            {
+                ScopedStdoutSilencer silencer(silenceInnerLoopStdout_);
+                planResult = planner_->plan(start, goal);
+            }
+            if (!planResult.isSuccess() || planResult.rawPath.waypoints.size() < 3) {
+                stats.recordFailure("Time param test " + std::to_string(i) + ": Planning failed or path too short");
+                continue;
+            }
             
-            PlanningResult optimizedResult = optimizer_->optimize(planResult.rawPath);
+            PlanningResult optimizedResult;
+            {
+                ScopedStdoutSilencer silencer(silenceInnerLoopStdout_);
+                optimizedResult = optimizer_->optimize(planResult.rawPath);
+            }
             
             auto t1 = std::chrono::high_resolution_clock::now();
             Trajectory trajectory = parameterizer.parameterize(optimizedResult.optimizedPath);
@@ -712,7 +859,11 @@ public:
             JointConfig config = generateRandomConfig();
             
             auto t1 = std::chrono::high_resolution_clock::now();
-            bool isFree = collisionChecker_->isCollisionFree(config);
+            bool isFree = false;
+            {
+                ScopedStdoutSilencer silencer(silenceInnerLoopStdout_);
+                isFree = collisionChecker_->isCollisionFree(config);
+            }
             auto t2 = std::chrono::high_resolution_clock::now();
             double time = std::chrono::duration<double, std::milli>(t2 - t1).count();
             
