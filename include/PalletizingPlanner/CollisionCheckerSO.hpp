@@ -541,7 +541,7 @@ public:
         if (!initialized_ || !addEnvBall_) return false;
         std::lock_guard<std::mutex> lock(mutex_);
         SO_LREAL c[3] = {center_mm.x(), center_mm.y(), center_mm.z()};
-        return addEnvBall_(id, c, radius_mm) >= 0;
+        return addEnvBall_(id, c, radius_mm) == 0;
     }
     
     bool addEnvObstacleCapsule(int id, const Eigen::Vector3d& start_mm,
@@ -550,13 +550,13 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         SO_LREAL s[3] = {start_mm.x(), start_mm.y(), start_mm.z()};
         SO_LREAL e[3] = {end_mm.x(), end_mm.y(), end_mm.z()};
-        return addEnvCapsule_(id, s, e, radius_mm) >= 0;
+        return addEnvCapsule_(id, s, e, radius_mm) == 0;
     }
     
     bool removeEnvObstacle(int id) {
         if (!initialized_ || !removeEnv_) return false;
         std::lock_guard<std::mutex> lock(mutex_);
-        return removeEnv_(id) >= 0;
+        return removeEnv_(id) == 0;
     }
     
     void setLinkEnvCollisionEnabled(bool flags[7]) {

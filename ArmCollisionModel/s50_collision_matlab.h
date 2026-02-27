@@ -109,7 +109,7 @@ extern void forwardKinematics2(
  * @return 0=成功
  */
 extern SO_INT setCPToolCollisionBallShapeInterface(
-    SO_DINT   toolIndex,
+    SO_LINT   toolIndex,
     SO_LREAL  offset[3],
     SO_LREAL  radius);
 
@@ -122,7 +122,7 @@ extern SO_INT setCPToolCollisionBallShapeInterface(
  * @return 0=成功
  */
 extern SO_INT setCPToolCollisonCapsuleShapeInterface(
-    SO_DINT   toolIndex,
+    SO_LINT   toolIndex,
     SO_LREAL  startPt[3],
     SO_LREAL  endPt[3],
     SO_LREAL  radius);
@@ -132,7 +132,7 @@ extern SO_INT setCPToolCollisonCapsuleShapeInterface(
  * @param toolIndex 工具索引
  * @return 0=成功
  */
-extern SO_INT removeCPToolCollisonInterface(SO_DINT toolIndex);
+extern SO_INT removeCPToolCollisonInterface(SO_LINT toolIndex);
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  环境障碍物接口
@@ -146,7 +146,7 @@ extern SO_INT removeCPToolCollisonInterface(SO_DINT toolIndex);
  * @return 0=成功
  */
 extern SO_INT addEnvObstacleBallInterface(
-    SO_DINT   envId,
+    SO_LINT   envId,
     SO_LREAL  center[3],
     SO_LREAL  radius);
 
@@ -159,7 +159,7 @@ extern SO_INT addEnvObstacleBallInterface(
  * @return 0=成功
  */
 extern SO_INT addEnvObstacleCapsuleInterface(
-    SO_DINT   envId,
+    SO_LINT   envId,
     SO_LREAL  startPt[3],
     SO_LREAL  endPt[3],
     SO_LREAL  radius);
@@ -169,7 +169,7 @@ extern SO_INT addEnvObstacleCapsuleInterface(
  * @param envId 障碍物ID
  * @return 0=成功
  */
-extern SO_INT removeEnvObstacleInterface(SO_DINT envId);
+extern SO_INT removeEnvObstacleInterface(SO_LINT envId);
 
 /**
  * @brief 设置各连杆环境碰撞检测开关

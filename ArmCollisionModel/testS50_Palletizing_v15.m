@@ -297,13 +297,13 @@ try
     calllib('libHRCInterface', 'setLinkEnvCollisionEnabledInterface', linkEnvFlags);
     fprintf('    连杆-环境碰撞: 7/7 已开启\n');
     
-    % 框架立柱 (envId 30-33, 胶囊体, 匹配C++ frmIds)
+    % 框架立柱 (envId 1-4, 胶囊体, 匹配C++ frmIds)
     for ci = 1:size(ENV_COLL.frameColumns, 1)
         fc = ENV_COLL.frameColumns(ci,:);
         startPt = [fc(1), fc(2), fc(3)] * 1000;  % m→mm
         endPt   = [fc(1), fc(2), fc(4)] * 1000;
         r_mm    = fc(5) * 1000;
-        envId   = int32(29 + ci);  % envId 30,31,32,33
+        envId   = int64(ci);  % envId 1,2,3,4
         result  = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', envId, startPt, endPt, r_mm);
         envRegOK = envRegOK + (result == 0);
         fprintf('    框架柱 envId=%d: %s (r=%.0fmm)\n', envId, soStat{(result==0)+1}, r_mm);
@@ -315,7 +315,7 @@ try
         startPt = [tb(1), tb(2), tb(3)] * 1000;
         endPt   = [tb(4), tb(5), tb(6)] * 1000;
         r_mm    = tb(7) * 1000;
-        envId   = int32(19 + ci);  % envId 20,21
+        envId   = int64(19 + ci);  % envId 20,21
         result  = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', envId, startPt, endPt, r_mm);
         envRegOK = envRegOK + (result == 0);
         fprintf('    框架顶梁 envId=%d: %s\n', envId, soStat{(result==0)+1});
@@ -327,7 +327,7 @@ try
         startPt = [sp(1), sp(2), sp(3)] * 1000;
         endPt   = [sp(4), sp(5), sp(6)] * 1000;
         r_mm    = sp(7) * 1000;
-        envId   = int32(21 + ci);  % envId 22,23
+        envId   = int64(21 + ci);  % envId 22,23
         result  = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', envId, startPt, endPt, r_mm);
         envRegOK = envRegOK + (result == 0);
         fprintf('    框架侧挡板 envId=%d: %s\n', envId, soStat{(result==0)+1});
@@ -339,7 +339,7 @@ try
         startPt = [cc(1), cc(2), cc(3)] * 1000;
         endPt   = [cc(4), cc(5), cc(6)] * 1000;
         r_mm    = cc(7) * 1000;
-        envId   = int32(9 + ci);  % envId 10,11,12,13
+        envId   = int64(9 + ci);  % envId 10,11,12,13
         result  = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', envId, startPt, endPt, r_mm);
         envRegOK = envRegOK + (result == 0);
         fprintf('    电箱 envId=%d: %s\n', envId, soStat{(result==0)+1});
@@ -351,7 +351,7 @@ try
         startPt = [cv(1), cv(2), cv(3)] * 1000;
         endPt   = [cv(4), cv(5), cv(6)] * 1000;
         r_mm    = cv(7) * 1000;
-        envId   = int32(14 + ci);  % envId 15,16,17
+        envId   = int64(14 + ci);  % envId 15,16,17
         result  = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', envId, startPt, endPt, r_mm);
         envRegOK = envRegOK + (result == 0);
         fprintf('    传送带 envId=%d: %s\n', envId, soStat{(result==0)+1});
@@ -600,10 +600,14 @@ so_pall_dist = nan(nPall,1);
 so_pall_tcp  = nan(nPall,6);
 so_pall_tcpAxis = nan(nPall,3);
 
+% 提前计算task→box映射 (扫描和动画都需要)
+scanBoxForTask = min((1:nTasks)', nBoxes);
+
 if soLoaded
     tScan = tic;
     scanCount = 0;
     scanPrevTask = -1; scanPrevSeg = -1; scanToolActive = false;
+    scanLastTcp_mm = [0 0 0];  % 记录seg5末TCP位置作为placed box中心
     for ri = 1:SCAN_STRIDE:nPall
         q_deg = pall_raw(ri, 4:9);
         vel   = pall_raw(ri, 10:15);
@@ -613,19 +617,19 @@ if soLoaded
         curTask = pall_raw(ri, 1); curSeg = pall_raw(ri, 2);
         if curTask ~= scanPrevTask || curSeg ~= scanPrevSeg
             tidx = find(pall_tasks == curTask, 1);
-            if ~isempty(tidx), bi = boxForTask(tidx); else, bi = 0; end
-            if curSeg == 2 && ~scanToolActive && bi > 0 && bi <= nBoxes
+            if ~isempty(tidx), sbi = scanBoxForTask(tidx); else, sbi = 0; end
+            if curSeg == 2 && ~scanToolActive && sbi > 0 && sbi <= nBoxes
                 calllib('libHRCInterface', 'setCPToolCollisionBallShapeInterface', ...
-                    int32(6), [0, 0, -box.hz/2*1000], 225.0);
+                    int64(6), [0, 0, -box.hz/2*1000], 225.0);
                 scanToolActive = true;
             end
             if curSeg == 6 && scanToolActive
-                calllib('libHRCInterface', 'removeCPToolCollisonInterface', int32(6));
+                calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(6));
                 scanToolActive = false;
-                if bi > 0 && bi <= nBoxes
-                    boxCenter_mm = placePos(bi,:) * 1000;
+                % 使用上一步FK2 TCP位置(m→mm)作为placed box center
+                if sbi > 0 && sbi <= nBoxes
                     calllib('libHRCInterface', 'addEnvObstacleBallInterface', ...
-                        int32(33 + bi), boxCenter_mm, 250.0);
+                        int64(45 + sbi), scanLastTcp_mm, 250.0);
                 end
             end
             scanPrevTask = curTask; scanPrevSeg = curSeg;
@@ -640,6 +644,7 @@ if soLoaded
         tcpS.X=0; tcpS.Y=0; tcpS.Z=0; tcpS.A=0; tcpS.B=0; tcpS.C=0;
         [~, tcpS] = calllib('libHRCInterface', 'forwardKinematics2', q_deg, tcpS);
         so_pall_tcp(ri,:) = [tcpS.X, tcpS.Y, tcpS.Z, tcpS.A, tcpS.B, tcpS.C];
+        scanLastTcp_mm = [tcpS.X*1000, tcpS.Y*1000, tcpS.Z*1000];  % 记录TCP用于placed box
         
         % TCP Z轴: 从FK2 A,B,C (ZYX Euler deg) 计算 (避免混用urdfFK)
         % R = Rz(A)*Ry(B)*Rx(C), Z-axis = R*[0;0;1]
@@ -655,11 +660,11 @@ if soLoaded
     end
     % 扫描结束后清理工具碰撞球 (确保后续操作干净)
     if scanToolActive
-        calllib('libHRCInterface', 'removeCPToolCollisonInterface', int32(6));
+        calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(6));
     end
     % 清除扫描时添加的已放置箱子障碍 (后续动画会重新管理)
     for bi2 = 1:nBoxes
-        calllib('libHRCInterface', 'removeEnvObstacleInterface', int32(33 + bi2));
+        calllib('libHRCInterface', 'removeEnvObstacleInterface', int64(45 + bi2));
     end
     scanTime_ms = toc(tScan)*1000;
     timing.collisionCheck_ms = timing.collisionCheck_ms + scanTime_ms;
@@ -1037,13 +1042,14 @@ if ~placePosFound
         layer = mod(bi-1, 3) + 1;       % 1,2,3
         col = floor((posGroup-1) / 2);  % 0=BK, 1=FR
         row = mod(posGroup-1, 2);        % 0=L, 1=R
-        yy = ifelse(col==0, boxBackY, boxFrontY);
-        xx = ifelse(row==0, boxLeftX, boxRightX);
+        if col==0, yy = boxBackY; else, yy = boxFrontY; end
+        if row==0, xx = boxLeftX; else, xx = boxRightX; end
         placePos(bi,:) = [xx, yy, palletSurfZ + (layer-0.5)*box.hz];
     end
 end
+if placePosFound, ppSrc = 'C++ IK'; else, ppSrc = 'computed'; end
 fprintf('  placePos: source=%s, range Y=[%.3f,%.3f] Z=[%.3f,%.3f]\n', ...
-    ifelse(placePosFound,'C++ IK','computed'), min(placePos(:,2)), max(placePos(:,2)), ...
+    ppSrc, min(placePos(:,2)), max(placePos(:,2)), ...
     min(placePos(:,3)), max(placePos(:,3)));
 
 keyPoses = round(linspace(1, nTasks, min(4, nTasks)));
@@ -1508,16 +1514,16 @@ for ti = 1:nAnimTasks
             if seg == 2 && ~soToolActive && bi <= nBoxes
                 toolOffset_mm = [0, 0, -box.hz/2*1000];  % 箱子中心在TCP下方
                 calllib('libHRCInterface', 'setCPToolCollisionBallShapeInterface', ...
-                    int32(6), toolOffset_mm, 225.0);  % r=225mm
+                    int64(6), toolOffset_mm, 225.0);  % r=225mm
                 soToolActive = true;
             end
             % 进入seg 6: 移除工具碰撞球, 注册已放置箱子为环境障碍
             if seg == 6 && soToolActive && bi <= nBoxes
-                calllib('libHRCInterface', 'removeCPToolCollisonInterface', int32(6));
+                calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(6));
                 soToolActive = false;
                 boxCenter_mm = placePos(bi,:) * 1000;  % m→mm
                 calllib('libHRCInterface', 'addEnvObstacleBallInterface', ...
-                    int32(33 + bi), boxCenter_mm, 250.0);  % envId=34..45, r=250mm
+                    int64(45 + bi), boxCenter_mm, 250.0);  % envId=46..57, r=250mm
             end
             prevSeg = seg;
         end
@@ -1653,7 +1659,7 @@ for ti = 1:nAnimTasks
     
     % 确保SO工具球在任务结束后被移除 (防止数据不完整时遗留)
     if soLoaded && soToolActive
-        calllib('libHRCInterface', 'removeCPToolCollisonInterface', int32(6));
+        calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(6));
         soToolActive = false;
         fprintf('    [WARN] Task %d 结束但工具球未自动移除, 已强制清理\n', ti);
     end

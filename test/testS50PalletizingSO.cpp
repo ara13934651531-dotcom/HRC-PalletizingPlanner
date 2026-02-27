@@ -273,8 +273,8 @@ int main() {
     double fHW = scene::FRM_W/2, fNY = fcy-scene::FRM_D/2, fFY = fcy+scene::FRM_D/2;
     double fZB = -scene::baseZ, fZT = scene::FRM_H-scene::baseZ, fR = scene::FRM_TUBE_R+20;
 
-    printf("  === 框架立柱 (envId 30-33) Y=[%.0f,%.0f] ===\n", fNY, fFY);
-    int frmIds[] = {30,31,32,33};
+    printf("  === 框架立柱 (envId 1-4) Y=[%.0f,%.0f] ===\n", fNY, fFY);
+    int frmIds[] = {1,2,3,4};
     double frmX[] = {-fHW, fHW, fHW, -fHW};
     double frmY[] = {fNY, fNY, fFY, fFY};
     for (int i=0;i<4;i++) {
@@ -512,7 +512,7 @@ int main() {
                 checker.removeTool(6); printf("    📦 工具球OFF\n");
                 SO_COORD_REF tc; checker.forwardKinematics(pc.place,tc);
                 double tx=tc.X*1000, ty=tc.Y*1000, tz=tc.Z*1000;
-                int eid=34+t;
+                int eid=46+t;
                 bool ok=checker.addEnvObstacleBall(eid,Eigen::Vector3d(tx,ty,tz-scene::BOX_HZ/2),boxEnvR);
                 printf("    📦 放置→envId=%d (%.0f,%.0f,%.0f) r=%.0f: %s\n",eid,tx,ty,tz-scene::BOX_HZ/2,boxEnvR,ok?"✅":"❌");
             }
