@@ -1,8 +1,19 @@
 function testS50_Palletizing_v15()
 %% testS50_Palletizing_v15 - HR_S50-2000 v5.0 正确布局 + 完整碰撞 + 3D仿真
-%  v15.0 — 基于 v14 + 以下核心修复:
+%  v15.1 — 基于 v15.0 + 系统性碰撞仿真修复:
 %
-%  修复清单:
+%  v15.1 修复清单:
+%    1. SO库环境碰撞注册: 框架4柱+2顶梁+2侧挡板, 电箱4边, 传送带3面
+%    2. 动画循环工具碰撞球管理: seg2启用/seg6移除 + 已放置箱子注册
+%    3. TCP姿态分析使用FK2 A,B,C (ZYX Euler), 消除urdfFK混用 (#4指导规则)
+%    4. 碰撞包络半径匹配CollisionGeometry.hpp (160/140/120/100mm)
+%    5. drawFrame_v11渲染前边(ei=1:4), 与碰撞体完整对齐
+%    6. TCP方向quiver使用FK2导出Z轴, 非骨架近似
+%    7. cfg_nBoxes=12, TCP_ORIENT_TOL_DEG=30°, cfg_convGap=0.20 匹配C++
+%    8. 框架碰撞半径 30mm→50mm (匹配C++ FRM_TUBE_R+20)
+%    9. pall_tcp_so 单位修复 (mm/1000→m, 非*1000)
+%
+%  v15.0 修复清单:
 %    1. 修复makeRotRPY: URDF标准 Rz*Ry*Rx (之前是Rx*Ry*Rz → 机械臂渲染错误)
 %    2. 场景布局匹配C++ v5.0: FRM_D=650,FRAME_GAP=50,PAL_H=500,CONV_GAP=200
 %    3. 箱子放置位读取C++实际IK求解TCP位置 (消除MATLAB独立计算的偏差)
@@ -34,8 +45,7 @@ if isempty(SO_PATH)
     % 回退: 尝试项目 lib/ 目录
     SO_PATH = fullfile(fileparts(fileparts(mfilename('fullpath'))), 'lib', 'libHRCInterface.so');
     if ~isfile(SO_PATH)
-        % 最终回退: 硬编码路径
-        SO_PATH = '/home/ara/文档/collision/HansAlgorithmExport/bin/libHRCInterface.so';
+        error('libHRCInterface.so 未找到, 请设置环境变量 HRC_LIB_PATH 或将其放入 lib/ 目录');
     end
 end
 SO_HEADER = fullfile(fileparts(mfilename('fullpath')), 's50_collision_matlab.h');
@@ -73,9 +83,9 @@ cfg_conv.beltH=0.035; cfg_conv.rollerR=0.030; cfg_conv.nRollers=18;
 cfg_conv.color=[0.30,0.30,0.32];
 cfg_box.lx=0.35; cfg_box.wy=0.28; cfg_box.hz=0.25;
 cfg_box.color=[0.65,0.45,0.25];
-cfg_nBoxes = 1;  % ★ 调试: 仅显示1箱轨迹 (后续改回12)
-cfg_animTaskLimit = 3;  % ★ 动画限制前N个任务 (0=全部)
-cfg_frameGap = 0.05; cfg_convGap = 0.50;  % 扩大间隙(500mm)避免传送带与码垛框架在X轴重叠
+cfg_nBoxes = 12;  % 12箱完整码垛 (3层×2行×2列)
+cfg_animTaskLimit = 0;  % 0=全部任务 (调试时可设为3限制前N个)
+cfg_frameGap = 0.05; cfg_convGap = 0.20;  % 匹配C++ CONV_GAP=200mm
 cfg_convOffY = -0.80; cfg_convBoxYStart = -1.50; cfg_convBoxYStep = 0.25;  % 箱子从Y=-2.30开始,12个均在传送带范围内
 
 % --- 环境碰撞体 (由场景参数动态计算, 与C++ v5.0一致) ---
@@ -103,7 +113,7 @@ GIF_SUBSAMPLE  = 30;
 
 % --- TCP姿态约束 ---
 TCP_DESIRED_AXIS = [0; 0; -1];
-TCP_ORIENT_TOL_DEG = 45.0;
+TCP_ORIENT_TOL_DEG = 30.0;  % 匹配C++ orientTolerance_deg = 30.0
 
 %% ╔══════════════════════════════════════════════════════════════════════╗
 %% ║                      系统初始化                                     ║
@@ -153,11 +163,23 @@ frmNY = frmCY - frame.depthY/2;
 frmFY = frmCY + frame.depthY/2;
 frmZB = -baseZ;      % 底部 (世界Z=0 → 基坐标Z=-baseZ)
 frmZT = frame.height - baseZ;  % 顶部
+frmR = frame.tubeR + 0.020;    % 碰撞半径 = 管径+20mm = 50mm (匹配C++ FRM_TUBE_R+20)
 ENV_COLL.frameColumns = [  % [x,y,z1,z2,r] (m, 基坐标系)
-    -frmHW, frmNY, frmZB, frmZT, frame.tubeR;
-     frmHW, frmNY, frmZB, frmZT, frame.tubeR;
-    -frmHW, frmFY, frmZB, frmZT, frame.tubeR;
-     frmHW, frmFY, frmZB, frmZT, frame.tubeR;
+    -frmHW, frmNY, frmZB, frmZT, frmR;
+     frmHW, frmNY, frmZB, frmZT, frmR;
+    -frmHW, frmFY, frmZB, frmZT, frmR;
+     frmHW, frmFY, frmZB, frmZT, frmR;
+];
+% 框架顶梁 (envId 20-21, 平行于X轴, 连接同侧两根立柱顶部)
+ENV_COLL.frameTopBars = [  % [x1,y1,z1, x2,y2,z2, r]
+    -frmHW, frmNY, frmZT,  frmHW, frmNY, frmZT, frmR;   % 近端顶梁
+    -frmHW, frmFY, frmZT,  frmHW, frmFY, frmZT, frmR;   % 远端顶梁
+];
+% 框架侧挡板 (envId 22-23, 平行于Y轴, 在框架高度中间)
+frmPanelZ = (frmZB + frmZT) / 2;  % 挡板在框架高度中间
+ENV_COLL.frameSidePanels = [  % [x1,y1,z1, x2,y2,z2, r]
+    -frmHW, frmNY, frmPanelZ, -frmHW, frmFY, frmPanelZ, frmR;  % 左侧挡板
+     frmHW, frmNY, frmPanelZ,  frmHW, frmFY, frmPanelZ, frmR;  % 右侧挡板
 ];
 % 电箱碰撞体 (4条边, 基坐标系)
 cabHW = cab.widthX/2; cabHD = cab.depthY/2;
@@ -264,6 +286,83 @@ try
     fprintf('  ✅ libHRCInterface.so 加载成功\n');
     fprintf('  HOME验证: collision=%d, min_dist=%.1f mm, pair=[%d,%d]\n', ...
         collResult, distVal, pairArr(1), pairArr(2));
+    
+    % === 环境碰撞配置 (匹配C++ testS50PalletizingSO.cpp 阶段2) ===
+    fprintf('\n  --- 环境碰撞配置 ---\n');
+    soStat = {'❌','✅'};  % result==0 → ✅
+    envRegOK = 0;  % 成功注册计数
+    
+    % 开启全部连杆-环境碰撞检测 (7个连杆)
+    linkEnvFlags = int8([1,1,1,1,1,1,1]);
+    calllib('libHRCInterface', 'setLinkEnvCollisionEnabledInterface', linkEnvFlags);
+    fprintf('    连杆-环境碰撞: 7/7 已开启\n');
+    
+    % 框架立柱 (envId 30-33, 胶囊体, 匹配C++ frmIds)
+    for ci = 1:size(ENV_COLL.frameColumns, 1)
+        fc = ENV_COLL.frameColumns(ci,:);
+        startPt = [fc(1), fc(2), fc(3)] * 1000;  % m→mm
+        endPt   = [fc(1), fc(2), fc(4)] * 1000;
+        r_mm    = fc(5) * 1000;
+        envId   = int32(29 + ci);  % envId 30,31,32,33
+        result  = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', envId, startPt, endPt, r_mm);
+        envRegOK = envRegOK + (result == 0);
+        fprintf('    框架柱 envId=%d: %s (r=%.0fmm)\n', envId, soStat{(result==0)+1}, r_mm);
+    end
+    
+    % 框架顶梁 (envId 20-21)
+    for ci = 1:size(ENV_COLL.frameTopBars, 1)
+        tb = ENV_COLL.frameTopBars(ci,:);
+        startPt = [tb(1), tb(2), tb(3)] * 1000;
+        endPt   = [tb(4), tb(5), tb(6)] * 1000;
+        r_mm    = tb(7) * 1000;
+        envId   = int32(19 + ci);  % envId 20,21
+        result  = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', envId, startPt, endPt, r_mm);
+        envRegOK = envRegOK + (result == 0);
+        fprintf('    框架顶梁 envId=%d: %s\n', envId, soStat{(result==0)+1});
+    end
+    
+    % 框架侧挡板 (envId 22-23)
+    for ci = 1:size(ENV_COLL.frameSidePanels, 1)
+        sp = ENV_COLL.frameSidePanels(ci,:);
+        startPt = [sp(1), sp(2), sp(3)] * 1000;
+        endPt   = [sp(4), sp(5), sp(6)] * 1000;
+        r_mm    = sp(7) * 1000;
+        envId   = int32(21 + ci);  % envId 22,23
+        result  = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', envId, startPt, endPt, r_mm);
+        envRegOK = envRegOK + (result == 0);
+        fprintf('    框架侧挡板 envId=%d: %s\n', envId, soStat{(result==0)+1});
+    end
+    
+    % 电箱 (envId 10-13, 胶囊体)
+    for ci = 1:size(ENV_COLL.cabinet, 1)
+        cc = ENV_COLL.cabinet(ci,:);
+        startPt = [cc(1), cc(2), cc(3)] * 1000;
+        endPt   = [cc(4), cc(5), cc(6)] * 1000;
+        r_mm    = cc(7) * 1000;
+        envId   = int32(9 + ci);  % envId 10,11,12,13
+        result  = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', envId, startPt, endPt, r_mm);
+        envRegOK = envRegOK + (result == 0);
+        fprintf('    电箱 envId=%d: %s\n', envId, soStat{(result==0)+1});
+    end
+    
+    % 传送带 (envId 15-17, 胶囊体)
+    for ci = 1:size(ENV_COLL.conveyor, 1)
+        cv = ENV_COLL.conveyor(ci,:);
+        startPt = [cv(1), cv(2), cv(3)] * 1000;
+        endPt   = [cv(4), cv(5), cv(6)] * 1000;
+        r_mm    = cv(7) * 1000;
+        envId   = int32(14 + ci);  % envId 15,16,17
+        result  = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', envId, startPt, endPt, r_mm);
+        envRegOK = envRegOK + (result == 0);
+        fprintf('    传送带 envId=%d: %s\n', envId, soStat{(result==0)+1});
+    end
+    
+    % 验证障碍物数量
+    envCount = calllib('libHRCInterface', 'getEnvObstacleCountInterface');
+    fprintf('    注册成功: %d/%d, SO报告障碍物: %d\n', envRegOK, ...
+        size(ENV_COLL.frameColumns,1)+size(ENV_COLL.frameTopBars,1)+ ...
+        size(ENV_COLL.frameSidePanels,1)+size(ENV_COLL.cabinet,1)+ ...
+        size(ENV_COLL.conveyor,1), envCount);
     
 catch ME
     fprintf('  ⚠️ .so加载失败: %s\n', ME.message);
@@ -487,7 +586,7 @@ if soLoaded
         nTasks, min(pall_minD_so), max(pall_minD_so));
 else
     pall_minD_so = pall_minD;
-    pall_tcp_so = [pall_tcp*1000, zeros(nTasks,3)];
+    pall_tcp_so = [pall_tcp/1000, zeros(nTasks,3)];  % mm→m 匹配FK2输出单位
 end
 
 %% ╔══════════════════════════════════════════════════════════════════════╗
@@ -504,10 +603,33 @@ so_pall_tcpAxis = nan(nPall,3);
 if soLoaded
     tScan = tic;
     scanCount = 0;
+    scanPrevTask = -1; scanPrevSeg = -1; scanToolActive = false;
     for ri = 1:SCAN_STRIDE:nPall
         q_deg = pall_raw(ri, 4:9);
         vel   = pall_raw(ri, 10:15);
         acc = zeros(1,6);
+        
+        % 段切换时管理工具碰撞球 + 已放置箱子 (匹配C++三阶段管理)
+        curTask = pall_raw(ri, 1); curSeg = pall_raw(ri, 2);
+        if curTask ~= scanPrevTask || curSeg ~= scanPrevSeg
+            tidx = find(pall_tasks == curTask, 1);
+            if ~isempty(tidx), bi = boxForTask(tidx); else, bi = 0; end
+            if curSeg == 2 && ~scanToolActive && bi > 0 && bi <= nBoxes
+                calllib('libHRCInterface', 'setCPToolCollisionBallShapeInterface', ...
+                    int32(6), [0, 0, -box.hz/2*1000], 225.0);
+                scanToolActive = true;
+            end
+            if curSeg == 6 && scanToolActive
+                calllib('libHRCInterface', 'removeCPToolCollisonInterface', int32(6));
+                scanToolActive = false;
+                if bi > 0 && bi <= nBoxes
+                    boxCenter_mm = placePos(bi,:) * 1000;
+                    calllib('libHRCInterface', 'addEnvObstacleBallInterface', ...
+                        int32(33 + bi), boxCenter_mm, 250.0);
+                end
+            end
+            scanPrevTask = curTask; scanPrevSeg = curSeg;
+        end
         
         calllib('libHRCInterface', 'updateACAreaConstrainPackageInterface', q_deg, vel, acc);
         pairArr = int64([0,0]); distVal = 0.0;
@@ -519,13 +641,25 @@ if soLoaded
         [~, tcpS] = calllib('libHRCInterface', 'forwardKinematics2', q_deg, tcpS);
         so_pall_tcp(ri,:) = [tcpS.X, tcpS.Y, tcpS.Z, tcpS.A, tcpS.B, tcpS.C];
         
-        T_all = urdfFK(JOINTS, deg2rad(q_deg));
-        Rend = T_all{8}(1:3,1:3);  % 使用TCP末端姿态
-        so_pall_tcpAxis(ri,:) = Rend(:,3)';
+        % TCP Z轴: 从FK2 A,B,C (ZYX Euler deg) 计算 (避免混用urdfFK)
+        % R = Rz(A)*Ry(B)*Rx(C), Z-axis = R*[0;0;1]
+        Ar = deg2rad(tcpS.A); Br = deg2rad(tcpS.B); Cr = deg2rad(tcpS.C);
+        so_pall_tcpAxis(ri,:) = [...
+            cos(Ar)*sin(Br)*cos(Cr) + sin(Ar)*sin(Cr), ...
+            sin(Ar)*sin(Br)*cos(Cr) - cos(Ar)*sin(Cr), ...
+            cos(Br)*cos(Cr)];
         
         scanCount = scanCount + 1;
         timing.collisionCalls = timing.collisionCalls + 1;
         timing.fkCalls = timing.fkCalls + 1;
+    end
+    % 扫描结束后清理工具碰撞球 (确保后续操作干净)
+    if scanToolActive
+        calllib('libHRCInterface', 'removeCPToolCollisonInterface', int32(6));
+    end
+    % 清除扫描时添加的已放置箱子障碍 (后续动画会重新管理)
+    for bi2 = 1:nBoxes
+        calllib('libHRCInterface', 'removeEnvObstacleInterface', int32(33 + bi2));
     end
     scanTime_ms = toc(tScan)*1000;
     timing.collisionCheck_ms = timing.collisionCheck_ms + scanTime_ms;
@@ -774,6 +908,20 @@ for ci = 1:size(ENV_COLL.frameColumns, 1)
     p2 = [fc(1), fc(2), fc(4)] + [baseX, baseY, baseZ];
     drawCapsule3D(ax3a, p1, p2, fc(5), [0.9 0.2 0.2], 0.20);
 end
+% 框架顶梁 (黄色半透明)
+for ci = 1:size(ENV_COLL.frameTopBars, 1)
+    tb = ENV_COLL.frameTopBars(ci,:);
+    p1 = [tb(1), tb(2), tb(3)] + [baseX, baseY, baseZ];
+    p2 = [tb(4), tb(5), tb(6)] + [baseX, baseY, baseZ];
+    drawCapsule3D(ax3a, p1, p2, tb(7), [0.9 0.7 0.1], 0.18);
+end
+% 框架侧挡板 (粉色半透明)
+for ci = 1:size(ENV_COLL.frameSidePanels, 1)
+    sp = ENV_COLL.frameSidePanels(ci,:);
+    p1 = [sp(1), sp(2), sp(3)] + [baseX, baseY, baseZ];
+    p2 = [sp(4), sp(5), sp(6)] + [baseX, baseY, baseZ];
+    drawCapsule3D(ax3a, p1, p2, sp(7), [0.9 0.3 0.6], 0.15);
+end
 
 % 绘制环境碰撞体: 电气柜胶囊 (橙色半透明)
 for ci = 1:size(ENV_COLL.cabinet, 1)
@@ -929,6 +1077,18 @@ for vi = 1:min(4, length(keyPoses))
         p1_w = [fc(1)+baseX, fc(2)+baseY, fc(3)+baseZ];
         p2_w = [fc(1)+baseX, fc(2)+baseY, fc(4)+baseZ];
         drawCapsule3D(ax, p1_w, p2_w, fc(5), [0.9 0.15 0.15], 0.12);
+    end
+    for eci = 1:size(ENV_COLL.frameTopBars, 1)
+        tb = ENV_COLL.frameTopBars(eci,:);
+        p1_w = [tb(1)+baseX, tb(2)+baseY, tb(3)+baseZ];
+        p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
+        drawCapsule3D(ax, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.10);
+    end
+    for eci = 1:size(ENV_COLL.frameSidePanels, 1)
+        sp = ENV_COLL.frameSidePanels(eci,:);
+        p1_w = [sp(1)+baseX, sp(2)+baseY, sp(3)+baseZ];
+        p2_w = [sp(4)+baseX, sp(5)+baseY, sp(6)+baseZ];
+        drawCapsule3D(ax, p1_w, p2_w, sp(7), [0.9 0.3 0.6], 0.10);
     end
     for eci = 1:size(ENV_COLL.cabinet, 1)
         cc = ENV_COLL.cabinet(eci,:);
@@ -1162,6 +1322,18 @@ for eci = 1:size(ENV_COLL.frameColumns, 1)
     p2_w = [fc(1)+baseX, fc(2)+baseY, fc(4)+baseZ];
     drawCapsule3D(ax7a, p1_w, p2_w, fc(5), [0.9 0.15 0.15], 0.10);
 end
+for eci = 1:size(ENV_COLL.frameTopBars, 1)
+    tb = ENV_COLL.frameTopBars(eci,:);
+    p1_w = [tb(1)+baseX, tb(2)+baseY, tb(3)+baseZ];
+    p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
+    drawCapsule3D(ax7a, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.08);
+end
+for eci = 1:size(ENV_COLL.frameSidePanels, 1)
+    sp = ENV_COLL.frameSidePanels(eci,:);
+    p1_w = [sp(1)+baseX, sp(2)+baseY, sp(3)+baseZ];
+    p2_w = [sp(4)+baseX, sp(5)+baseY, sp(6)+baseZ];
+    drawCapsule3D(ax7a, p1_w, p2_w, sp(7), [0.9 0.3 0.6], 0.08);
+end
 for eci = 1:size(ENV_COLL.cabinet, 1)
     cc = ENV_COLL.cabinet(eci,:);
     p1_w = [cc(1)+baseX, cc(2)+baseY, cc(3)+baseZ];
@@ -1189,8 +1361,8 @@ if soLoaded && ~isempty(tcpOrientError_deg)
     for ri = 1:stride:nPall
         skel = fk2Skeleton(pall_raw(ri,4:9));
         pos = skel(5,:) + [baseX, baseY, baseZ];
-        zdir = skel(5,:) - skel(4,:); % Wrist→TCP 方向 = 工具轴方向
-        zdir = zdir / max(norm(zdir), 1e-9) * 0.05; % 归一化后缩放
+        % 使用FK2 A,B,C 导出的TCP Z轴 (so_pall_tcpAxis), 避免骨架近似误差
+        zdir = so_pall_tcpAxis(ri,:) * 0.05;  % 已归一化, 缩放用于显示
         err = tcpOrientError_deg(ri);
         if err < 15, c = [0 0.7 0.2];
         elseif err < 30, c = [0.8 0.6 0];
@@ -1238,6 +1410,20 @@ for eci = 1:size(ENV_COLL.frameColumns, 1)
     p1_w = [fc(1)+baseX, fc(2)+baseY, fc(3)+baseZ];
     p2_w = [fc(1)+baseX, fc(2)+baseY, fc(4)+baseZ];
     drawCapsule3D(ax3d, p1_w, p2_w, fc(5), [0.9 0.15 0.15], 0.10);
+end
+% 环境碰撞体: 框架顶梁 (黄色半透明)
+for eci = 1:size(ENV_COLL.frameTopBars, 1)
+    tb = ENV_COLL.frameTopBars(eci,:);
+    p1_w = [tb(1)+baseX, tb(2)+baseY, tb(3)+baseZ];
+    p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
+    drawCapsule3D(ax3d, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.10);
+end
+% 环境碰撞体: 框架侧挡板 (粉色半透明)
+for eci = 1:size(ENV_COLL.frameSidePanels, 1)
+    sp = ENV_COLL.frameSidePanels(eci,:);
+    p1_w = [sp(1)+baseX, sp(2)+baseY, sp(3)+baseZ];
+    p2_w = [sp(4)+baseX, sp(5)+baseY, sp(6)+baseZ];
+    drawCapsule3D(ax3d, p1_w, p2_w, sp(7), [0.9 0.3 0.6], 0.10);
 end
 % 环境碰撞体: 电气柜 (橙色半透明)
 for eci = 1:size(ENV_COLL.cabinet, 1)
@@ -1301,6 +1487,8 @@ for ti = 1:nAnimTasks
     nR = size(rows,1);
     taskTrail = [];
     bi = boxForTask(ti);
+    prevSeg = -1;         % 段号变化检测
+    soToolActive = false;  % SO库工具碰撞球状态
     
     % 清除上一任务的起止点标记
     if ~isempty(hTcpStartEnd) && any(isvalid(hTcpStartEnd))
@@ -1313,6 +1501,26 @@ for ti = 1:nAnimTasks
         q_rad = deg2rad(q_deg);
         vel = rows(ri, 10:15);
         seg = rows(ri, 2);
+        
+        % SO库工具碰撞体管理 (匹配C++ seg=2启用/seg=6移除)
+        if soLoaded && seg ~= prevSeg
+            % 进入seg 2: 启用工具碰撞球 (吸附箱子, toolIdx=6)
+            if seg == 2 && ~soToolActive && bi <= nBoxes
+                toolOffset_mm = [0, 0, -box.hz/2*1000];  % 箱子中心在TCP下方
+                calllib('libHRCInterface', 'setCPToolCollisionBallShapeInterface', ...
+                    int32(6), toolOffset_mm, 225.0);  % r=225mm
+                soToolActive = true;
+            end
+            % 进入seg 6: 移除工具碰撞球, 注册已放置箱子为环境障碍
+            if seg == 6 && soToolActive && bi <= nBoxes
+                calllib('libHRCInterface', 'removeCPToolCollisonInterface', int32(6));
+                soToolActive = false;
+                boxCenter_mm = placePos(bi,:) * 1000;  % m→mm
+                calllib('libHRCInterface', 'addEnvObstacleBallInterface', ...
+                    int32(33 + bi), boxCenter_mm, 250.0);  % envId=34..45, r=250mm
+            end
+            prevSeg = seg;
+        end
         
         if soLoaded
             % 碰撞检测 (update已在renderCapsuleRobotHandles中执行, 但此处需先做)
@@ -1442,6 +1650,14 @@ for ti = 1:nAnimTasks
     hCarryBox = gobjects(0);
     if ~isempty(hToolCollSphere) && any(isvalid(hToolCollSphere)), delete(hToolCollSphere(isvalid(hToolCollSphere))); end
     hToolCollSphere = gobjects(0);
+    
+    % 确保SO工具球在任务结束后被移除 (防止数据不完整时遗留)
+    if soLoaded && soToolActive
+        calllib('libHRCInterface', 'removeCPToolCollisonInterface', int32(6));
+        soToolActive = false;
+        fprintf('    [WARN] Task %d 结束但工具球未自动移除, 已强制清理\n', ti);
+    end
+    
     fprintf('  Task %d/%d (%d frames) — placed: %d/%d\n', ti, nTasks, ceil(nR/ANIM_SUBSAMPLE), sum(placedFlag), nBoxes);
 end
 
@@ -1782,7 +1998,7 @@ function [handles, tcp_world] = renderCapsuleRobotHandles(ax, q_deg, baseOffset,
     capsuleColors = {[0.4 0.4 0.45], [0.2 0.4 0.8], [0.2 0.7 0.3], ...
                      [0.9 0.5 0.1], [0.6 0.2 0.8]};
     capsuleAlpha = 0.45;
-    capsuleR = [0.070, 0.060, 0.050, 0.035]; % 连杆碰撞半径 (m): 基座/大臂/小臂/腕部
+    capsuleR = [0.160, 0.140, 0.120, 0.100]; % 连杆碰撞半径 (m): 基座/大臂/小臂/腕部 (匹配CollisionGeometry.hpp)
     
     bx = baseOffset(1); by = baseOffset(2); bz = baseOffset(3);
     
@@ -2002,10 +2218,12 @@ end
 function drawFrame_v11(ax,f,cylN)
     r=f.tubeR;wx=f.widthX;dy=f.depthY;h=f.height;cx=f.cx;cy=f.cy;
     c=[cx-wx/2 cy-dy/2;cx+wx/2 cy-dy/2;cx+wx/2 cy+dy/2;cx-wx/2 cy+dy/2];
+    % 4根立柱
     for i=1:4, drawTube_v11(ax,c(i,1),c(i,2),0,c(i,1),c(i,2),h,r,f.color,cylN); end
+    % 水平横梁: 4条边 × 4层高度 (含前边, ei=1:4)
     edges={[1,2],[2,3],[3,4],[4,1]};
     for hz=[0.05 h/3 2*h/3 h-0.05]
-        for ei=2:4
+        for ei=1:4
             i1=edges{ei}(1);i2=edges{ei}(2);
             drawTube_v11(ax,c(i1,1),c(i1,2),hz,c(i2,1),c(i2,2),hz,r*.8,f.color,cylN);
         end
