@@ -166,7 +166,7 @@ ScenarioResult runScenario(
             if (report.selfMinDist_mm < result.minSelfDist_mm)
                 result.minSelfDist_mm = report.selfMinDist_mm;
 
-            // TCP位姿直接来自.so FK
+            // TCP位姿直接来自.so FK (forwardKinematics2)
             if (report.hasTcpPose) {
                 cs.tcpPos_mm[0] = report.tcpPose.X;
                 cs.tcpPos_mm[1] = report.tcpPose.Y;
@@ -175,12 +175,19 @@ ScenarioResult runScenario(
                 cs.tcpOrient_deg[1] = report.tcpPose.B;
                 cs.tcpOrient_deg[2] = report.tcpPose.C;
             } else {
-                // 备用: RobotModel FK
-                auto pose = robot.forwardKinematics(pt.config);
-                cs.tcpPos_mm[0] = pose.position.x() * 1000;
-                cs.tcpPos_mm[1] = pose.position.y() * 1000;
-                cs.tcpPos_mm[2] = pose.position.z() * 1000;
-                cs.tcpOrient_deg[0] = cs.tcpOrient_deg[1] = cs.tcpOrient_deg[2] = 0;
+                // SO FK未返回TCP位姿 — 使用直接FK调用
+                SO_COORD_REF tcp;
+                if (checker.forwardKinematics(pt.config, tcp)) {
+                    cs.tcpPos_mm[0] = tcp.X * 1000.0;
+                    cs.tcpPos_mm[1] = tcp.Y * 1000.0;
+                    cs.tcpPos_mm[2] = tcp.Z * 1000.0;
+                    cs.tcpOrient_deg[0] = tcp.A;
+                    cs.tcpOrient_deg[1] = tcp.B;
+                    cs.tcpOrient_deg[2] = tcp.C;
+                } else {
+                    cs.tcpPos_mm[0] = cs.tcpPos_mm[1] = cs.tcpPos_mm[2] = 0;
+                    cs.tcpOrient_deg[0] = cs.tcpOrient_deg[1] = cs.tcpOrient_deg[2] = 0;
+                }
             }
 
             result.samples.push_back(cs);

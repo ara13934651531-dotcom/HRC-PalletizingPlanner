@@ -19,7 +19,7 @@
 
 #include "Types.hpp"
 #include "RobotModel.hpp"
-#include "CollisionChecker.hpp"
+#include "CollisionCheckerSO.hpp"
 
 #include <random>
 #include <algorithm>
@@ -33,7 +33,7 @@ namespace palletizing {
 class PathOptimizer {
 public:
     PathOptimizer(const RobotModel& robot,
-                  CollisionChecker& checker,
+                  CollisionCheckerSO& checker,
                   const PlannerConfig& config = PlannerConfig())
         : robot_(robot), checker_(checker), config_(config),
           gen_(std::random_device{}()) {
@@ -366,7 +366,7 @@ private:
     }
     
     const RobotModel& robot_;
-    CollisionChecker& checker_;
+    CollisionCheckerSO& checker_;
     PlannerConfig config_;
     std::mt19937 gen_;
 };

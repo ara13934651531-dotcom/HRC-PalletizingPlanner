@@ -53,7 +53,9 @@ struct S50CollisionGeometry {
     // DH 参数 (mm)
     // ========================================================================
 
-    /// S50 DH 参数: d1, d2, d3, d4, d5, d6, a2, a3
+    /// S50 DH 参数, 顺序: {d1, d2, d3, d4, d5, d6, a2, a3}
+    /// 此顺序与 algorithmLibInterface.h 中 initACAreaConstrainPackageInterface() 接口一致。
+    /// @see RobotDHParams::toDHArray()
     static constexpr double dhParams[8] = {296.5, 336.2, 239.0, 158.5, 158.5, 134.5, 900.0, 941.5};
 
     // ========================================================================

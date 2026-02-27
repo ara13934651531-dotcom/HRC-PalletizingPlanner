@@ -337,21 +337,17 @@ struct BSpline {
 
 /// 规划器类型枚举
 enum class PlannerType {
-    RRT,           // 基础RRT
-    RRTStar,       // RRT* (渐进最优)
-    InformedRRTStar,  // Informed RRT* (椭球采样)
-    BITStar,       // Batch Informed Trees
-    LazyPRM,       // 延迟概率路线图 [未实现 - 预留]
-    ABITStar       // Advanced BIT* [未实现 - 预留]
+    RRT,              // 基础RRT
+    RRTStar,          // RRT* (渐进最优)
+    InformedRRTStar,  // Informed RRT* (椭球采样) ← SO栈默认
+    BITStar           // Batch Informed Trees
 };
 
 /// 路径优化器类型
 enum class OptimizerType {
     Shortcut,        // 捷径优化
     BSplineSmooth,   // B-Spline平滑
-    STOMP,           // 随机轨迹优化 [未实现 - 预留]
-    CHOMP,           // 协变哈密顿优化 [未实现 - 预留]
-    Hybrid           // 混合优化
+    Hybrid           // 混合优化 (Shortcut + BSpline) ← 默认
 };
 
 /// 规划器配置参数
@@ -377,7 +373,7 @@ struct PlannerConfig {
     
     // 碰撞检测参数
     double collisionResolution = 0.02;  // 碰撞检测分辨率 [rad]
-    double safetyMargin = 0.01;         // 安全余量 [m]
+    double safetyMargin = 0.01;         // 安全余量 [m] (注: CollisionCheckerSO使用mm单位, 10mm=0.01m)
     
     // 路径优化参数
     int shortcutIterations = 200;       // 捷径优化迭代次数
@@ -389,8 +385,6 @@ struct PlannerConfig {
     int splineResolution = 100;         // 采样点数
     
     // 性能调优
-    bool enableParallel = true;         // 启用并行计算
-    int numThreads = 4;                 // 线程数
     bool enableCaching = true;          // 启用碰撞检测缓存
 };
 

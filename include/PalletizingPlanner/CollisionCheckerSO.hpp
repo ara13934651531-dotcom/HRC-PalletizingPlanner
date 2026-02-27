@@ -72,7 +72,6 @@ struct TimingStats {
     int    ikCallCount      = 0;   // IK调用次数 (独立计数)
     int    selfCollCount    = 0;   // 自碰撞次数
     int    envCollCount     = 0;   // 环境碰撞次数
-    int    cacheHits        = 0;   // 缓存命中次数
     
     void reset() { *this = TimingStats{}; }
     
@@ -87,15 +86,12 @@ struct TimingStats {
             "  │ 正运动学:    %.2f μs/次  (FK, %d次调用)\n"
             "  │ 逆运动学:    %.2f μs/次  (IK, %d次调用)\n"
             "  │ 单次合计:    %.2f μs/次  (total)\n"
-            "  │ 缓存命中率:  %.1f%%  (%d/%d)\n"
             "  │ 碰撞统计:    自碰撞=%d  环境=%d\n"
             "  └─────────────────────────────────────────────────\n",
             callCount, initTime_ms,
             updateTime_us, selfCheckTime_us, envCheckTime_us,
             fkTime_us, fkCallCount, ikTime_us, ikCallCount,
             totalCheckTime_us,
-            callCount > 0 ? 100.0 * cacheHits / callCount : 0.0,
-            cacheHits, callCount,
             selfCollCount, envCollCount);
         return std::string(buf);
     }
@@ -122,7 +118,8 @@ struct CollisionReportSO {
     bool hasTcpPose = false;
     
     /// 总体是否安全
-    bool isSafe(double marginMm = 10.0) const {
+    /// @param marginMm 安全裕度 (mm), 默认值来自 S50CollisionGeometry::defaultSafetyMarginMm
+    bool isSafe(double marginMm = S50CollisionGeometry::defaultSafetyMarginMm) const {
         return !selfCollision && !envCollision && selfMinDist_mm > marginMm;
     }
 };
@@ -258,22 +255,17 @@ public:
         auto t1 = std::chrono::high_resolution_clock::now();
         timing_.initTime_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-         auto toMmDisplay = [](double v) {
-             return std::abs(v) < 10.0 ? v * 1000.0 : v;
-         };
-         double dhDisp[8];
-         for (int i = 0; i < 8; ++i) dhDisp[i] = toMmDisplay(dh[i]);
-         double baseR  = toMmDisplay(baseGeo[6]);
-         double lArmR  = toMmDisplay(lowerArmGeo[6]);
-         double elbowR = toMmDisplay(elbowGeo[6]);
-         double uArmR  = toMmDisplay(upperArmGeo[6]);
-         double wristR = toMmDisplay(wristGeo[3]);
-        
+        // 直接使用 CollisionGeometry.hpp 中的参数显示 (mm, 无需启发式转换)
         printf("CollisionCheckerSO: ✅ libHRCInterface.so 初始化成功\n");
         printf("  DH: [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f] mm\n",
-             dhDisp[0],dhDisp[1],dhDisp[2],dhDisp[3],dhDisp[4],dhDisp[5],dhDisp[6],dhDisp[7]);
+             S50CollisionGeometry::dhParams[0], S50CollisionGeometry::dhParams[1],
+             S50CollisionGeometry::dhParams[2], S50CollisionGeometry::dhParams[3],
+             S50CollisionGeometry::dhParams[4], S50CollisionGeometry::dhParams[5],
+             S50CollisionGeometry::dhParams[6], S50CollisionGeometry::dhParams[7]);
         printf("  碰撞几何: base=R%.0f, lArm=R%.0f, elbow=R%.0f, uArm=R%.0f, wrist=R%.0f mm\n",
-             baseR, lArmR, elbowR, uArmR, wristR);
+             S50CollisionGeometry::baseCapsule[6], S50CollisionGeometry::lowerArmCapsule[6],
+             S50CollisionGeometry::elbowCapsule[6], S50CollisionGeometry::upperArmCapsule[6],
+             S50CollisionGeometry::wristBall[3]);
         printf("  初始化耗时: %.2f ms\n", timing_.initTime_ms);
         
         return true;
@@ -613,8 +605,13 @@ public:
     void setSafetyMarginMm(double marginMm) { safetyMarginMm_ = marginMm; }
     double getSafetyMarginMm() const { return safetyMarginMm_; }
     
+    /// 环境碰撞安全裕度 (mm) — 预留接口, SO库环境碰撞为布尔型检测
+    void setEnvSafetyMarginMm(double marginMm) { envSafetyMarginMm_ = marginMm; }
+    double getEnvSafetyMarginMm() const { return envSafetyMarginMm_; }
+    
     /// 获取分层计时统计 (平均值)
     TimingStats getTimingStats() const {
+        std::lock_guard<std::mutex> lock(mutex_);
         TimingStats avg = timing_;
         if (avg.callCount > 0) {
             avg.updateTime_us    /= avg.callCount;
@@ -686,7 +683,8 @@ private:
     void* handle_;
     bool initialized_;
     bool linkWallEnabled_ = false;
-    double safetyMarginMm_ = 10.0;  // 默认10mm安全余量
+    double safetyMarginMm_    = S50CollisionGeometry::defaultSafetyMarginMm;    // 自碰撞安全裕度
+    double envSafetyMarginMm_ = S50CollisionGeometry::defaultEnvSafetyMarginMm; // 环境碰撞安全裕度 (预留)
     mutable std::mutex mutex_;
     mutable TimingStats timing_;
     

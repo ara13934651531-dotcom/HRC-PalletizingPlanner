@@ -17,6 +17,7 @@
 #include "PalletizingPlanner/CollisionCheckerSO.hpp"
 #include "PalletizingPlanner/PathPlannerSO.hpp"
 #include "PalletizingPlanner/TimeParameterization.hpp"
+#include "PalletizingPlanner/NumericalIK.hpp"
 #include "PalletizingPlanner/Types.hpp"
 
 #include <cstdio>
@@ -84,78 +85,12 @@ struct BoxTarget {
 };
 
 // ============================================================================
-// 数值逆运动学 (Damped Least-Squares)
+// IK求解: 使用共享 NumericalIK.hpp (消除代码重复)
 // ============================================================================
-struct IKResult {
-    JointConfig config;
-    double posError_mm = 1e10;
-    int iterations = 0;
-    bool converged = false;
-};
-
-IKResult numericalIK(CollisionCheckerSO& checker,
-    const Eigen::Vector3d& target_mm, const JointConfig& seed,
-    double tol_mm = 2.0, int maxIter = 500, double lambda = 5.0)
-{
-    IKResult result;
-    JointConfig q = seed;
-    const double eps = 1e-4;
-    const double jMin[6] = {-2*M_PI, -190*M_PI/180, -165*M_PI/180, -2*M_PI, -2*M_PI, -2*M_PI};
-    const double jMax[6] = { 2*M_PI,   10*M_PI/180,  165*M_PI/180,  2*M_PI,  2*M_PI,  2*M_PI};
-
-    for (int iter = 0; iter < maxIter; iter++) {
-        result.iterations = iter + 1;
-        SO_COORD_REF tcp;
-        if (!checker.forwardKinematics(q, tcp)) { result.posError_mm=1e10; return result; }
-        Eigen::Vector3d pos(tcp.X*1000, tcp.Y*1000, tcp.Z*1000);
-        Eigen::Vector3d err = target_mm - pos;
-        result.posError_mm = err.norm();
-        if (result.posError_mm < tol_mm) { result.config = q; result.converged = true; return result; }
-
-        Eigen::Matrix<double,3,6> J;
-        for (int j = 0; j < 6; j++) {
-            JointConfig qp = q; qp.q[j] += eps;
-            SO_COORD_REF tp;
-            if (!checker.forwardKinematics(qp, tp)) {
-                // FK失败, 使用零列避免NaN注入
-                J.col(j).setZero();
-                continue;
-            }
-            J.col(j) = (Eigen::Vector3d(tp.X*1000,tp.Y*1000,tp.Z*1000) - pos) / eps;
-        }
-        Eigen::Matrix3d JJT = J * J.transpose() + lambda*lambda*Eigen::Matrix3d::Identity();
-        Eigen::Matrix<double,6,1> dq = J.transpose() * JJT.ldlt().solve(err);
-
-        double maxStep = 0.08;
-        double dqN = dq.norm();
-        if (dqN > maxStep) dq *= maxStep / dqN;
-        for (int j = 0; j < 6; j++) {
-            q.q[j] = std::clamp(q.q[j] + dq(j), jMin[j], jMax[j]);
-        }
-    }
-    result.config = q;
-    return result;
-}
-
-IKResult multiStartIK(CollisionCheckerSO& checker,
-    const Eigen::Vector3d& target_mm, const std::vector<JointConfig>& seeds,
-    double tol_mm = 2.0)
-{
-    IKResult best; best.posError_mm = 1e10;
-    for (const auto& seed : seeds) {
-        auto r = numericalIK(checker, target_mm, seed, tol_mm);
-        if (r.converged && r.posError_mm < best.posError_mm) best = r;
-        if (best.converged && best.posError_mm < tol_mm*0.5) break;
-    }
-    if (!best.converged) {
-        for (const auto& seed : seeds) {
-            auto r = numericalIK(checker, target_mm, seed, tol_mm, 1000, 2.0);
-            if (r.posError_mm < best.posError_mm) best = r;
-            if (r.converged) break;
-        }
-    }
-    return best;
-}
+// IKResult, numericalIK(), multiStartIK() 定义在 NumericalIK.hpp 中
+using palletizing::IKResult;
+using palletizing::numericalIK;
+using palletizing::multiStartIK;
 
 // ============================================================================
 // 辅助: P2P执行
@@ -185,10 +120,11 @@ SegmentResult executeP2P(const char* name,
             if (rp.envCollision) r.envCollisionCount++;
             if (rp.selfMinDist_mm < r.minSelfDist_mm) r.minSelfDist_mm = rp.selfMinDist_mm;
             if (csv) { auto q=p.config.toDegrees();
+                // FK2返回m, CSV要求mm → ×1000
                 fprintf(csv,"%d,%d,%d,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%d,%d,%.1f,%.1f,%.1f\n",
                     ti,si,(int)i,p.time,q[0],q[1],q[2],q[3],q[4],q[5],
                     rp.selfMinDist_mm,rp.selfCollision?1:0,rp.envCollision?1:0,
-                    rp.hasTcpPose?rp.tcpPose.X:0,rp.hasTcpPose?rp.tcpPose.Y:0,rp.hasTcpPose?rp.tcpPose.Z:0);
+                    rp.hasTcpPose?rp.tcpPose.X*1000:0,rp.hasTcpPose?rp.tcpPose.Y*1000:0,rp.hasTcpPose?rp.tcpPose.Z*1000:0);
             }
         }
         if (traj && (i%20==0||i==tr.size()-1)) {
@@ -196,7 +132,8 @@ SegmentResult executeP2P(const char* name,
             fprintf(traj,"%d %d %.4f",ti,si,p.time);
             for(int j=0;j<6;j++)fprintf(traj," %.4f",q[j]);
             for(int j=0;j<6;j++)fprintf(traj," %.3f",p.velocity[j]*180/M_PI);
-            fprintf(traj," %.2f %.1f %.1f %.1f\n",r.minSelfDist_mm,tc.X,tc.Y,tc.Z);
+            // FK2返回m, 轨迹文件要求mm → ×1000
+            fprintf(traj," %.2f %.1f %.1f %.1f\n",r.minSelfDist_mm,tc.X*1000,tc.Y*1000,tc.Z*1000);
         }
     }
     r.collCheckTime_ms = std::chrono::duration<double,std::milli>(std::chrono::high_resolution_clock::now()-t2).count();
@@ -251,10 +188,11 @@ SegmentResult executeRRTStar(const char* name,
             if (rp.envCollision) r.envCollisionCount++;
             if (rp.selfMinDist_mm < r.minSelfDist_mm) r.minSelfDist_mm = rp.selfMinDist_mm;
             if (csv) { auto q=p.config.toDegrees();
+                // FK2返回m, CSV要求mm → ×1000
                 fprintf(csv,"%d,%d,%d,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%d,%d,%.1f,%.1f,%.1f\n",
                     ti,si,(int)i,p.time,q[0],q[1],q[2],q[3],q[4],q[5],
                     rp.selfMinDist_mm,rp.selfCollision?1:0,rp.envCollision?1:0,
-                    rp.hasTcpPose?rp.tcpPose.X:0,rp.hasTcpPose?rp.tcpPose.Y:0,rp.hasTcpPose?rp.tcpPose.Z:0);
+                    rp.hasTcpPose?rp.tcpPose.X*1000:0,rp.hasTcpPose?rp.tcpPose.Y*1000:0,rp.hasTcpPose?rp.tcpPose.Z*1000:0);
             }
         }
         if (traj && (i%20==0||i==tr.size()-1)) {
@@ -262,7 +200,8 @@ SegmentResult executeRRTStar(const char* name,
             fprintf(traj,"%d %d %.4f",ti,si,p.time);
             for(int j=0;j<6;j++)fprintf(traj," %.4f",q[j]);
             for(int j=0;j<6;j++)fprintf(traj," %.3f",p.velocity[j]*180/M_PI);
-            fprintf(traj," %.2f %.1f %.1f %.1f\n",r.minSelfDist_mm,tc.X,tc.Y,tc.Z);
+            // FK2返回m, 轨迹文件要求mm → ×1000
+            fprintf(traj," %.2f %.1f %.1f %.1f\n",r.minSelfDist_mm,tc.X*1000,tc.Y*1000,tc.Z*1000);
         }
     }
     r.collCheckTime_ms = std::chrono::duration<double,std::milli>(std::chrono::high_resolution_clock::now()-t2).count();
@@ -295,8 +234,8 @@ int main() {
     planConfig.stepSize = 0.15; planConfig.goalBias = 0.2;
     planConfig.shortcutIterations = 60;
     planConfig.splineResolution = 35; planConfig.collisionResolution = 0.03;
-    // 自由TCP模式: 运动中TCP可变, 纯关节空间最优 (吸盘吸力足够)
-    planConfig.freeTcpDuringTransit = true;
+    // 码垛场景: TCP必须保持水平 (吸盘朝下, 仅允许Z轴旋转)
+    planConfig.constrainTcpHorizontal = true;
     PathPlannerSO planner(robot, checker, planConfig);
     printf("  路径规划: Free-TCP Informed RRT* (纯关节空间代价)\n");
 
@@ -344,6 +283,33 @@ int main() {
         printf("    envId=%d (%.0f,%.0f): %s\n", frmIds[i], frmX[i], frmY[i], ok?"✅":"❌");
     }
 
+    // 2根顶梁 (平行于X轴, 连接近端两根立柱顶部和远端两根立柱顶部)
+    printf("\n  === 框架顶梁 (envId 20-21) ===\n");
+    {
+        // 近端顶梁: 左近端→右近端 (Y=fNY, Z=fZT)
+        bool ok0 = checker.addEnvObstacleCapsule(20,
+            Eigen::Vector3d(-fHW, fNY, fZT), Eigen::Vector3d(fHW, fNY, fZT), fR);
+        printf("    envId=20 近端顶梁: %s\n", ok0?"✅":"❌");
+        // 远端顶梁: 左远端→右远端 (Y=fFY, Z=fZT)
+        bool ok1 = checker.addEnvObstacleCapsule(21,
+            Eigen::Vector3d(-fHW, fFY, fZT), Eigen::Vector3d(fHW, fFY, fZT), fR);
+        printf("    envId=21 远端顶梁: %s\n", ok1?"✅":"❌");
+    }
+
+    // 2块侧挡板 (平行于Y轴, 连接同侧近端和远端立柱, 中间高度)
+    printf("\n  === 框架侧挡板 (envId 22-23) ===\n");
+    {
+        double panelZ = (fZB + fZT) / 2;  // 挡板在框架高度中间
+        // 左侧挡板: 左近端→左远端 (X=-fHW)
+        bool ok0 = checker.addEnvObstacleCapsule(22,
+            Eigen::Vector3d(-fHW, fNY, panelZ), Eigen::Vector3d(-fHW, fFY, panelZ), fR);
+        printf("    envId=22 左侧挡板: %s\n", ok0?"✅":"❌");
+        // 右侧挡板: 右近端→右远端 (X=fHW)
+        bool ok1 = checker.addEnvObstacleCapsule(23,
+            Eigen::Vector3d(fHW, fNY, panelZ), Eigen::Vector3d(fHW, fFY, panelZ), fR);
+        printf("    envId=23 右侧挡板: %s\n", ok1?"✅":"❌");
+    }
+
     printf("\n  === 电箱 (envId 10-13) ===\n");
     double cHW=scene::CAB_W/2, cHD=scene::CAB_D/2, cZB=fZB, cZT=-80, cR=80;
     struct CO { int id; double x1,y1,x2,y2; };
@@ -373,7 +339,7 @@ int main() {
     }
 
     const double boxToolR = 225.0, boxEnvR = 250.0;
-    printf("\n  环境障碍: 电箱(4) + 传送带(3) + 框架(4) + 已放箱子(动态)\n\n");
+    printf("\n  环境障碍: 电箱(4) + 传送带(3) + 框架立柱(4) + 框架顶梁(2) + 框架侧挡板(2) + 已放箱子(动态)\n\n");
 
     // ---- 码垛布局 + IK求解 ----
     printf("━━━━━━ 阶段3: 码垛布局 + IK求解 ━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
@@ -433,10 +399,10 @@ int main() {
     int ikFail = 0;
     for (int i=0; i<numPositions; i++) {
         auto& bt = boxTargets[i];
-        auto ikP = multiStartIK(checker, bt.pos_mm, placeSeeds, 3.0);
+        auto ikP = multiStartIK(checker, robot, bt.pos_mm, placeSeeds, 3.0);
         std::vector<JointConfig> aSeeds = placeSeeds;
         if (ikP.converged) aSeeds.insert(aSeeds.begin(), ikP.config);
-        auto ikA = multiStartIK(checker, bt.approach_mm, aSeeds, 3.0);
+        auto ikA = multiStartIK(checker, robot, bt.approach_mm, aSeeds, 3.0);
         PlaceConfig pc; pc.place=ikP.config; pc.approach=ikA.config;
         pc.pErr=ikP.posError_mm; pc.aErr=ikA.posError_mm;
         placeConfigs.push_back(pc);
@@ -470,10 +436,10 @@ int main() {
                       {-90,-55,35,0,20,-90},{-90,-45,45,0,0,-90},{-85,-60,30,0,30,-85}};
     for (auto& s:pS) pkSeeds.push_back(JointConfig::fromDegrees({s[0],s[1],s[2],s[3],s[4],s[5]}));
 
-    auto ikPk = multiStartIK(checker, pickTgt, pkSeeds, 3.0);
+    auto ikPk = multiStartIK(checker, robot, pickTgt, pkSeeds, 3.0);
     auto pkApSeeds = pkSeeds;
     if (ikPk.converged) pkApSeeds.insert(pkApSeeds.begin(), ikPk.config);
-    auto ikPkA = multiStartIK(checker, pickApprTgt, pkApSeeds, 3.0);
+    auto ikPkA = multiStartIK(checker, robot, pickApprTgt, pkApSeeds, 3.0);
 
     auto PICK_POS = ikPk.config;
     auto PICK_APPROACH = ikPkA.config;
@@ -600,7 +566,7 @@ int main() {
         fprintf(fpSum,"self_collisions: %d\nenv_collisions: %d\nmin_dist_mm: %.2f\n",
                 totalCollisions,totalEnvCollisions,globalMinDist_mm);
         fprintf(fpSum,"order: FIFO_in2out_left2right_bottom2top_columnwise\n");
-        fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_frame+%d_placed\n",(int)taskResults.size());
+        fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+2_sidepanel+%d_placed\n",(int)taskResults.size());
         fprintf(fpSum,"tool_collision: ball_r%.0fmm\nframe_gap_mm: %.0f\nframe_cy_mm: %.0f\n",
                 boxToolR,scene::FRAME_GAP,fcy);
 

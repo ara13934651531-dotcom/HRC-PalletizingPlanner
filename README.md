@@ -18,7 +18,7 @@
 <p align="center">
   <b>HR_S50-2000 工业协作机器人码垛场景最优运动规划系统</b><br>
   专为码垛场景设计的高性能路径规划与轨迹生成解决方案<br>
-  <code>C++17 Header-Only</code> · <code>9,600+ 行核心代码</code> · <code>18 个模块</code> · <code>98ms 端到端</code>
+  <code>C++17 Header-Only</code> · <code>SO-only 架构</code> · <code>8 个核心头文件</code> · <code>0.31s 端到端</code>
 </p>
 
 <p align="center">
@@ -36,9 +36,7 @@
 - [项目概述](#项目概述)
 - [⚠️ 关键单位约定](#️-关键单位约定)
 - [系统架构](#系统架构)
-  - [双栈架构](#双栈架构)
-  - [SO栈 (推荐)](#so栈-推荐)
-  - [静态库栈 (向后兼容)](#静态库栈-向后兼容)
+  - [SO栈架构](#so栈架构)
   - [数据流管线](#数据流管线)
 - [核心特性](#核心特性)
 - [性能指标](#性能指标)
@@ -65,17 +63,16 @@
 
 ### 1. C++17 Header-Only 运动规划器 ⭐
 
-18 个头文件、9,600+ 行纯头文件实现，零编译依赖，用户仅需 `#include` 即可使用。
+8 个核心头文件，SO-only 架构。用户仅需 `#include` 即可使用。
 
-**双栈设计**：
-- **SO 动态库栈 (推荐)** — `dlopen(libHRCInterface.so)` 运行时加载，含 FK/IK/环境碰撞
-- **静态库栈 (向后兼容)** — `extern "C"` 链接 `.a` 静态库
+**SO 动态库架构** — `dlopen(libHRCInterface.so)` 运行时加载，含 FK/IK/环境碰撞。
+静态库栈代码已归档至 `deprecated/` 目录。
 
 ### 2. HRC 碰撞检测库 (闭源)
 
 人机协作 (Human-Robot Collaboration) 场景实时碰撞检测。
-- **`libHRCInterface.so`** (SO栈): 动态库，运行时加载，含完整 FK/IK/碰撞检测
-- **`libHRCInterface.a` + `libCmpAgu.a` + `libhansKinematics.a`** (静态库栈): 预编译静态库
+- **`libHRCInterface.so`**: 动态库，运行时 `dlopen` 加载，含完整 FK/IK/碰撞检测
+- **`libCmpRML.so`**: 华数上位机 S 曲线轨迹执行库
 
 ### 3. MATLAB / Python 可视化模块
 
@@ -97,8 +94,7 @@
 | HRC `.so` FK 输出姿态 | **deg** | — |
 | CollisionGeometry.hpp 碰撞几何 | — | **mm** |
 | `SceneConfig` / `OBBObstacle.lwh` | — | **m** |
-| HRC 碰撞距离返回值 (SO) | — | **mm** |
-| HRC 碰撞距离返回值 (静态库) | — | **m** |
+| HRC 碰撞距离返回值 | — | **mm** |
 | `.hard` 硬件配置 | **deg** | **mm** |
 
 ```cpp
@@ -116,64 +112,29 @@ JointConfig config = JointConfig::fromDegrees({90, -50, 70, 0, 80, 0});
 
 ## 系统架构
 
-### 双栈架构
+### SO栈架构
 
-本项目提供两套技术栈，**推荐使用 SO 栈**：
+本项目使用 SO 动态库架构 (`dlopen` 运行时加载 `libHRCInterface.so`)。
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                  ★ SO 动态库栈 (推荐)                                     │
+│                  SO 动态库架构                                           │
 │                                                                         │
 │  CollisionCheckerSO.hpp   ← dlopen(libHRCInterface.so), 含FK/IK/环境碰撞 │
-│  ├── PathPlannerSO.hpp    ← Free-TCP Informed RRT* + IncrementalKDTree6D │
+│  ├── PathPlannerSO.hpp    ← TCP水平约束 Informed RRT* + IncrementalKDTree6D │
 │  ├── PathOptimizer.hpp    ← B-Spline 平滑 (De Boor算法)                  │
 │  ├── TimeParameterization ← S曲线 (内置) / libCmpRML.so (真实执行)        │
 │  ├── CollisionGeometry.hpp← 统一S50碰撞包络参数                           │
-│  ├── RobotModel.hpp       ← DH正运动学 + 数值Jacobian                    │
+│  ├── NumericalIK.hpp      ← 多起点数值IK求解器                            │
+│  ├── RobotModel.hpp       ← 机器人参数 + 关节空间工具 (无FK/IK!)         │
 │  └── Types.hpp            ← JointConfig, Path, BSpline, PlanningResult   │
-├─────────────────────────────────────────────────────────────────────────┤
-│                  静态库栈 (向后兼容)                                       │
-│                                                                         │
-│  PalletizingPlanner.hpp   ← 顶层API (使用 CollisionChecker + 静态库)     │
-│  ├── PathPlannerOptimized ← KDTree + CollisionCache 优化 RRT*            │
-│  ├── HighPerformancePlanner ← 全优化流水线                                │
-│  ├── KDTree.hpp           ← 批量构建 KD-Tree                             │
-│  ├── CollisionCache.hpp   ← FNV-1a 哈希 + LRU 缓存                      │
-│  └── TaskSequencer.hpp    ← TSP 2-opt 任务序列优化                       │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### SO栈 (推荐)
-
-**核心创新 — 自由TCP模式**：码垛场景中吸盘吸力足够大，运动过程中 TCP 位姿可自由变化 (`freeTcpDuringTransit=true`)，仅起止点 TCP 被约束。这：
-- 扩大了可行配置空间，产生更短路径
-- 增强避障能力
-- 消除规划过程中的 FK 调用开销（纯关节空间代价）
-
-```
-CollisionCheckerSO (726行)    ← dlopen libHRCInterface.so, 含TimingStats
-├── PathPlannerSO (913行)     ← Free-TCP Informed RRT* + IncrementalKDTree6D
-├── PathOptimizer (460行)     ← B-Spline 路径平滑
-├── TimeParameterization      ← S曲线 (内置430行) / libCmpRML.so
-├── CollisionGeometry (70行)  ← 统一S50碰撞包络
-├── RobotModel (329行)        ← DH正运动学 + Jacobian
-└── Types (487行)             ← 核心数据类型
-```
-
-### 静态库栈 (向后兼容)
-
-```
-PalletizingPlanner (418行)    ← 顶层 Facade API
-├── PathPlannerOptimized (862行) ← alignas(64) + 椭球采样 + 懒惰碰撞
-├── PathOptimizerOptimized (649行) ← 自适应捷径 + 增量B-Spline
-├── TimeParameterizationOptimized (480行) ← S曲线查表加速
-├── CollisionChecker (901行)  ← extern "C" 三层碰撞检测
-├── CollisionCache (342行)    ← FNV-1a + LRU 缓存
-├── KDTree (293行)            ← 6D批量KD-Tree
-├── HighPerformancePlanner (532行) ← 全优化流水线
-├── ParallelPathPlanner (558行) ← v3.0 超高性能
-└── TaskSequencer (457行)     ← TSP 2-opt
-```
+**核心约束 — TCP水平模式**：码垛场景中TCP（吸盘）必须保持水平朝下 (`constrainTcpHorizontal=true`)，仅允许绕Z轴旋转。重物吸附在平面吸盘上，若TCP倾斜则重物脱落。
+- 每个采样点通过FK检查TCP Z轴是否接近 (0,0,-1)
+- 容差: `orientTolerance_deg = 30.0`
+- 纯关节空间代价 + TCP水平硬约束过滤
 
 ### 数据流管线
 
@@ -184,8 +145,8 @@ PalletizingPlanner (418行)    ← 顶层 Facade API
     │   └── 多起点数值IK (Damped Least-Squares, ~0.1ms/次)
     │
     ▼ PathPlannerSO.plan(start, goal)
-    │   ├── Informed RRT* (纯关节空间代价, TCP自由变化)
-    │   ├── IncrementalKDTree6D 最近邻加速 (O(log n))
+    │   ├── TCP水平约束 Informed RRT* (纯关节空间代价 + TCP朝下硬约束)
+    │   ├── IncrementalKDTree6D 最近邻 O(log n)
     │   ├── CollisionCheckerSO 碰撞检测 (.so dlopen)
     │   └── 路径提取 + 重连优化 (rewiring)
     │
@@ -207,25 +168,20 @@ PalletizingPlanner (418行)    ← 顶层 Facade API
 
 ## 核心特性
 
-### 🚀 自由TCP运动规划 (SO栈核心)
+### 🚀 TCP水平约束运动规划 (SO栈核心)
 
-- **Free-TCP Informed RRT\*** — 纯关节空间代价函数，运动过程中TCP位姿可自由变化
+- **TCP水平约束 Informed RRT\*** — 纯关节空间代价函数，运动过程中TCP保持水平朝下
 - **IncrementalKDTree6D** — 增量式6D KD-Tree，O(log n) 最近邻
 - **数值IK求解** — 多起点 Damped Least-Squares，~0.1ms/次
 - **动态环境碰撞体** — 运行时添加/移除球体和胶囊体（电箱、传送带、框架、已放箱子）
 
-### 🛡️ 碰撞检测 (双模式)
+### 🛡️ 碰撞检测
 
 **SO栈**: `dlopen` 加载 `libHRCInterface.so`
 - 自碰撞检测 (连杆对胶囊体/球体距离)
 - 环境碰撞体 (动态添加球体/胶囊体)
 - 工具碰撞球 (搬运工具保护)
 - 碰撞距离返回值: **mm**
-
-**静态库栈**: `extern "C"` 链接 `.a` 库
-- 三层: 连杆自碰撞 + 虚拟墙 + TCP安全区域
-- FNV-1a + LRU 碰撞缓存 (18x 加速)
-- 碰撞距离返回值: **m**
 
 ### 📈 路径优化
 
@@ -257,33 +213,24 @@ printf("  规划: %.1f ms  优化: %.1f ms  时间参数化: %.1f ms\n",
 
 ## 性能指标
 
-### SO栈性能 (码垛场景)
+### 性能指标 (码垛场景, 2026-02-27 实测)
 
 | 指标 | 实测 | 验证测试 |
 |------|------|----------|
-| IK 求解 (12位置) | **0.6 ms** | testTrajectoryOptimality |
-| 碰撞检测 (5363次) | **68.4 ms** (9.97 μs/次) | testS50PalletizingSO |
-| FK 单次耗时 | **0.54 μs** | testTrajectoryOptimality |
-| 码垛全链路计算 (12箱) | **0.098 s** | testS50PalletizingSO |
+| IK 求解 (12位置) | **15.6 ms** | testS50PalletizingSO |
+| 碰撞检测 (5363次) | **31 μs/次** | testS50PalletizingSO |
+| FK 单次耗时 | **9.9 μs** | testS50PalletizingSO |
+| 码垛全链路 (12箱, 86段) | **0.30 s** | testS50PalletizingSO |
 | S曲线执行总时间 (12箱) | **209.6 s** | testS50PalletizingSO |
 | 规划成功率 | **100%** | testTrajectoryOptimality |
-| 碰撞安全率 | **100%** | testTrajectoryOptimality |
+| 碰撞安全率 | **100%** (0碰撞) | testS50PalletizingSO |
 | 最小自碰撞距离 | **10.5 mm** | testS50PalletizingSO |
-| 路径一致性 (20次重复) | **100%** | testTrajectoryOptimality |
-
-### 静态库栈性能
-
-| 指标 | 实测 | 验证测试 |
-|------|------|----------|
-| 简单场景规划 | **0.04 ms** | testPerformanceBenchmark |
-| 完整流水线 (规划+优化+参数化) | **~135 ms** | testPalletizingPlanner |
-| KD-Tree 加速比 | **30x** | testPerformanceBenchmark |
-| 碰撞缓存加速比 | **18x** | testPerformanceBenchmark |
-| 规划成功率 | **99.5%** | testRobustnessValidation |
+| 路径一致性 (20次重复) | **100%** (CV=0%) | testTrajectoryOptimality |
+| TCP水平约束验证 | **4/4 PASS** (0°倾角) | testTrajectoryOptimality G |
 
 ### 当前瓶颈
 
-分层计时显示 rewiring (findNear + 邻域父节点选择 + 重连) 占规划总时间的 97%。碰撞检测 (77ms/43K次) 和采样 (2ms) 已很快。优化方向：
+分层计时显示 rewiring (findNear + 邻域父节点选择 + 重连) 占规划总时间的 ~92%。碰撞检测 (31μs/次) 和采样已很快。优化方向：
 - 减少 rewire 半径或邻域数量
 - 异步/延迟 rewire
 - 早期终止：找到质量足够好的解后停止迭代
@@ -324,8 +271,9 @@ ls ../bin/
 ### 运行测试
 
 ```bash
-# ─── SO栈测试 (推荐, 需 libHRCInterface.so) ───────────────────
+# 设置 SO 库路径
 export HRC_LIB_PATH=/path/to/libHRCInterface.so
+# 或将 libHRCInterface.so 放到 lib/ 目录下
 
 # 码垛完整仿真 (12箱, IK+环境碰撞+动态障碍物)
 ./bin/testS50PalletizingSO
@@ -336,15 +284,8 @@ export HRC_LIB_PATH=/path/to/libHRCInterface.so
 # ★ 系统性轨迹最优性测试 (6套测试)
 ./bin/testTrajectoryOptimality
 
-# ─── 静态库栈测试 ────────────────────────────────────────────
-# 综合功能测试 (7个子测试)
-./bin/testPalletizingPlanner
-
-# 性能基准测试 (KD-Tree 30x / 缓存 18x 加速验证)
-./bin/testPerformanceBenchmark
-
-# 鲁棒性验证测试 (1000+ 随机配置)
-./bin/testRobustnessValidation
+# CTest 集成
+cd build && ctest --output-on-failure
 ```
 
 ### SO栈最小示例
@@ -379,28 +320,6 @@ int main() {
     if (result.status == PlanningStatus::Success) {
         printf("路径长度: %.3f rad, 规划时间: %.1f ms\n",
                result.pathLength, result.planningTime_ms);
-    }
-    return 0;
-}
-```
-
-### 静态库栈最小示例
-
-```cpp
-#include "PalletizingPlanner/PalletizingPlanner.hpp"
-using namespace palletizing;
-
-int main() {
-    PalletizingPlanner planner;
-    if (!planner.initialize()) return -1;
-
-    JointConfig start = JointConfig::fromDegrees({0, -90, 30, 0, -60, 0});
-    JointConfig goal  = JointConfig::fromDegrees({45, -60, 45, 30, -45, 45});
-    PlanningResult result = planner.planPointToPoint(start, goal);
-
-    if (result.isSuccess()) {
-        printf("路径长度: %.3f rad, 规划时间: %.3f s\n",
-               result.pathLength, result.planningTime);
     }
     return 0;
 }
@@ -455,33 +374,10 @@ public:
     // 配置
     void setMaxIterations(int n);
     void setStepSize(double rad);
-    void setFreeTcpDuringTransit(bool enable);  // 默认 true
+    void setConstrainTcpHorizontal(bool enable);  // 默认 true, TCP保持水平
 
     // 性能报告
     PipelineTimingReport getTimingReport() const;
-};
-```
-
-### 静态库栈接口
-
-#### PalletizingPlanner (Facade)
-
-```cpp
-class PalletizingPlanner {
-public:
-    explicit PalletizingPlanner(const RobotDHParams& = RobotDHParams::fromHRConfig());
-    bool initialize(const SceneConfig& = SceneConfig::defaultPalletizing());
-
-    PlanningResult planPointToPoint(const JointConfig& start, const JointConfig& goal);
-    PalletizingResult planPickAndPlace(const PalletizingTask& task);
-    std::vector<PalletizingResult> planTaskSequence(
-        const std::vector<PalletizingTask>& tasks,
-        const JointConfig& homeConfig,
-        ProgressCallback callback = nullptr);
-
-    void setConfig(const PlannerConfig& config);
-    bool isConfigValid(const JointConfig& config) const;
-    void savePathToFile(const Path& path, const std::string& filename) const;
 };
 ```
 
@@ -530,19 +426,6 @@ namespace S50CollisionGeometry {
 }
 ```
 
-### 静态库栈碰撞检测
-
-```
-CollisionChecker
-├── extern "C" { #include <algorithmLibInterface.h> }
-├── initACAreaConstrainPackageInterface(robType=1, dh, geom)
-├── setCPSelfColliderLinkModelOpenStateInterface(true)
-├── updateACAreaConstrainPackageInterface(jointPos_deg, vel)
-├── 第一层: 连杆-连杆自碰撞
-├── 第二层: 连杆-虚拟墙环境碰撞
-└── 第三层: TCP-安全区域入侵检测
-```
-
 ### SO库路径搜索
 
 ```bash
@@ -559,24 +442,17 @@ cp libHRCInterface.so /path/to/project/lib/
 
 ## 配置与调优
 
-### SO栈配置
+### 规划器配置
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `freeTcpDuringTransit` | `true` | 自由TCP模式 (码垛场景推荐) |
-| `maxIterations` | 10,000 | RRT* 最大迭代 |
-| `stepSize` | 0.2 rad | 采样步长 |
-| `goalBias` | 0.10 | 目标偏向 |
-| `rewireRadius` | 1.0 rad | 重连半径 |
-
-### 静态库栈配置
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `plannerType` | `InformedRRTStar` | 算法选择 |
-| `useLazyCollision` | `true` | 懒惰碰撞检测 |
-| `useCache` | `true` | FNV-1a + LRU 缓存 |
-| `useKDTree` | `true` | KD-Tree 加速 |
+| `constrainTcpHorizontal` | `true` | TCP保持水平 (码垛场景必须) |
+| `orientTolerance_deg` | `30.0` | TCP朝向容差 (deg) |
+| `maxIterations` | 50,000 | RRT* 最大迭代 |
+| `stepSize` | 0.1 rad | 采样步长 |
+| `goalBias` | 0.15 | 目标偏向 |
+| `rewireRadius` | 0.5 rad | 重连半径上限 |
+| `collisionResolution` | 0.02 rad | 碰撞检测插值分辨率 |
 
 ### S曲线参数 (libCmpRML.so)
 
@@ -595,19 +471,9 @@ cp libHRCInterface.so /path/to/project/lib/
 
 | 测试程序 | 说明 | 结果 |
 |----------|------|------|
-| `testS50PalletizingSO` | 12箱码垛完整仿真 (IK+环境碰撞+动态障碍物) | 12/12 ✅, 0碰撞 |
+| `testS50PalletizingSO` | 12箱码垛完整仿真 (IK+环境碰撞+动态障碑物+TCP水平) | 12/12 ✅, 0碰撞 |
 | `testS50CollisionSO` | 7场景碰撞检测 (安全/碰撞/极限) | 7/7 ✅ |
-| `testTrajectoryOptimality` | ★ 系统性测试 (运动学/P2P/TCP全链/环境碰撞/安全距离/重复性) | 6/6 ✅, 20/20 重复 |
-
-### 静态库栈测试
-
-| 测试程序 | 说明 | 结果 |
-|----------|------|------|
-| `testPalletizingPlanner` | 综合功能 (7子测试: 运动学/碰撞/RRT*/优化/S曲线/BIT*/码垛) | 7/7 ✅ |
-| `testPerformanceBenchmark` | KD-Tree 30x / 缓存 18x 加速验证 | ✅ |
-| `testRobustnessValidation` | 1000+ 随机配置, 99.5% 成功率 | ✅ |
-| `testHighPerformance` | 优化前后对比, 全流水线 | ✅ |
-| `testCollisionDetectionTime` | HRC库 CPU/内存/堆栈资源分析 | ✅ |
+| `testTrajectoryOptimality` | ★ 系统性测试 (A-G: 基准/避障/TCP全链/参数/质量/重复/TCP约束) | 7/7 ✅, 20/20 重复 |
 
 ### 测试编写规范
 
@@ -626,8 +492,11 @@ int main() {
 ```
 
 新增测试需在 `test/CMakeLists.txt` 添加：
-- **SO栈**: 链接 `stdc++ m pthread dl` (运行时 dlopen)
-- **静态库栈**: 严格顺序 `libHRCInterface.a → libCmpAgu.a → libhansKinematics.a → stdc++ → m [→ pthread]`
+
+```cmake
+# SO栈: 运行时 dlopen
+target_link_libraries(myTest stdc++ m pthread dl)
+```
 
 ---
 
@@ -662,87 +531,57 @@ int main() {
 
 ```
 HRC-PalletizingPlanner/
-├── CMakeLists.txt                  # CMake 3.14+, C++17, -Wall -Wextra
+├── CMakeLists.txt                  # CMake 3.14+, C++17, Eigen3, CTest
 ├── README.md
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
 ├── LICENSE                         # MIT
 ├── HR_S50-2000.hard                # 完整硬件配置
 │
-├── include/PalletizingPlanner/     # ★ Header-Only C++17 (18文件, ~9,600行)
-│   │
-│   │  ── SO栈 (推荐) ──
-│   ├── CollisionCheckerSO.hpp      #  726行 — dlopen碰撞检测 (FK/IK/环境碰撞/TimingStats)
-│   ├── PathPlannerSO.hpp           #  913行 — Free-TCP Informed RRT* + IncrementalKDTree6D
-│   ├── CollisionGeometry.hpp       #   70行 — 统一S50碰撞包络参数
-│   │
-│   │  ── 共享模块 ──
-│   ├── Types.hpp                   #  487行 — 核心类型 (JointConfig/Path/BSpline/PlanningResult)
-│   ├── RobotModel.hpp              #  329行 — DH正运动学/Jacobian/关节限位
-│   ├── PathOptimizer.hpp           #  460行 — B-Spline路径平滑 (De Boor)
-│   ├── TimeParameterization.hpp    #  430行 — 内置S曲线
-│   │
-│   │  ── 静态库栈 (向后兼容) ──
-│   ├── PalletizingPlanner.hpp      #  418行 — 顶层Facade API
-│   ├── CollisionChecker.hpp        #  901行 — extern "C" 三层碰撞检测
-│   ├── PathPlannerOptimized.hpp    #  862行 — KDTree+缓存优化RRT*
-│   ├── PathOptimizerOptimized.hpp  #  649行 — 增量B-Spline
-│   ├── TimeParameterizationOptimized.hpp  # 480行 — S曲线查表加速
-│   ├── CollisionCache.hpp          #  342行 — FNV-1a + LRU
-│   ├── KDTree.hpp                  #  293行 — 6D批量KD-Tree
-│   ├── HighPerformancePlanner.hpp  #  532行 — 全优化流水线
-│   ├── ParallelPathPlanner.hpp     #  558行 — v3.0超高性能
-│   ├── PathPlanner.hpp             #  702行 — 基础RRT*
-│   └── TaskSequencer.hpp           #  457行 — TSP 2-opt
+├── include/PalletizingPlanner/     # ★ Header-Only C++17 (9个核心模块)
+│   ├── CollisionCheckerSO.hpp      # dlopen碰撞检测 (FK/IK/环境碰撞/TimingStats)
+│   ├── PathPlannerSO.hpp           # TCP水平约束 Informed RRT* + IncrementalKDTree6D
+│   ├── CollisionGeometry.hpp       # 统一S50碰撞包络参数
+│   ├── NumericalIK.hpp             # 多起点数值IK求解器 (DLS)
+│   ├── Types.hpp                   # 核心类型 (JointConfig/Path/BSpline/PlanningResult)
+│   ├── RobotModel.hpp              # DH参数/关节限位/关节空间工具 (无FK/IK!)
+│   ├── PathOptimizer.hpp           # B-Spline路径平滑 (De Boor)
+│   └── TimeParameterization.hpp    # 内置S曲线
 │
 ├── HRCInterface/                   # HRC C接口头文件
 │   ├── algorithmLibInterface.h
 │   ├── InterfaceDataStruct.h
 │   └── stack_utils.h
 │
-├── lib/                            # 预编译库 (.a 静态库)
-│   ├── libHRCInterface.a
-│   ├── libCmpAgu.a
-│   └── libhansKinematics.a
+├── lib/                            # 运行时库
+│   ├── libHRCInterface.so          # ★ 碰撞检测动态库 (dlopen)
+│   └── libCmpRML.so                # S曲线轨迹执行库
 │
-├── test/                           # 测试程序 (13个)
+├── test/                           # 测试程序 (3个SO栈测试)
 │   ├── CMakeLists.txt
-│   ├── testS50PalletizingSO.cpp    # ★ SO栈码垛仿真 (12箱)
-│   ├── testS50CollisionSO.cpp      # ★ SO栈碰撞检测 (7场景)
-│   ├── testTrajectoryOptimality.cpp # ★ 系统性轨迹测试 (6套)
-│   ├── testPalletizingPlanner.cpp   # 静态库综合测试
-│   ├── testPerformanceBenchmark.cpp
-│   ├── testRobustnessValidation.cpp
-│   ├── testHighPerformance.cpp
-│   ├── testCollisionDetectionTime.cpp
-│   ├── testCollisionSimulation.cpp
-│   ├── testS50PalletizingRML.cpp
-│   ├── testS50CollisionRML.cpp
-│   ├── testPalletizingScenarioRML.cpp
-│   └── testRMLProbe.cpp
+│   ├── testS50PalletizingSO.cpp    # ★ 12箱码垛仿真+TCP水平约束
+│   ├── testS50CollisionSO.cpp      # ★ 7场景碰撞检测
+│   └── testTrajectoryOptimality.cpp # ★ 系统性7套轨迹测试 (A-G)
 │
 ├── examples/                       # 使用示例
-│   ├── basic_planning_example.cpp
-│   └── palletizing_example.cpp
+│   └── basic_planning_example_so.cpp # SO栈规划示例
 │
-├── scripts/                        # Python 可视化 (5个)
-│   ├── visualize_s50_stl.py        #  589行 — STL网格3D渲染 + 碰撞距离曲线
-│   ├── visualize_scene.py          #  674行 — 完整码垛工作站渲染
-│   ├── visualize_palletizing.py    #  296行 — 码垛路径动画 (FuncAnimation)
-│   ├── visualize_path.py           #  203行 — 路径对比 (原始 vs B-Spline)
-│   └── visualize_trajectory.py     #  159行 — 带障碍物轨迹可视化
+├── scripts/                        # Python 可视化
+│   ├── visualize_s50_stl.py        # STL网格3D渲染 + 碰撞距离曲线
+│   ├── visualize_scene.py          # 完整码垛工作站渲染
+│   ├── visualize_palletizing.py    # 码垛路径动画
+│   ├── visualize_path.py           # 路径对比 (原始 vs B-Spline)
+│   └── visualize_trajectory.py     # 带障碍物轨迹可视化
 │
 ├── ArmCollisionModel/              # MATLAB 仿真模块
 │   ├── testS50_Palletizing_v15.m   # ★ 码垛工作站仿真 v15.0 (~1,900行)
-│   ├── testS50_Dynamic.m           #   动态轨迹动画
-│   ├── testS50.m                   #   静态碰撞测试
-│   ├── s50_collision_matlab.h      #   .so MEX接口
-│   ├── @RobotCollisionModel/       #   机器人可视化类
-│   ├── model/meshes/S50/           #   7个STL文件 (base+link1-6)
-│   └── pic/                        #   输出图像
+│   ├── testS50_Dynamic.m           # 动态轨迹动画
+    ├── testS50_Quick.m             # 快速验证
+│   ├── s50_collision_matlab.h      # .so MEX接口
+│   ├── model/meshes/S50/           # 7个STL文件 (base+link1-6)
+│   └── pic/                        # 输出图像
 │
 ├── S50_ros2/                       # ROS2 URDF + STL 模型
-├── robotModel/                     # 独立运动学模型
 ├── docs/                           # 文档
 ├── data/                           # 运行时数据输出 (gitignored)
 ├── build/                          # 构建中间产物
@@ -882,10 +721,6 @@ pip install pyvista  # 可选: 高质量渲染
 ```cmake
 # SO栈 (运行时 dlopen)
 target_link_libraries(myTest stdc++ m pthread dl)
-
-# 静态库栈 (严格顺序!)
-target_link_libraries(myTest
-  libHRCInterface.a libCmpAgu.a libhansKinematics.a stdc++ m pthread)
 ```
 
 ---
@@ -898,7 +733,6 @@ target_link_libraries(myTest
 |------|------|------|
 | 单位错误 | `config.q[i]=90` (应为rad) | 使用 `JointConfig::fromDegrees()` |
 | SO加载失败 | 找不到 .so | 设置 `HRC_LIB_PATH` 环境变量 |
-| 静态库链接错误 | 链接顺序不对 | 按 `HRC→Agu→Kin→stdc++→m` 顺序 |
 | FK输出单位 | 位置是 m 不是 mm | 见单位约定表 |
 | "---1---" 输出 | HRC库内部调试信息 | `2>/dev/null` 抑制 |
 | MATLAB找不到URDF | 工作目录错误 | `cd ArmCollisionModel && addpath(genpath('.'))` |
@@ -906,13 +740,8 @@ target_link_libraries(myTest
 ### 性能调试
 
 ```bash
-# SO栈: 使用 TimingStats + PipelineTimingReport 分层分析
+# 使用 TimingStats + PipelineTimingReport 分层分析
 HRC_LIB_PATH=/path/to/so ./bin/testTrajectoryOptimality
-
-# 静态库栈: 基准 → 对比 → 资源分析
-./bin/testPerformanceBenchmark
-./bin/testHighPerformance
-./bin/testCollisionDetectionTime
 ```
 
 ---
@@ -921,7 +750,9 @@ HRC_LIB_PATH=/path/to/so ./bin/testTrajectoryOptimality
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
-| 3.0.0 | 2026-02-12 | ★ SO动态库架构、自由TCP模式、IK求解器、环境碰撞体、代码审计修复 |
+| 3.2.0 | 2026-02-27 | ★ 代码审查修复 (12项)、TCP水平约束测试、框架完整碰撞模型 |
+| 3.1.0 | 2026-02-25 | SO-only 单一架构整合、NumericalIK统一、代码清理 |
+| 3.0.0 | 2026-02-12 | SO动态库架构、TCP水平约束、IK求解器、环境碰撞体 |
 | 2.1.0 | 2026-02-09 | 代码质量升级: mt19937、int32_t、锁优化 |
 | 2.0.0 | 2026-02-05 | 码垛工作站仿真 v7.0 |
 | 1.4.0 | 2026-02-04 | Python 3D 场景可视化 |

@@ -1,26 +1,26 @@
 /**
  * @file PathPlannerSO.hpp
- * @brief 自由TCP路径规划器 (使用 CollisionCheckerSO)
+ * @brief TCP水平约束路径规划器 (使用 CollisionCheckerSO)
  *
  * 核心理念 (码垛场景):
- *   吸盘吸力足够大, 运动过程中TCP位姿可自由变化 (不约束中间姿态)
- *   仅起止点TCP位姿被约束, 中间追求纯关节空间最优路径
- *   → 扩大可行配置空间 → 更短路径 + 更强避障 + 更快规划
+ *   运动过程中TCP必须保持水平 (吸盘朝下), 仅允许绕Z轴旋转。
+ *   重物在运输中若TCP倾斜则可能脱落, 因此TCP姿态受约束。
+ *   规划在关节空间进行, 但通过FK验证每个新节点满足水平约束。
  *
  * 关键特性:
  *   1. 碰撞检测: .so 动态库 (CollisionCheckerSO, dlopen)
- *   2. 自由TCP模式 (默认): 纯关节空间代价, 无FK调用开销
- *   3. 可选TCP约束模式: freeTcpDuringTransit=false 时启用TCP代价
- *   4. IncrementalKDTree6D: O(log n) 最近邻 + 周期重建
- *   5. 全链路分层计时 (planning / optimization / parameterization)
+ *   2. TCP水平约束 (默认): 每个新配置通过FK检查TCP Z轴是否朝下
+ *   3. IncrementalKDTree6D: O(log n) 最近邻 + 周期重建
+ *   4. 全链路分层计时 (planning / optimization / parameterization)
+ *   5. FK/IK 仅通过 CollisionCheckerSO (libHRCInterface.so) 执行
  *
  * 数据流:
- *   输入 start/goal TCP位姿 → IK求解 → Informed RRT* (关节空间)
+ *   输入 start/goal TCP位姿 → IK求解 → Informed RRT* (关节空间 + TCP约束)
  *     → Shortcut + BSpline 优化 → 输出 Path + 计时报告
  *
  * @author Guangdong Huayan Robotics Co., Ltd.
- * @version 3.0.0
- * @date 2026-02-23
+ * @version 4.0.0
+ * @date 2026-02-26
  */
 
 #pragma once
@@ -189,27 +189,26 @@ private:
 // ============================================================================
 
 struct TCPPlannerConfig : public PlannerConfig {
-    // ═══ 码垛核心: 运动过程中 TCP 自由变化 ═══
-    // 吸盘吸力足够大, 任意姿态均可保持抓取 → 仅约束起止点TCP位姿
-    // 中间过程TCP位姿可自由变化 → 扩大可行空间 → 更短路径 + 更快规划
-    bool freeTcpDuringTransit = true;
+    // ═══ 码垛核心: 运动过程中 TCP 保持水平 ═══
+    // 吸盘吸附重物时, TCP必须保持水平(Z轴朝下), 否则重物脱落。
+    // 仅允许绕TCP Z轴旋转 (yaw), 不允许倾斜。
+    // 每个新采样点通过FK检查TCP朝向, 不满足约束的点被拒绝。
+    bool constrainTcpHorizontal = true;
 
-    // TCP 位姿权重 (仅 freeTcpDuringTransit=false 时生效)
-    // 0 = 纯关节空间最优; >0 = 附加TCP平滑代价 (非码垛推荐)
+    // TCP Z轴期望方向 (世界坐标系, 朝下)
+    Eigen::Vector3d desiredTcpAxis = Eigen::Vector3d(0, 0, -1);
+    
+    // TCP朝向容差 (度) — TCP Z轴与desiredTcpAxis的最大夹角
+    double orientTolerance_deg = 30.0;
+
+    // TCP 代价权重 (附加TCP平滑性代价, 0=纯关节空间代价)
+    // 通常为0: 关节空间代价已足够, TCP约束通过filter保证
     double tcpPoseWeight      = 0.0;
     double tcpOrientWeight    = 0.15;  // 姿态变化惩罚
     double tcpPositionWeight  = 0.15;  // 位置变化惩罚
 
-    // 是否使用.so内置FK (更快) 而非RobotModel FK
-    bool useSOForwardKin      = true;
-
-    // 最大TCP位置偏移容忍 (mm)
+    // 最大TCP位置偏移容忍 (mm) — 超过此范围的采样直接拒绝
     double maxTcpDeviation_mm = 500.0;
-    
-    // TCP 姿态约束 (仅 freeTcpDuringTransit=false 时生效)
-    bool constrainTcpOrientation = false;
-    Eigen::Vector3d desiredTcpAxis = Eigen::Vector3d(0, 0, -1);
-    double orientTolerance_deg = 30.0;
 };
 
 // ============================================================================
@@ -275,10 +274,10 @@ struct PipelineTimingReport {
 
 class EllipsoidSamplerSO {
 public:
-    EllipsoidSamplerSO(const JointConfig& start, const JointConfig& goal)
+    EllipsoidSamplerSO(const JointConfig& start, const JointConfig& goal,
+                       const RobotDHParams& params = RobotDHParams::fromHRConfig())
         : start_(start), goal_(goal) {
-        RobotDHParams defaultParams;
-        auto [minLimits, maxLimits] = defaultParams.getJointLimits();
+        auto [minLimits, maxLimits] = params.getJointLimits();
         jointMin_ = minLimits;
         jointMax_ = maxLimits;
         center_ = 0.5 * (start.q + goal.q);
@@ -447,8 +446,11 @@ private:
         nodes_.reserve(config_.maxIterations);
         kdTree_.clear();
         
-        // TCP代价开关: 自由TCP模式跳过所有FK+TCP代价 (大幅提速)
-        const bool useTcpCost = !config_.freeTcpDuringTransit && config_.tcpPoseWeight > 0;
+        // TCP代价开关: tcpPoseWeight > 0 时启用TCP平滑性代价
+        const bool useTcpCost = config_.tcpPoseWeight > 0;
+        
+        // TCP水平约束: 每个新节点需要FK检查TCP朝向
+        const bool checkHorizontal = config_.constrainTcpHorizontal;
         
         RRTNodeSO startNode(0, start);
         startNode.costFromStart = 0.0;
@@ -460,7 +462,7 @@ private:
         SO_COORD_REF goalTcp = {};
         if (useTcpCost) checker_.forwardKinematics(goal, goalTcp);
         
-        EllipsoidSamplerSO ellipsoidSampler(start, goal);
+        EllipsoidSamplerSO ellipsoidSampler(start, goal, robot_.getParams());
         double cBest = std::numeric_limits<double>::infinity();
         int goalNodeId = -1;
         
@@ -485,30 +487,6 @@ private:
             }
             timing_.sampling_ms += msNow(tSamp);
             
-            // TCP姿态约束过滤 (仅非自由TCP模式)
-            if (useTcpCost && config_.constrainTcpOrientation && qRand.distanceTo(goal) > config_.stepSize) {
-                auto tOrientCheck = std::chrono::high_resolution_clock::now();
-                SO_COORD_REF randTcp;
-                checker_.forwardKinematics(qRand, randTcp);
-                timing_.fkCalls++;
-                
-                // 从HRC FK返回的欧拉角(ABC=ZYX intrinsic)计算TCP Z轴方向
-                double a_r = randTcp.A * M_PI / 180.0;
-                double b_r = randTcp.B * M_PI / 180.0;
-                // TCP Z轴在世界坐标: Rz(A)*Ry(B)*Rz(C) 的第三列简化
-                Eigen::Vector3d tcpZ(
-                    -std::sin(b_r),
-                    std::sin(a_r) * std::cos(b_r),
-                    std::cos(a_r) * std::cos(b_r)
-                );
-                double dotProd = tcpZ.dot(config_.desiredTcpAxis);
-                double angleDev_deg = std::acos(std::clamp(std::abs(dotProd), 0.0, 1.0)) * 180.0 / M_PI;
-                
-                timing_.tcpCostEval_ms += msNow(tOrientCheck);
-                
-                if (angleDev_deg > config_.orientTolerance_deg) continue;  // 拒绝
-            }
-            
             // 最近邻
             auto tNN = std::chrono::high_resolution_clock::now();
             int nearestId = findNearest(qRand);
@@ -527,20 +505,31 @@ private:
             timing_.collisionChecks++;
             if (!pathClear) continue;
 
-            // 预计算 qNew 的TCP位姿（本轮复用，避免在邻域/重连中重复FK）
-            SO_COORD_REF qNewTcp;
-            if (config_.useSOForwardKin) {
-                checker_.forwardKinematics(qNew, qNewTcp);
+            // TCP位姿计算 (用于水平约束检查 + TCP代价评估)
+            SO_COORD_REF qNewTcp = {};
+            bool qNewTcpValid = false;
+            if (checkHorizontal || useTcpCost) {
+                qNewTcpValid = checker_.forwardKinematics(qNew, qNewTcp);
                 timing_.fkCalls++;
-            } else {
-                auto pose = robot_.forwardKinematics(qNew);
-                qNewTcp.X = pose.position.x() * 1000;
-                qNewTcp.Y = pose.position.y() * 1000;
-                qNewTcp.Z = pose.position.z() * 1000;
-                qNewTcp.A = 0;
-                qNewTcp.B = 0;
-                qNewTcp.C = 0;
-                timing_.fkCalls++;
+                if (!qNewTcpValid) continue;  // FK失败, 跳过
+                
+                // TCP水平约束检查: TCP Z轴必须接近朝下
+                if (checkHorizontal) {
+                    auto tOrientCheck = std::chrono::high_resolution_clock::now();
+                    double a_r = qNewTcp.A * M_PI / 180.0;
+                    double b_r = qNewTcp.B * M_PI / 180.0;
+                    // TCP Z轴在世界坐标系 (由欧拉角ABC=ZYX intrinsic推导)
+                    Eigen::Vector3d tcpZ(
+                        -std::sin(b_r),
+                        std::sin(a_r) * std::cos(b_r),
+                        std::cos(a_r) * std::cos(b_r)
+                    );
+                    double dotProd = tcpZ.dot(config_.desiredTcpAxis);
+                    double angleDev_deg = std::acos(std::clamp(std::abs(dotProd), 0.0, 1.0)) * 180.0 / M_PI;
+                    timing_.tcpCostEval_ms += msNow(tOrientCheck);
+                    
+                    if (angleDev_deg > config_.orientTolerance_deg) continue;  // 拒绝: TCP不水平
+                }
             }
             
             // TCP代价评估
@@ -699,14 +688,8 @@ private:
     
     void cacheTcpPose(const RRTNodeSO& node) const {
         if (node.tcpCached) return;
-        if (config_.useSOForwardKin) {
-            checker_.forwardKinematics(node.config, node.tcpPose);
-        } else {
-            auto pose = robot_.forwardKinematics(node.config);
-            node.tcpPose.X = pose.position.x() * 1000;
-            node.tcpPose.Y = pose.position.y() * 1000;
-            node.tcpPose.Z = pose.position.z() * 1000;
-        }
+        // 所有FK通过SO库执行 (libHRCInterface.so)
+        checker_.forwardKinematics(node.config, node.tcpPose);
         node.tcpCached = true;
         timing_.fkCalls++;
     }
@@ -855,6 +838,9 @@ private:
     }
     
     void propagateCostUpdate(int nodeId) {
+        // 注: 默认tcpPoseWeight=0, 边代价退化为纯关节距离。
+        //     当 useTcpCost=true 时, 使用纯关节距离作为近似 (TCP代价需要FK, 开销太大),
+        //     因为 propagate 只在 rewire 改善路径时调用, 关节距离是代价下界。
         std::queue<int> q;
         q.push(nodeId);
         while (!q.empty()) {

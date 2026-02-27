@@ -22,9 +22,9 @@ SOFTWARE.
 
 ---
 
-Note: The HRC collision detection library (libHRCInterface.a, libCmpAgu.a, 
-libhansKinematics.a) is proprietary software owned by Guangdong Huayan Robotics 
-Co., Ltd. and is subject to separate licensing terms.
+Note: The HRC collision detection library (libHRCInterface.so) and the S-curve
+trajectory library (libCmpRML.so) are proprietary software owned by Guangdong
+Huayan Robotics Co., Ltd. and are subject to separate licensing terms.
 
 Contact: yuesj@huayan-robotics.com
 Website: https://www.huayan-robotics.com

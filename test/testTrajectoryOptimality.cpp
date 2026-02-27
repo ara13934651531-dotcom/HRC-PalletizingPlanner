@@ -19,6 +19,7 @@
 #include "PalletizingPlanner/PathPlannerSO.hpp"
 #include "PalletizingPlanner/PathOptimizer.hpp"
 #include "PalletizingPlanner/TimeParameterization.hpp"
+#include "PalletizingPlanner/NumericalIK.hpp"
 #include "PalletizingPlanner/Types.hpp"
 
 #include <cstdio>
@@ -65,52 +66,10 @@ struct Stats {
 };
 
 // ============================================================================
-// 数值逆运动学 (Damped Least-Squares)
+// IK求解: 使用共享 NumericalIK.hpp (消除代码重复)
 // ============================================================================
-struct IKResult {
-    JointConfig config;
-    double posError_mm = 1e10;
-    int iterations = 0;
-    bool converged = false;
-};
-
-IKResult numericalIK(CollisionCheckerSO& checker,
-    const Eigen::Vector3d& target_mm, const JointConfig& seed,
-    double tol_mm = 2.0, int maxIter = 500, double lambda = 5.0)
-{
-    IKResult result;
-    JointConfig q = seed;
-    const double eps = 1e-4;
-    const double jMin[6] = {-2*M_PI, -190*M_PI/180, -165*M_PI/180, -2*M_PI, -2*M_PI, -2*M_PI};
-    const double jMax[6] = { 2*M_PI,   10*M_PI/180,  165*M_PI/180,  2*M_PI,  2*M_PI,  2*M_PI};
-
-    for (int iter = 0; iter < maxIter; iter++) {
-        result.iterations = iter + 1;
-        SO_COORD_REF tcp;
-        if (!checker.forwardKinematics(q, tcp)) return result;
-        Eigen::Vector3d pos(tcp.X*1000, tcp.Y*1000, tcp.Z*1000);
-        Eigen::Vector3d err = target_mm - pos;
-        result.posError_mm = err.norm();
-        if (result.posError_mm < tol_mm) { result.config = q; result.converged = true; return result; }
-
-        Eigen::Matrix<double,3,6> J;
-        for (int j = 0; j < 6; j++) {
-            JointConfig qp = q; qp.q[j] += eps;
-            SO_COORD_REF tp; checker.forwardKinematics(qp, tp);
-            J.col(j) = (Eigen::Vector3d(tp.X*1000,tp.Y*1000,tp.Z*1000) - pos) / eps;
-        }
-        Eigen::Matrix3d JJT = J * J.transpose() + lambda*lambda*Eigen::Matrix3d::Identity();
-        Eigen::Matrix<double,6,1> dq = J.transpose() * JJT.ldlt().solve(err);
-
-        double maxStep = 0.08;
-        double dqN = dq.norm();
-        if (dqN > maxStep) dq *= maxStep / dqN;
-        for (int j = 0; j < 6; j++)
-            q.q[j] = std::clamp(q.q[j] + dq(j), jMin[j], jMax[j]);
-    }
-    result.config = q;
-    return result;
-}
+using palletizing::IKResult;
+using palletizing::numericalIK;
 
 // ============================================================================
 // 测试用例定义
@@ -192,7 +151,7 @@ void testA_FreeSpaceBaseline(RobotModel& robot, CollisionCheckerSO& checker) {
     cfg.shortcutIterations = 50;
     cfg.splineResolution = 30;
     cfg.collisionResolution = 0.03;
-    cfg.freeTcpDuringTransit = true;
+    cfg.constrainTcpHorizontal = false;  // 测试: 关闭TCP水平约束以测试纯路径规划
     PathPlannerSO planner(robot, checker, cfg);
 
     // 典型码垛工作空间配置对 (deg)
@@ -263,11 +222,22 @@ void testB_ObstacleAvoidance(RobotModel& robot, CollisionCheckerSO& checker) {
     printf("╚══════════════════════════════════════════════════════════════════╝\n\n");
 
     // 添加码垛环境障碍物
+    // 场景参数来源: testS50PalletizingSO.cpp scene 命名空间 (单位: mm)
     printf("  添加障碍物...\n");
-    double baseZ = 800;  // 电箱高度
+    constexpr double CAB_W = 550, CAB_D = 650, CAB_H = 800;   // 电箱尺寸
+    constexpr double FRM_W = 1200, FRM_D = 650, FRM_H = 2000;  // 框架尺寸
+    constexpr double FRM_TUBE_R = 30;                           // 框架管径
+    constexpr double FRAME_GAP = 50;                            // 框架与电箱间隙
+    const double baseZ = CAB_H;
+    const double frameCY = CAB_D/2 + FRAME_GAP + FRM_D/2;
 
-    // 框架立柱 (4 capsules)
-    double fHW = 600, fNY = 425, fFY = 1075, fZB = -baseZ, fZT = 1200, fR = 50;
+    // 框架立柱 (4 capsules) — envId 30-33
+    const double fHW = FRM_W/2;
+    const double fNY = frameCY - FRM_D/2;
+    const double fFY = frameCY + FRM_D/2;
+    const double fZB = -baseZ;
+    const double fZT = FRM_H - baseZ;
+    const double fR = FRM_TUBE_R + 20;  // 管径+裕度
     int frmIds[] = {30,31,32,33};
     double frmX[] = {-fHW, fHW, fHW, -fHW};
     double frmY[] = {fNY, fNY, fFY, fFY};
@@ -276,11 +246,12 @@ void testB_ObstacleAvoidance(RobotModel& robot, CollisionCheckerSO& checker) {
             Eigen::Vector3d(frmX[i],frmY[i],fZB), Eigen::Vector3d(frmX[i],frmY[i],fZT), fR);
     }
 
-    // 电箱 (base obstacle)
+    // 电箱 (base obstacle) — envId 10-11 (左右侧面)
+    const double cHW = CAB_W/2, cHD = CAB_D/2;
     checker.addEnvObstacleCapsule(10,
-        Eigen::Vector3d(-275,-325,-baseZ), Eigen::Vector3d(-275,325,-80), 80);
+        Eigen::Vector3d(-cHW,-cHD,-baseZ), Eigen::Vector3d(-cHW,cHD,-80), 80);
     checker.addEnvObstacleCapsule(11,
-        Eigen::Vector3d(275,-325,-baseZ), Eigen::Vector3d(275,325,-80), 80);
+        Eigen::Vector3d(cHW,-cHD,-baseZ), Eigen::Vector3d(cHW,cHD,-80), 80);
     printf("  框架(4) + 电箱(2) 已添加\n");
 
     // 启用环境碰撞
@@ -295,7 +266,7 @@ void testB_ObstacleAvoidance(RobotModel& robot, CollisionCheckerSO& checker) {
     cfg.shortcutIterations = 80;
     cfg.splineResolution = 40;
     cfg.collisionResolution = 0.02;
-    cfg.freeTcpDuringTransit = true;
+    cfg.constrainTcpHorizontal = false;  // 测试: 关闭TCP水平约束以测试纯路径规划
     PathPlannerSO planner(robot, checker, cfg);
 
     // 测试: 需要绕过障碍物的配置对
@@ -368,7 +339,7 @@ void testC_TcpToTcpWorkflow(RobotModel& robot, CollisionCheckerSO& checker) {
     cfg.goalBias = 0.2;
     cfg.shortcutIterations = 60;
     cfg.collisionResolution = 0.03;
-    cfg.freeTcpDuringTransit = true;
+    cfg.constrainTcpHorizontal = false;  // 测试: 关闭TCP水平约束以测试纯路径规划
     PathPlannerSO planner(robot, checker, cfg);
 
     // TCP 目标位置 (mm, 基座坐标系)
@@ -404,7 +375,7 @@ void testC_TcpToTcpWorkflow(RobotModel& robot, CollisionCheckerSO& checker) {
         IKResult bestIK;
         bestIK.posError_mm = 1e10;
         for (auto& seed : seeds) {
-            auto r = numericalIK(checker, tgt.pos_mm, seed, 3.0);
+            auto r = numericalIK(checker, robot, tgt.pos_mm, seed, 3.0);
             if (r.converged && r.posError_mm < bestIK.posError_mm) bestIK = r;
             if (bestIK.converged && bestIK.posError_mm < 1.0) break;
         }
@@ -472,7 +443,7 @@ void testD_ParameterSensitivity(RobotModel& robot, CollisionCheckerSO& checker) 
         cfg.goalBias = params[p].goalBias;
         cfg.shortcutIterations = 50;
         cfg.collisionResolution = 0.03;
-        cfg.freeTcpDuringTransit = true;
+        cfg.constrainTcpHorizontal = false;  // 测试: 关闭TCP水平约束以测试纯路径规划
         PathPlannerSO planner(robot, checker, cfg);
 
         // 3次取最优
@@ -509,7 +480,7 @@ void testE_PathQualityAnalysis(RobotModel& robot, CollisionCheckerSO& checker) {
     cfg.shortcutIterations = 80;
     cfg.splineResolution = 40;
     cfg.collisionResolution = 0.02;
-    cfg.freeTcpDuringTransit = true;
+    cfg.constrainTcpHorizontal = false;  // 测试: 关闭TCP水平约束以测试纯路径规划
     PathPlannerSO planner(robot, checker, cfg);
 
     // 代表性配置对
@@ -604,7 +575,7 @@ void testF_Repeatability(RobotModel& robot, CollisionCheckerSO& checker) {
     cfg.goalBias = 0.2;
     cfg.shortcutIterations = 50;
     cfg.collisionResolution = 0.03;
-    cfg.freeTcpDuringTransit = true;
+    cfg.constrainTcpHorizontal = false;  // 测试: 关闭TCP水平约束以测试纯路径规划
     PathPlannerSO planner(robot, checker, cfg);
 
     auto start = JointConfig::fromDegrees({-90,-50,40,0,10,-90});
@@ -646,12 +617,107 @@ void testF_Repeatability(RobotModel& robot, CollisionCheckerSO& checker) {
 }
 
 // ============================================================================
+// 测试G: TCP水平约束验证 — 码垛核心功能
+// ============================================================================
+void testG_TcpHorizontalConstraint(RobotModel& robot, CollisionCheckerSO& checker) {
+    printf("\n╔══════════════════════════════════════════════════════════════════╗\n");
+    printf("║  测试G: TCP水平约束验证 — 码垛场景TCP保持水平朝下              ║\n");
+    printf("╚══════════════════════════════════════════════════════════════════╝\n\n");
+
+    TCPPlannerConfig cfg;
+    cfg.maxIterations = 30000;
+    cfg.maxPlanningTime = 8.0;
+    cfg.stepSize = 0.15;
+    cfg.goalBias = 0.2;
+    cfg.shortcutIterations = 100;
+    cfg.collisionResolution = 0.02;
+    cfg.constrainTcpHorizontal = true;   // ★ 启用TCP水平约束
+    cfg.orientTolerance_deg = 30.0;      // 容差30度
+    PathPlannerSO planner(robot, checker, cfg);
+
+    // 码垛典型运动: 使用TCP水平的关节配置
+    // TCP水平条件: a235 = -J2+J3+J5 = 180° → J5 = 180 + J2 - J3
+    // HOME=[0,-90,0,0,90,0] → J5=180+(-90)-0=90 ✓
+    const char* names[] = {
+        "HOME→前伸", "HOME→侧伸", "前伸→侧伸", "小角度调整"
+    };
+    auto starts = std::vector<JointConfig>{
+        JointConfig::fromDegrees({0,-90,0,0,90,0}),      // HOME: J5=180-90-0=90
+        JointConfig::fromDegrees({0,-90,0,0,90,0}),      // HOME
+        JointConfig::fromDegrees({0,-70,20,0,90,0}),     // J5=180-70-20=90
+        JointConfig::fromDegrees({-10,-80,10,0,90,-10})   // J5=180-80-10=90
+    };
+    auto goals = std::vector<JointConfig>{
+        JointConfig::fromDegrees({0,-70,20,0,90,0}),     // J5=180-70-20=90
+        JointConfig::fromDegrees({30,-80,10,0,90,30}),    // J5=180-80-10=90
+        JointConfig::fromDegrees({30,-80,10,0,90,30}),    // J5=180-80-10=90
+        JointConfig::fromDegrees({10,-75,15,0,90,10})     // J5=180-75-15=90
+    };
+
+    printf("  %-25s %8s %8s %6s %6s %6s %8s\n",
+           "案例", "规划ms", "路径rad","节点", "TCP违",  "安全", "最大倾角");
+
+    int totalPass = 0, totalCases = 4;
+    for (int ci = 0; ci < totalCases; ci++) {
+        auto start = starts[ci];
+        auto goal  = goals[ci];
+        auto result = planner.plan(start, goal);
+        auto timing = planner.getTimingReport();
+
+        // 验证路径上每个点的TCP朝向
+        int tcpViolations = 0;
+        double maxTilt_deg = 0;
+        bool collisionFree = true;
+        if (result.isSuccess()) {
+            const auto& path = result.optimizedPath.empty() ? result.rawPath : result.optimizedPath;
+            for (const auto& wp : path.waypoints) {
+                // 检查TCP水平约束 — 与PathPlannerSO.hpp中相同的计算方式
+                SO_COORD_REF tcp;
+                if (checker.forwardKinematics(wp.config, tcp)) {
+                    double a_r = tcp.A * M_PI / 180.0;
+                    double b_r = tcp.B * M_PI / 180.0;
+                    // TCP Z轴在世界坐标系 (ZYX欧拉角推导)
+                    Eigen::Vector3d tcpZ(
+                        -std::sin(b_r),
+                        std::sin(a_r) * std::cos(b_r),
+                        std::cos(a_r) * std::cos(b_r)
+                    );
+                    Eigen::Vector3d desired(0, 0, -1);
+                    double dotProd = tcpZ.dot(desired);
+                    double angleDev_deg = std::acos(std::clamp(std::abs(dotProd), 0.0, 1.0)) * 180.0 / M_PI;
+                    if (angleDev_deg > maxTilt_deg) maxTilt_deg = angleDev_deg;
+                    if (angleDev_deg > cfg.orientTolerance_deg) tcpViolations++;
+                }
+                if (!checker.isCollisionFree(wp.config)) collisionFree = false;
+            }
+        }
+
+        bool pass = result.isSuccess() && tcpViolations == 0 && collisionFree;
+        if (pass) totalPass++;
+
+        printf("  %-25s %8.2f %8.3f %6d %6d %s %8.1f° %s\n",
+               names[ci],
+               timing.planningTotal_ms,
+               result.isSuccess() ? (result.optimizedPath.empty() ? result.rawPath : result.optimizedPath).totalLength() : 0.0,
+               timing.nodesExplored,
+               tcpViolations,
+               collisionFree ? "✅" : "❌",
+               maxTilt_deg,
+               pass ? "PASS" : (result.isSuccess() ? "WARN" : "FAIL"));
+    }
+
+    printf("\n  ── 结果 ──\n");
+    printf("  通过: %d/%d  TCP约束容差: %.1f°\n", totalPass, totalCases, cfg.orientTolerance_deg);
+    printf("  码垛核心要求: TCP必须保持水平朝下 (Z轴≈(0,0,-1)), 仅允许绕Z轴旋转\n");
+}
+
+// ============================================================================
 // 主函数
 // ============================================================================
 int main() {
     printf("╔═══════════════════════════════════════════════════════════════════╗\n");
-    printf("║   HR_S50-2000 系统性轨迹最优性测试 — Free-TCP RRT              ║\n");
-    printf("║   纯关节空间代价 + 运动中TCP自由变化 + 全面性能分析             ║\n");
+    printf("║   HR_S50-2000 系统性轨迹最优性测试 — Free-TCP + TCP-Constrained ║\n");
+    printf("║   关节空间代价 + TCP水平约束验证 + 全面性能分析                 ║\n");
     printf("╚═══════════════════════════════════════════════════════════════════╝\n\n");
 
     auto t_global = std::chrono::high_resolution_clock::now();
@@ -667,7 +733,7 @@ int main() {
     double initMs = std::chrono::duration<double,std::milli>(
         std::chrono::high_resolution_clock::now()-tInit).count();
     printf("  碰撞检测: ✅ libHRCInterface.so (%.2f ms)\n", initMs);
-    printf("  模式: Free-TCP (运动中TCP可变, 纯关节空间代价)\n\n");
+    printf("  模式: Free-TCP (A-F) + TCP-Constrained (G)\n\n");
 
     // 运行所有测试
     testA_FreeSpaceBaseline(robot, checker);
@@ -676,6 +742,7 @@ int main() {
     testD_ParameterSensitivity(robot, checker);
     testE_PathQualityAnalysis(robot, checker);
     testF_Repeatability(robot, checker);
+    testG_TcpHorizontalConstraint(robot, checker);
 
     // 总结
     double elapsed = std::chrono::duration<double>(

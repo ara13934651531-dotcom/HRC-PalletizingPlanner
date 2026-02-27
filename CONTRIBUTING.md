@@ -32,8 +32,8 @@ git checkout -b feature/your-feature-name
 ```bash
 mkdir build && cd build
 cmake ..
-make
-./bin/testPalletizingPlanner
+make -j$(nproc)
+HRC_LIB_PATH=../lib/libHRCInterface.so ../bin/testS50PalletizingSO
 ```
 
 #### 4. 提交更改

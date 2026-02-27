@@ -91,32 +91,44 @@ enum class VelocityProfileType {
 /**
  * @brief 时间参数化配置
  */
+/**
+ * @brief 时间参数化配置
+ *
+ * ⚠️ 默认值为安全回退值。生产代码应使用 fromRobotParams() 从 RobotDHParams 构造,
+ *    确保速度/加速度限制与实际机器人参数文件一致。
+ */
 struct TimeParameterizationConfig {
     VelocityProfileType profileType = VelocityProfileType::SCurve;
     
-    // 速度限制 (rad/s) - 默认安全值避免未初始化
+    /// 速度限制 (rad/s) — 安全回退值, 推荐用 fromRobotParams() 覆盖
+    /// 来源: RobotDHParams.maxVelocity = {120,120,120,180,180,180} deg/s
+    ///       转换后 ≈ {2.09, 2.09, 2.09, 3.14, 3.14, 3.14} rad/s
     JointVector maxVelocity = (JointVector() << 2.0, 2.0, 2.0, 3.0, 3.0, 3.0).finished();
     
-    // 加速度限制 (rad/s^2)
+    /// 加速度限制 (rad/s^2) — 安全回退值
+    /// 来源: RobotDHParams.maxAcceleration = {121,121,121,121,121,121} deg/s^2
+    ///       转换后 ≈ {2.11, 2.11, 2.11, 2.11, 2.11, 2.11} rad/s^2
+    ///       默认较保守的 {5,5,5,8,8,8} 用于开发/测试安全性
     JointVector maxAcceleration = (JointVector() << 5.0, 5.0, 5.0, 8.0, 8.0, 8.0).finished();
     
-    // Jerk限制 (rad/s^3) - 用于S曲线
+    /// Jerk限制 (rad/s^3) — 用于S曲线, 经验值 ≈ 10×加速度
     JointVector maxJerk = (JointVector() << 50.0, 50.0, 50.0, 80.0, 80.0, 80.0).finished();
     
-    // 速度缩放因子 [0, 1]
+    /// 速度缩放因子 [0, 1]
     double velocityScaling = 0.8;
     
-    // 采样周期 (s)
-    double samplePeriod = 0.001;  // 1ms
+    /// 采样周期 (s) — 4ms = 250Hz, 与华数上位机采样周期一致
+    double samplePeriod = 0.004;
     
-    /// 从机器人参数构造
+    /// 从机器人参数构造 (推荐: 确保限制与实际参数一致)
+    /// RobotDHParams.maxVelocity/maxAcceleration 单位为 deg/s, 此处转换为 rad/s
     static TimeParameterizationConfig fromRobotParams(const RobotDHParams& params) {
         TimeParameterizationConfig config;
         
         for (int i = 0; i < 6; ++i) {
             config.maxVelocity[i] = params.maxVelocity[i] * M_PI / 180.0;
             config.maxAcceleration[i] = params.maxAcceleration[i] * M_PI / 180.0;
-            config.maxJerk[i] = config.maxAcceleration[i] * 10.0;  // 默认jerk
+            config.maxJerk[i] = config.maxAcceleration[i] * 10.0;  // jerk ≈ 10×加速度 (经验值)
         }
         
         return config;
@@ -311,10 +323,11 @@ private:
                 segmentTime = std::max(segmentTime, t_joint);
             }
             
-            // 五次多项式 smootherStep 的峰值速度因子为 1.875 (ds/dτ在τ=0.5处=30/16)
-            // S曲线计算的时间假设峰值速度=v_max, 但实际插值峰值=1.875*Δq/T
+            // 五次多项式 smootherStep 的峰值速度因子 (ds/dτ在τ=0.5处 = 30/16 = 1.875)
+            // S曲线计算的时间假设峰值速度=v_max, 但实际插值峰值=kFactor*Δq/T
             // 需要放大segmentTime以确保实际插值不超限
-            segmentTime *= 1.875;
+            constexpr double kSmootherStepPeakVelocityFactor = 30.0 / 16.0; // = 1.875
+            segmentTime *= kSmootherStepPeakVelocityFactor;
             
             segmentTime = std::max(segmentTime, 0.001);
             

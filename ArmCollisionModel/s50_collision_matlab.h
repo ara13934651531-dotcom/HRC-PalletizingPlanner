@@ -191,14 +191,14 @@ extern SO_DINT getEnvObstacleCountInterface(void);
  * @brief 获取碰撞模型可视化数据 (世界坐标)
  * @param collideIndex 碰撞模型索引 [7]
  * @param collideType  碰撞模型类型 [7]  (1=Ball,2=Capsule,3=Lozenge)
- * @param dataList     碰撞模型数据 [7][9] (m — 注意这里是m不是mm!)
- * @param radiusList   碰撞模型半径 [7] (m)
+ * @param dataList     碰撞模型数据 [7][9] (mm — 实测为毫米, 非米)
+ * @param radiusList   碰撞模型半径 [7] (mm — 实测为毫米, 非米)
  */
 extern void getUIInfoMationInterface(
     SO_DINT   collideIndex[7],
     SO_DINT   collideType[7],
-    SO_LREAL  dataList[63],       /* 7x9 flattened, in meters */
-    SO_LREAL  radiusList[7]);     /* in meters */
+    SO_LREAL  dataList[63],       /* 7x9 flattened, in millimeters */
+    SO_LREAL  radiusList[7]);     /* in millimeters */
 
 /**
  * @brief 打印碰撞对调试信息

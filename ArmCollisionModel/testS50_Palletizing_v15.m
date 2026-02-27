@@ -73,9 +73,10 @@ cfg_conv.beltH=0.035; cfg_conv.rollerR=0.030; cfg_conv.nRollers=18;
 cfg_conv.color=[0.30,0.30,0.32];
 cfg_box.lx=0.35; cfg_box.wy=0.28; cfg_box.hz=0.25;
 cfg_box.color=[0.65,0.45,0.25];
-cfg_nBoxes = 12;  % v5.0: 3层×2行×2列
-cfg_frameGap = 0.05; cfg_convGap = 0.20;  % 匹配C++ FRAME_GAP=50, CONV_GAP=200
-cfg_convOffY = -0.80; cfg_convBoxYStart = 0.50; cfg_convBoxYStep = 0.25;
+cfg_nBoxes = 1;  % ★ 调试: 仅显示1箱轨迹 (后续改回12)
+cfg_animTaskLimit = 3;  % ★ 动画限制前N个任务 (0=全部)
+cfg_frameGap = 0.05; cfg_convGap = 0.50;  % 扩大间隙(500mm)避免传送带与码垛框架在X轴重叠
+cfg_convOffY = -0.80; cfg_convBoxYStart = -1.50; cfg_convBoxYStep = 0.25;  % 箱子从Y=-2.30开始,12个均在传送带范围内
 
 % --- 环境碰撞体 (由场景参数动态计算, 与C++ v5.0一致) ---
 % 注: 坐标为机器人基座坐标系(m), 下方初始化时根据scene参数计算
@@ -215,6 +216,20 @@ try
     end
     if ~exist(SO_HEADER, 'file')
         error('头文件不存在: %s', SO_HEADER);
+    end
+    
+    % 预加载stubs库 (解决libHRCInterface.so中的initTCPPosition undefined symbol)
+    % MATLAB的loadlibrary使用RTLD_LOCAL, 需要用RTLD_GLOBAL才能让符号对后续库可见
+    stubsPath = fullfile(fileparts(mfilename('fullpath')), 's50_tcp_stubs.so');
+    if exist(stubsPath, 'file')
+        try
+            dlopen_global(stubsPath);  % MEX: dlopen(path, RTLD_GLOBAL|RTLD_LAZY)
+        catch stubErr
+            fprintf('  stubs预加载失败: %s\n', stubErr.message);
+            fprintf('  备选方案: LD_PRELOAD=%s matlab ...\n', stubsPath);
+        end
+    else
+        fprintf('  ⚠ s50_tcp_stubs.so 未找到\n');
     end
     
     [~, warnings] = loadlibrary(SO_PATH, SO_HEADER, 'alias', 'libHRCInterface');
@@ -505,7 +520,7 @@ if soLoaded
         so_pall_tcp(ri,:) = [tcpS.X, tcpS.Y, tcpS.Z, tcpS.A, tcpS.B, tcpS.C];
         
         T_all = urdfFK(JOINTS, deg2rad(q_deg));
-        Rend = T_all{7}(1:3,1:3);
+        Rend = T_all{8}(1:3,1:3);  % 使用TCP末端姿态
         so_pall_tcpAxis(ri,:) = Rend(:,3)';
         
         scanCount = scanCount + 1;
@@ -746,7 +761,11 @@ fig3 = figure('Position',[20 20 1920 1080],'Color','w','Name','Collision Geometr
 ax3a = subplot(1,2,1,'Parent',fig3);
 hold(ax3a,'on');
 q_home = deg2rad([0,-90,0,0,90,0]);
-renderSTLRobotOnBase(ax3a, meshData, JOINTS, q_home, LINK_COLORS, 0.5, Tbase);
+if soLoaded
+    renderCapsuleRobotHandles(ax3a, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
+else
+    renderSTLRobotOnBase(ax3a, meshData, JOINTS, q_home, LINK_COLORS, 0.5, Tbase);
+end
 
 % 绘制环境碰撞体: 框架柱胶囊 (红色半透明)
 for ci = 1:size(ENV_COLL.frameColumns, 1)
@@ -790,7 +809,7 @@ if ~isempty(profileData)
     end
 end
 
-drawGround_v11(ax3a, -1.2, 1.5, -3.0, 1.5);
+drawGround_v11(ax3a, -2.0, 2.0, -3.0, 1.5);
 drawCabinet_v11(ax3a, cab, baseX, baseY);
 drawFrame_v11(ax3a, frame, CYL_N);
 drawPallet_v11(ax3a, pallet, frame, CJK_FONT);
@@ -800,7 +819,7 @@ ylabel(ax3a,'Y (m)','FontSize',10,'FontName',CJK_FONT);
 zlabel(ax3a,'Z (m)','FontSize',10,'FontName',CJK_FONT);
 title(ax3a,'环境碰撞体: 框架柱(红)+电气柜(橙)+传送带(灰)+放置箱(蓝)','FontSize',11,'FontWeight','bold','FontName',CJK_FONT);
 axis(ax3a,'equal'); grid(ax3a,'on');
-xlim(ax3a,[-1.2 1.5]); ylim(ax3a,[-3.0 1.5]); zlim(ax3a,[0 2.3]);
+xlim(ax3a,[-2.0 2.0]); ylim(ax3a,[-3.0 1.5]); zlim(ax3a,[0 3.5]);
 view(ax3a,135,25); camlight('headlight'); lighting(ax3a,'gouraud');
 
 % 3b: .so碰撞几何叠加
@@ -808,39 +827,18 @@ ax3b = subplot(1,2,2,'Parent',fig3);
 hold(ax3b,'on');
 if nTasks > 0
     ti_mid = ceil(nTasks/2);
-    q_rad_mid = deg2rad(pall_keyQ(ti_mid,:));
     q_deg_mid = pall_keyQ(ti_mid,:);
-    renderSTLRobotOnBase(ax3b, meshData, JOINTS, q_rad_mid, LINK_COLORS, 0.3, Tbase);
-    
     if soLoaded
-        vel=zeros(1,6); acc=zeros(1,6);
-        calllib('libHRCInterface','updateACAreaConstrainPackageInterface',q_deg_mid,vel,acc);
-        collIdx = int32(zeros(1,7)); collType = int32(zeros(1,7));
-        dataList = zeros(1,63); radiusList = zeros(1,7);
-        [collIdx,collType,dataList,radiusList] = calllib('libHRCInterface',...
-            'getUIInfoMationInterface',collIdx,collType,dataList,radiusList);
-        
-        dataM = reshape(dataList,9,7)';
-        for bi = 1:7
-            r = radiusList(bi);
-            d = dataM(bi,:);
-            ctype = collType(bi);
-            if ctype == 2
-                p1 = d(1:3); p2 = d(4:6);
-                drawCapsule3D(ax3b, p1, p2, r, [1 0.3 0.3], 0.25);
-            elseif ctype == 1
-                c = d(1:3);
-                [Xs,Ys,Zs] = sphere(12);
-                surf(ax3b, Xs*r+c(1), Ys*r+c(2), Zs*r+c(3),...
-                    'FaceColor',[0.3 0.3 1],'FaceAlpha',0.2,'EdgeColor','none');
-            end
-        end
+        renderCapsuleRobotHandles(ax3b, q_deg_mid, [baseX,baseY,baseZ], JOINTS);
+    else
+        q_rad_mid = deg2rad(q_deg_mid);
+        renderSTLRobotOnBase(ax3b, meshData, JOINTS, q_rad_mid, LINK_COLORS, 0.3, Tbase);
     end
     
-    title(ax3b,sprintf('Task %d: .so self-collision geometry | d=%.0fmm', ti_mid, pall_minD_so(ti_mid)),...
+    title(ax3b,sprintf('Task %d: .so 碰撞包络模型 | d=%.0fmm', ti_mid, pall_minD_so(ti_mid)),...
         'FontSize',11,'FontWeight','bold','FontName',CJK_FONT);
 end
-drawGround_v11(ax3b, -1.2, 1.5, -2.0, 1.5);
+drawGround_v11(ax3b, -2.0, 2.0, -2.0, 1.5);
 axis(ax3b,'equal'); grid(ax3b,'on');
 view(ax3b,140,30); camlight('headlight'); lighting(ax3b,'gouraud');
 
@@ -906,19 +904,21 @@ viewAngles = [135 25; 180 30; 90 20; 45 35];
 for vi = 1:min(4, length(keyPoses))
     ax = subplot(2,2,vi,'Parent',fig4);
     hold(ax,'on');
-    drawGround_v11(ax, -1.2, 1.5, -3.0, 1.5);
+    drawGround_v11(ax, -2.0, 2.0, -3.0, 1.5);
     drawCabinet_v11(ax, cab, baseX, baseY);
     drawFrame_v11(ax, frame, CYL_N);
     drawPallet_v11(ax, pallet, frame, CJK_FONT);
     drawConveyor_v15(ax, conv, CYL_N);
     
-    % 传送带上的箱子
+    % 传送带上的箱子 (仅显示尚未被抓取的箱子: ci > ti)
     bz_center = convSurfZ + box.hz/2;
+    ti = keyPoses(vi);
     for ci = 1:nBoxes
-        drawBox_v11(ax, [convBoxX, convBoxY(ci), bz_center], box);
+        if ci > ti  % 还未被抓取
+            drawBox_v11(ax, [convBoxX, convBoxY(ci), bz_center], box);
+        end
     end
     % 码垛位上的箱子 (到当前任务为止)
-    ti = keyPoses(vi);
     for ci = 1:min(ti, nBoxes)
         drawBox_v11(ax, placePos(ci,:), box);
     end
@@ -943,10 +943,14 @@ for vi = 1:min(4, length(keyPoses))
         drawCapsule3D(ax, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.08);
     end
     
-    q_rad = deg2rad(pall_keyQ(ti,:));
-    renderSTLRobotOnBase(ax, meshData, JOINTS, q_rad, LINK_COLORS, LINK_ALPHA, Tbase);
+    if soLoaded
+        renderCapsuleRobotHandles(ax, pall_keyQ(ti,:), [baseX,baseY,baseZ], JOINTS);
+    else
+        q_rad = deg2rad(pall_keyQ(ti,:));
+        renderSTLRobotOnBase(ax, meshData, JOINTS, q_rad, LINK_COLORS, LINK_ALPHA, Tbase);
+    end
     
-    % TCP轨迹
+    % TCP轨迹 (FK2骨架模型 — 与C++规划输出坐标系一致)
     mask = pall_raw(:,1)==pall_tasks(ti);
     rows = pall_raw(mask,:);
     q_all = rows(:,4:9);
@@ -954,12 +958,18 @@ for vi = 1:min(4, length(keyPoses))
     tcp_traj = zeros(ceil(nR/step),3); idx=0;
     for ri = 1:step:nR
         idx=idx+1;
-        Ts = urdfFK(JOINTS, deg2rad(q_all(ri,:)));
-        tcp_w = Tbase * Ts{7};
-        tcp_traj(idx,:) = tcp_w(1:3,4)';
+        skel = fk2Skeleton(q_all(ri,:));
+        tcp_traj(idx,:) = skel(5,:) + [baseX, baseY, baseZ];
     end
     tcp_traj = tcp_traj(1:idx,:);
     plot3(ax, tcp_traj(:,1), tcp_traj(:,2), tcp_traj(:,3), '-','Color',[1 0.3 0 0.85],'LineWidth',2.5);
+    % TCP起止点标记
+    if size(tcp_traj,1)>=2
+        plot3(ax, tcp_traj(1,1),tcp_traj(1,2),tcp_traj(1,3),...
+            'p','MarkerSize',14,'MarkerFaceColor',[0.1 0.8 0.2],'MarkerEdgeColor','k','LineWidth',1);
+        plot3(ax, tcp_traj(end,1),tcp_traj(end,2),tcp_traj(end,3),...
+            'h','MarkerSize',12,'MarkerFaceColor',[0.9 0.1 0.6],'MarkerEdgeColor','k','LineWidth',1);
+    end
     
     xlabel(ax,'X','FontSize',9,'FontName',CJK_FONT);
     ylabel(ax,'Y','FontSize',9,'FontName',CJK_FONT);
@@ -967,7 +977,7 @@ for vi = 1:min(4, length(keyPoses))
     title(ax,sprintf('Task %d/%d | d=%.0fmm', ti, nTasks, pall_minD_so(ti)),...
         'FontSize',11,'FontWeight','bold','FontName',CJK_FONT);
     axis(ax,'equal'); grid(ax,'on');
-    xlim(ax,[-1.2 1.5]); ylim(ax,[-3.0 1.5]); zlim(ax,[0 2.3]);
+    xlim(ax,[-2.0 2.0]); ylim(ax,[-3.0 1.5]); zlim(ax,[0 3.5]);
     view(ax, viewAngles(vi,:)); camlight('headlight'); lighting(ax,'gouraud');
 end
 sgtitle(fig4,sprintf('HR\\_S50-2000 v15 码垛场景 (FIFO %d箱, 环境碰撞体叠加)', nBoxes),...
@@ -1107,7 +1117,7 @@ saveFig(fig6, outputDir, '06_collision_distance');
 timing.rendering_ms = timing.rendering_ms + toc(tFig)*1000;
 
 %% ╔══════════════════════════════════════════════════════════════════════╗
-%% ║  Figure 7: TCP 轨迹 3D + 姿态向量                                  ║
+%% ║  Figure 7: TCP 3D轨迹 + 姿态朝向分析                               ║
 %% ╚══════════════════════════════════════════════════════════════════════╝
 fprintf('>>> Fig 7: TCP 3D trajectory + orientation...\n');
 tFig = tic;
@@ -1118,22 +1128,32 @@ hold(ax7a,'on');
 cmap_pall = turbo(nTasks);
 for ti = 1:nTasks
     mask = pall_raw(:,1)==pall_tasks(ti);
-    rows = pall_raw(mask,:);
-    q_all = rows(:,4:9);
-    nR = size(q_all,1); step = max(1,floor(nR/150));
+    rows_ti = pall_raw(mask,:);
+    q_all_ti = rows_ti(:,4:9);
+    nR = size(q_all_ti,1); step = max(1,floor(nR/60));
     tcp_p = zeros(ceil(nR/step),3); idx=0;
     for ri = 1:step:nR
         idx=idx+1;
-        Ts = urdfFK(JOINTS, deg2rad(q_all(ri,:)));
-        tcp_w = Tbase * Ts{7};
-        tcp_p(idx,:) = tcp_w(1:3,4)';
+        skel = fk2Skeleton(q_all_ti(ri,:));
+        tcp_p(idx,:) = skel(5,:) + [baseX, baseY, baseZ];
     end
     tcp_p = tcp_p(1:idx,:);
     plot3(ax7a, tcp_p(:,1), tcp_p(:,2), tcp_p(:,3), '-','LineWidth',1.5,'Color',[cmap_pall(ti,:) 0.8]);
+    % TCP起止点标记
+    if size(tcp_p,1)>=2
+        plot3(ax7a, tcp_p(1,1),tcp_p(1,2),tcp_p(1,3),...
+            'p','MarkerSize',12,'MarkerFaceColor',[0.1 0.8 0.2],'MarkerEdgeColor','k','LineWidth',1);
+        plot3(ax7a, tcp_p(end,1),tcp_p(end,2),tcp_p(end,3),...
+            'h','MarkerSize',10,'MarkerFaceColor',[0.9 0.1 0.6],'MarkerEdgeColor','k','LineWidth',1);
+    end
 end
-drawGround_v11(ax7a, -1.2, 1.5, -3.0, 1.5);
+drawGround_v11(ax7a, -2.0, 2.0, -3.0, 1.5);
 q_home = deg2rad([0,-90,0,0,90,0]);
-renderSTLRobotOnBase(ax7a, meshData, JOINTS, q_home, LINK_COLORS, 0.25, Tbase);
+if soLoaded
+    renderCapsuleRobotHandles(ax7a, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
+else
+    renderSTLRobotOnBase(ax7a, meshData, JOINTS, q_home, LINK_COLORS, 0.25, Tbase);
+end
 
 % 环境碰撞体
 for eci = 1:size(ENV_COLL.frameColumns, 1)
@@ -1167,20 +1187,24 @@ hold(ax7b,'on');
 if soLoaded && ~isempty(tcpOrientError_deg)
     stride = max(1, floor(nPall/200));
     for ri = 1:stride:nPall
-        Ts = urdfFK(JOINTS, deg2rad(pall_raw(ri,4:9)));
-        tcp_w = Tbase * Ts{7};
-        pos = tcp_w(1:3,4)';
-        zaxis = tcp_w(1:3,3)' * 0.05;
+        skel = fk2Skeleton(pall_raw(ri,4:9));
+        pos = skel(5,:) + [baseX, baseY, baseZ];
+        zdir = skel(5,:) - skel(4,:); % Wrist→TCP 方向 = 工具轴方向
+        zdir = zdir / max(norm(zdir), 1e-9) * 0.05; % 归一化后缩放
         err = tcpOrientError_deg(ri);
         if err < 15, c = [0 0.7 0.2];
         elseif err < 30, c = [0.8 0.6 0];
         else, c = [0.9 0.1 0.1]; end
-        quiver3(ax7b, pos(1),pos(2),pos(3), zaxis(1),zaxis(2),zaxis(3),...
+        quiver3(ax7b, pos(1),pos(2),pos(3), zdir(1),zdir(2),zdir(3),...
             'Color',c,'LineWidth',0.8,'MaxHeadSize',0.3,'AutoScale','off');
     end
 end
-drawGround_v11(ax7b, -1.2, 1.5, -3.0, 1.5);
-renderSTLRobotOnBase(ax7b, meshData, JOINTS, q_home, LINK_COLORS, 0.2, Tbase);
+drawGround_v11(ax7b, -2.0, 2.0, -3.0, 1.5);
+if soLoaded
+    renderCapsuleRobotHandles(ax7b, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
+else
+    renderSTLRobotOnBase(ax7b, meshData, JOINTS, q_home, LINK_COLORS, 0.2, Tbase);
+end
 xlabel(ax7b,'X','FontSize',10,'FontName',CJK_FONT);
 ylabel(ax7b,'Y','FontSize',10,'FontName',CJK_FONT);
 zlabel(ax7b,'Z','FontSize',10,'FontName',CJK_FONT);
@@ -1202,7 +1226,7 @@ fig8 = figure('Position',[50 50 1700 950],'Color','w','Renderer','opengl','Name'
 
 ax3d = axes('Parent',fig8,'Position',[0.02 0.05 0.64 0.88]);
 hold(ax3d,'on');
-drawGround_v11(ax3d, -1.2, 1.5, -3.0, 1.5);
+drawGround_v11(ax3d, -2.0, 2.0, -3.0, 1.5);
 drawCabinet_v11(ax3d, cab, baseX, baseY);
 drawFrame_v11(ax3d, frame, CYL_N);
 drawPallet_v11(ax3d, pallet, frame, CJK_FONT);
@@ -1246,7 +1270,7 @@ xlabel(ax3d,'X (m)','FontSize',12,'FontWeight','bold','FontName',CJK_FONT);
 ylabel(ax3d,'Y (m)','FontSize',12,'FontWeight','bold','FontName',CJK_FONT);
 zlabel(ax3d,'Z (m)','FontSize',12,'FontWeight','bold','FontName',CJK_FONT);
 axis(ax3d,'equal'); grid(ax3d,'on');
-xlim(ax3d,[-1.2 1.5]); ylim(ax3d,[-3.0 1.5]); zlim(ax3d,[0 2.3]);
+xlim(ax3d,[-2.0 2.0]); ylim(ax3d,[-3.0 1.5]); zlim(ax3d,[0 3.5]);
 view(ax3d,VIEW_AZ,VIEW_EL); camlight('headlight'); lighting(ax3d,'gouraud');
 hTitle = title(ax3d,'Loading...','FontSize',16,'FontWeight','bold','FontName',CJK_FONT);
 
@@ -1257,17 +1281,32 @@ prevRobotH = gobjects(0);
 hCarryBox = gobjects(0);
 hToolCollSphere = gobjects(0);  % 工具碰撞球
 hTrail = gobjects(0);
+hGlobalTrail = gobjects(0);    % 全局TCP轨迹 (跨任务)
+globalTrail = [];               % 全局TCP点积累
+hTcpStartEnd = gobjects(0);    % 任务起止点标记
 allGifFrames = {};
 boxForTask = min((1:nTasks)', nBoxes);
 
-fprintf('  动画: %d tasks, subsample=%d, %d boxes\n', nTasks, ANIM_SUBSAMPLE, nBoxes);
+% 动画任务限制 (调试用: 仅播放前N个任务)
+if cfg_animTaskLimit > 0
+    nAnimTasks = min(cfg_animTaskLimit, nTasks);
+else
+    nAnimTasks = nTasks;
+end
+fprintf('  动画: %d/%d tasks, subsample=%d, %d boxes\n', nAnimTasks, nTasks, ANIM_SUBSAMPLE, nBoxes);
 
-for ti = 1:nTasks
+for ti = 1:nAnimTasks
     mask = pall_raw(:,1)==pall_tasks(ti);
     rows = pall_raw(mask,:);
     nR = size(rows,1);
     taskTrail = [];
     bi = boxForTask(ti);
+    
+    % 清除上一任务的起止点标记
+    if ~isempty(hTcpStartEnd) && any(isvalid(hTcpStartEnd))
+        delete(hTcpStartEnd(isvalid(hTcpStartEnd)));
+    end
+    hTcpStartEnd = gobjects(0);
     
     for ri = 1:ANIM_SUBSAMPLE:nR
         q_deg = rows(ri, 4:9);
@@ -1276,6 +1315,7 @@ for ti = 1:nTasks
         seg = rows(ri, 2);
         
         if soLoaded
+            % 碰撞检测 (update已在renderCapsuleRobotHandles中执行, 但此处需先做)
             velArr = vel; accArr = zeros(1,6);
             calllib('libHRCInterface','updateACAreaConstrainPackageInterface',q_deg,velArr,accArr);
             pairArr = int64([0,0]); distVal = 0.0;
@@ -1291,11 +1331,16 @@ for ti = 1:nTasks
         if ~isempty(prevRobotH) && any(isvalid(prevRobotH))
             delete(prevRobotH(isvalid(prevRobotH)));
         end
-        prevRobotH = renderSTLRobotHandles(ax3d, meshDataLow, JOINTS, q_rad, LINK_COLORS, LINK_ALPHA, Tbase);
         
-        Ts = urdfFK(JOINTS, q_rad);
-        tw = Tbase * Ts{7};
-        tcp = tw(1:3,4)';
+        % 使用碰撞包络模型 (SO库权威碰撞几何 + SO FK权威TCP)
+        if soLoaded
+            [prevRobotH, tcp] = renderCapsuleRobotHandles(ax3d, q_deg, [baseX, baseY, baseZ], JOINTS);
+        else
+            prevRobotH = renderSTLRobotHandles(ax3d, meshDataLow, JOINTS, q_rad, LINK_COLORS, LINK_ALPHA, Tbase);
+            Ts = urdfFK(JOINTS, q_rad);
+            tw = Tbase * Ts{8};
+            tcp = tw(1:3,4)';
+        end
         taskTrail = [taskTrail; tcp]; %#ok<AGROW>
         
         % 携带箱子 + 工具碰撞球
@@ -1345,6 +1390,19 @@ for ti = 1:nTasks
                 'FaceColor',[0.2 0.4 0.9],'FaceAlpha',0.08,'EdgeColor','none');
         end
         
+        % --- TCP轨迹显示 ---
+        % 全局轨迹 (灰色, 所有已完成任务)
+        globalTrail = [globalTrail; tcp]; %#ok<AGROW>
+        if ~isempty(hGlobalTrail) && any(isvalid(hGlobalTrail))
+            delete(hGlobalTrail(isvalid(hGlobalTrail)));
+        end
+        hGlobalTrail = gobjects(0);
+        if size(globalTrail,1)>1
+            hGlobalTrail = plot3(ax3d, globalTrail(:,1),globalTrail(:,2),globalTrail(:,3),...
+                '-','Color',[0.5 0.5 0.5 0.4],'LineWidth',1.2);
+        end
+        
+        % 当前任务轨迹 (橙色高亮)
         if ~isempty(hTrail) && any(isvalid(hTrail))
             delete(hTrail(isvalid(hTrail)));
         end
@@ -1352,6 +1410,18 @@ for ti = 1:nTasks
         if size(taskTrail,1)>1
             hTrail = plot3(ax3d, taskTrail(:,1),taskTrail(:,2),taskTrail(:,3),...
                 '-','Color',[1 0.3 0 0.85],'LineWidth',2.5);
+        end
+        
+        % 起止点标记: 绿色=起点, 品红=终点(实时更新)
+        if ~isempty(hTcpStartEnd) && any(isvalid(hTcpStartEnd))
+            delete(hTcpStartEnd(isvalid(hTcpStartEnd)));
+        end
+        hTcpStartEnd = gobjects(0);
+        if size(taskTrail,1)>=1
+            hTcpStartEnd(1) = plot3(ax3d, taskTrail(1,1),taskTrail(1,2),taskTrail(1,3),...
+                'p','MarkerSize',16,'MarkerFaceColor',[0.1 0.8 0.2],'MarkerEdgeColor','k','LineWidth',1);
+            hTcpStartEnd(2) = plot3(ax3d, tcp(1),tcp(2),tcp(3),...
+                'h','MarkerSize',14,'MarkerFaceColor',[0.9 0.1 0.6],'MarkerEdgeColor','k','LineWidth',1);
         end
         
         if dist>400, dColor=[0 0.7 0.2]; elseif dist>200, dColor=[0.8 0.6 0]; else, dColor=[0.9 0.1 0.1]; end
@@ -1373,6 +1443,24 @@ for ti = 1:nTasks
     if ~isempty(hToolCollSphere) && any(isvalid(hToolCollSphere)), delete(hToolCollSphere(isvalid(hToolCollSphere))); end
     hToolCollSphere = gobjects(0);
     fprintf('  Task %d/%d (%d frames) — placed: %d/%d\n', ti, nTasks, ceil(nR/ANIM_SUBSAMPLE), sum(placedFlag), nBoxes);
+end
+
+% 动画结束后补全未标记的放置箱子 (最后一个任务=回原位, seg从未达到6)
+for bi = 1:nBoxes
+    if ~placedFlag(bi)
+        placedFlag(bi) = true;
+        hPlacedBoxes(bi) = drawBox_v11(ax3d, placePos(bi,:), box);
+        hPlacedLabels(bi) = text(ax3d, placePos(bi,1),placePos(bi,2),...
+            placePos(bi,3)+box.hz/2+0.06,sprintf('#%d',bi),...
+            'FontSize',9,'FontWeight','bold','FontName',CJK_FONT,...
+            'HorizontalAlignment','center','Color',[0 0.4 0.7]);
+        r_box = ENV_COLL.boxR_m;
+        [Xs,Ys,Zs] = sphere(10);
+        hPlacedCollSpheres(bi) = surf(ax3d, Xs*r_box+placePos(bi,1),...
+            Ys*r_box+placePos(bi,2), Zs*r_box+placePos(bi,3),...
+            'FaceColor',[0.2 0.4 0.9],'FaceAlpha',0.08,'EdgeColor','none');
+        fprintf('  补全放置箱子 #%d\n', bi);
+    end
 end
 
 saveFig(fig8, outputDir, '08_dynamic_replay_v15');
@@ -1600,11 +1688,36 @@ function result = ifelse(cond, trueVal, falseVal)
 end
 
 function T_all = urdfFK(JOINTS, q_rad)
-    T_all = cell(7,1); T_all{1} = eye(4);
+    % 返回8个变换矩阵: T{1}=base(eye4), T{2..7}=链路1..6, T{8}=TCP末端
+    % elfin_end_joint: xyz=[0,0,0.1345] rpy=[0,0,pi] (固定关节, 无旋转自由度)
+    T_all = cell(8,1); T_all{1} = eye(4);
     for i = 1:6
         xyz = JOINTS(i,1:3); rpy = JOINTS(i,4:6);
         T_all{i+1} = T_all{i} * makeTrans(xyz) * makeRotRPY(rpy) * makeRotZ(q_rad(i));
     end
+    % 添加末端关节: elfin_end_joint (固定偏移 134.5mm + 绕Z旋转180°)
+    T_all{8} = T_all{7} * makeTrans([0, 0, 0.1345]) * makeRotRPY([0, 0, pi]);
+end
+
+function joints_m = fk2Skeleton(q_deg)
+    % FK2 经验骨架模型 — 返回5个关节位置 (米, 机器人基座坐标系)
+    % 通过对 SO 库 forwardKinematics2 输出的圆拟合经验导出, 已验证:
+    %   ZERO [0,0,0,0,0,0]   → TCP=(0, 0, 1.175)  ✓
+    %   HOME [0,-90,0,0,90,0]→ TCP=(0.800, 0, 0.065) ✓
+    %   J3=-90               → TCP=(0.380, 0, 0.795) ✓
+    %   J3=+90               → TCP=(0.380, 0, -0.355) ✓
+    %
+    % joints_m: 5x3 = [Base; Shoulder; Elbow; Wrist; TCP] 单位: 米
+    H = 0.220; L1 = 0.380; L2 = 0.420; L3 = 0.155; % 有效连杆长度 (m)
+    q1 = q_deg(1); q2 = q_deg(2); q3 = q_deg(3); q5 = q_deg(5);
+    arm_dir = [cosd(q1), sind(q1), 0];
+    a2 = -q2; a23 = -q2 + q3; a235 = -q2 + q3 + q5;
+    base     = [0, 0, 0];
+    shoulder = [0, 0, H];
+    elbow    = shoulder + L1 * [sind(a2)*arm_dir(1), sind(a2)*arm_dir(2), cosd(a2)];
+    wrist    = elbow    + L2 * [sind(a23)*arm_dir(1), sind(a23)*arm_dir(2), cosd(a23)];
+    tcp_pos  = wrist    + L3 * [sind(a235)*arm_dir(1), sind(a235)*arm_dir(2), cosd(a235)];
+    joints_m = [base; shoulder; elbow; wrist; tcp_pos];
 end
 
 function renderSTLRobot(ax, meshData, JOINTS, q_rad, colors, alpha)
@@ -1618,7 +1731,7 @@ function renderSTLRobot(ax, meshData, JOINTS, q_rad, colors, alpha)
             'FaceAlpha',alpha,'FaceLighting','gouraud','AmbientStrength',0.4,...
             'DiffuseStrength',0.7,'SpecularStrength',0.3);
     end
-    tcp = T_all{7}(1:3,4)';
+    tcp = T_all{8}(1:3,4)';  % 使用末端TCP (含elfin_end_joint偏移)
     plot3(ax,tcp(1),tcp(2),tcp(3),'rp','MarkerSize',10,'MarkerFaceColor','r');
     jpts = zeros(7,3);
     for i=1:7, jpts(i,:) = T_all{i}(1:3,4)'; end
@@ -1637,7 +1750,7 @@ function renderSTLRobotOnBase(ax, meshData, JOINTS, q_rad, colors, alpha, Tbase)
             'FaceAlpha',alpha,'FaceLighting','gouraud','AmbientStrength',0.4,...
             'DiffuseStrength',0.7,'SpecularStrength',0.3);
     end
-    tw = Tbase * T_all{7};
+    tw = Tbase * T_all{8};  % 使用TCP末端 (含elfin_end_joint 134.5mm偏移)
     plot3(ax,tw(1,4),tw(2,4),tw(3,4),'rp','MarkerSize',10,'MarkerFaceColor','r');
 end
 
@@ -1652,12 +1765,72 @@ function handles = renderSTLRobotHandles(ax, meshData, JOINTS, q_rad, colors, al
             'EdgeColor','none','FaceAlpha',alpha,'FaceLighting','gouraud',...
             'AmbientStrength',0.4,'DiffuseStrength',0.7,'SpecularStrength',0.3);
     end
-    tw = Tbase * T_all{7};
+    tw = Tbase * T_all{8};  % 使用TCP末端 (含elfin_end_joint 134.5mm偏移)
     handles(8) = plot3(ax,tw(1,4),tw(2,4),tw(3,4),'rp','MarkerSize',10,'MarkerFaceColor','r');
     jpts = zeros(7,3);
     for i=1:7, jw = Tbase*T_all{i}; jpts(i,:) = jw(1:3,4)'; end
     handles(9) = plot3(ax,jpts(:,1),jpts(:,2),jpts(:,3),'k-o','MarkerSize',4,...
         'MarkerFaceColor',[0.3 0.3 0.3],'LineWidth',1);
+end
+
+%% 碰撞包络模型渲染 (使用FK2经验骨架模型, 关节位置与C++ FK2一致)
+function [handles, tcp_world] = renderCapsuleRobotHandles(ax, q_deg, baseOffset, ~)
+    % 渲染机器人碰撞包络并返回TCP世界坐标 (m)
+    % 使用FK2经验骨架模型计算关节位置, 保证TCP与C++规划输出一致
+    % 输入: q_deg=关节角(deg), baseOffset=[bx,by,bz] 基座世界坐标(m)
+    % 输出: handles=图形句柄, tcp_world=TCP世界坐标 [x,y,z](m)
+    capsuleColors = {[0.4 0.4 0.45], [0.2 0.4 0.8], [0.2 0.7 0.3], ...
+                     [0.9 0.5 0.1], [0.6 0.2 0.8]};
+    capsuleAlpha = 0.45;
+    capsuleR = [0.070, 0.060, 0.050, 0.035]; % 连杆碰撞半径 (m): 基座/大臂/小臂/腕部
+    
+    bx = baseOffset(1); by = baseOffset(2); bz = baseOffset(3);
+    
+    % FK2 骨架计算 (纯数学, 无需SO库)
+    joints = fk2Skeleton(q_deg); % 5x3: [Base; Shoulder; Elbow; Wrist; TCP] (m)
+    joints_w = joints + [bx, by, bz]; % 世界坐标
+    
+    handles = gobjects(6,1); % 4连杆胶囊 + TCP标记 + 骨架线
+    
+    % 绘制4段连杆胶囊: Base→Shoulder, Shoulder→Elbow, Elbow→Wrist, Wrist→TCP
+    for li = 1:4
+        p1 = joints_w(li,:);
+        p2 = joints_w(li+1,:);
+        handles(li) = drawCapsule3D_h(ax, p1, p2, capsuleR(li), capsuleColors{li}, capsuleAlpha);
+    end
+    
+    % TCP标记 (红色五角星)
+    tcp_world = joints_w(5,:);
+    handles(5) = plot3(ax, tcp_world(1), tcp_world(2), tcp_world(3),...
+        'rp','MarkerSize',14,'MarkerFaceColor','r','LineWidth',1.5);
+    
+    % 骨架连线 (关节->关节)
+    handles(6) = plot3(ax, joints_w(:,1), joints_w(:,2), joints_w(:,3), 'k--o',...
+        'MarkerSize',5,'MarkerFaceColor',[0.3 0.3 0.3],'LineWidth',1.2);
+end
+
+function h = drawCapsule3D_h(ax, p1, p2, r, col, alpha)
+    % 绘制胶囊体并返回hggroup句柄 (删除句柄即清除所有子对象)
+    h = hggroup('Parent', ax);
+    v = p2-p1; L = norm(v);
+    if L < 1e-6, return; end
+    [X,Y,Z] = cylinder(r, 12);
+    Z = Z*L;
+    dd=[0;0;1]; td=v(:)/L;
+    cp = cross(dd,td);
+    if norm(cp) > 1e-6
+        RR=axang2r_local([cp'/norm(cp), acos(max(-1,min(1,dot(dd,td))))]);
+    else
+        RR=eye(3); if dot(dd,td)<0, RR(3,3)=-1; RR(1,1)=-1; end
+    end
+    for i=1:numel(X)
+        pt=RR*[X(i);Y(i);Z(i)]; X(i)=pt(1)+p1(1); Y(i)=pt(2)+p1(2); Z(i)=pt(3)+p1(3);
+    end
+    surf(X, Y, Z, 'Parent',h, 'FaceColor',col,'FaceAlpha',alpha,'EdgeColor','none',...
+        'FaceLighting','gouraud','AmbientStrength',0.4);
+    [Xs,Ys,Zs]=sphere(8);
+    surf(Xs*r+p1(1),Ys*r+p1(2),Zs*r+p1(3),'Parent',h,'FaceColor',col,'FaceAlpha',alpha,'EdgeColor','none');
+    surf(Xs*r+p2(1),Ys*r+p2(2),Zs*r+p2(3),'Parent',h,'FaceColor',col,'FaceAlpha',alpha,'EdgeColor','none');
 end
 
 function drawCapsule3D(ax, p1, p2, r, col, alpha)
