@@ -518,14 +518,14 @@ void testE_PathQualityAnalysis(RobotModel& robot, CollisionCheckerSO& checker) {
         SO_COORD_REF tcp;
         checker.forwardKinematics(opt.waypoints[i].config, tcp);
         printf("  [%3zu] %8.1f %8.1f %8.1f %8.1f %8.1f %8.1f\n",
-               i, tcp.X*1000, tcp.Y*1000, tcp.Z*1000, tcp.A, tcp.B, tcp.C);
+               i, tcp.X, tcp.Y, tcp.Z, tcp.A, tcp.B, tcp.C);
     }
     // 最后一个路点
     if (opt.waypoints.size() > 1) {
         SO_COORD_REF tcp;
         checker.forwardKinematics(opt.waypoints.back().config, tcp);
         printf("  [END] %8.1f %8.1f %8.1f %8.1f %8.1f %8.1f\n",
-               tcp.X*1000, tcp.Y*1000, tcp.Z*1000, tcp.A, tcp.B, tcp.C);
+               tcp.X, tcp.Y, tcp.Z, tcp.A, tcp.B, tcp.C);
     }
 
     // 碰撞距离分析

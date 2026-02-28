@@ -120,11 +120,11 @@ SegmentResult executeP2P(const char* name,
             if (rp.envCollision) r.envCollisionCount++;
             if (rp.selfMinDist_mm < r.minSelfDist_mm) r.minSelfDist_mm = rp.selfMinDist_mm;
             if (csv) { auto q=p.config.toDegrees();
-                // FK2返回m, CSV要求mm → ×1000
+                // FK2 v1.0.0 返回mm, 直接输出
                 fprintf(csv,"%d,%d,%d,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%d,%d,%.1f,%.1f,%.1f\n",
                     ti,si,(int)i,p.time,q[0],q[1],q[2],q[3],q[4],q[5],
                     rp.selfMinDist_mm,rp.selfCollision?1:0,rp.envCollision?1:0,
-                    rp.hasTcpPose?rp.tcpPose.X*1000:0,rp.hasTcpPose?rp.tcpPose.Y*1000:0,rp.hasTcpPose?rp.tcpPose.Z*1000:0);
+                    rp.hasTcpPose?rp.tcpPose.X:0,rp.hasTcpPose?rp.tcpPose.Y:0,rp.hasTcpPose?rp.tcpPose.Z:0);
             }
         }
         if (traj && (i%20==0||i==tr.size()-1)) {
@@ -132,8 +132,8 @@ SegmentResult executeP2P(const char* name,
             fprintf(traj,"%d %d %.4f",ti,si,p.time);
             for(int j=0;j<6;j++)fprintf(traj," %.4f",q[j]);
             for(int j=0;j<6;j++)fprintf(traj," %.3f",p.velocity[j]*180/M_PI);
-            // FK2返回m, 轨迹文件要求mm → ×1000
-            fprintf(traj," %.2f %.1f %.1f %.1f\n",r.minSelfDist_mm,tc.X*1000,tc.Y*1000,tc.Z*1000);
+            // FK2 v1.0.0 返回mm, 直接输出
+            fprintf(traj," %.2f %.1f %.1f %.1f\n",r.minSelfDist_mm,tc.X,tc.Y,tc.Z);
         }
     }
     r.collCheckTime_ms = std::chrono::duration<double,std::milli>(std::chrono::high_resolution_clock::now()-t2).count();
@@ -188,11 +188,11 @@ SegmentResult executeRRTStar(const char* name,
             if (rp.envCollision) r.envCollisionCount++;
             if (rp.selfMinDist_mm < r.minSelfDist_mm) r.minSelfDist_mm = rp.selfMinDist_mm;
             if (csv) { auto q=p.config.toDegrees();
-                // FK2返回m, CSV要求mm → ×1000
+                // FK2 v1.0.0 返回mm, 直接输出
                 fprintf(csv,"%d,%d,%d,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%d,%d,%.1f,%.1f,%.1f\n",
                     ti,si,(int)i,p.time,q[0],q[1],q[2],q[3],q[4],q[5],
                     rp.selfMinDist_mm,rp.selfCollision?1:0,rp.envCollision?1:0,
-                    rp.hasTcpPose?rp.tcpPose.X*1000:0,rp.hasTcpPose?rp.tcpPose.Y*1000:0,rp.hasTcpPose?rp.tcpPose.Z*1000:0);
+                    rp.hasTcpPose?rp.tcpPose.X:0,rp.hasTcpPose?rp.tcpPose.Y:0,rp.hasTcpPose?rp.tcpPose.Z:0);
             }
         }
         if (traj && (i%20==0||i==tr.size()-1)) {
@@ -200,8 +200,8 @@ SegmentResult executeRRTStar(const char* name,
             fprintf(traj,"%d %d %.4f",ti,si,p.time);
             for(int j=0;j<6;j++)fprintf(traj," %.4f",q[j]);
             for(int j=0;j<6;j++)fprintf(traj," %.3f",p.velocity[j]*180/M_PI);
-            // FK2返回m, 轨迹文件要求mm → ×1000
-            fprintf(traj," %.2f %.1f %.1f %.1f\n",r.minSelfDist_mm,tc.X*1000,tc.Y*1000,tc.Z*1000);
+            // FK2 v1.0.0 返回mm, 直接输出
+            fprintf(traj," %.2f %.1f %.1f %.1f\n",r.minSelfDist_mm,tc.X,tc.Y,tc.Z);
         }
     }
     r.collCheckTime_ms = std::chrono::duration<double,std::milli>(std::chrono::high_resolution_clock::now()-t2).count();
@@ -257,9 +257,9 @@ int main() {
         for (auto& p : pq) {
             auto q = JointConfig::fromDegrees({p[0],p[1],p[2],p[3],p[4],p[5]});
             SO_COORD_REF tc; checker.forwardKinematics(q, tc);
-            double r = std::sqrt(tc.X*tc.X+tc.Y*tc.Y)*1000;
+            double r = std::sqrt(tc.X*tc.X+tc.Y*tc.Y); // FK2 v1.0.0 返回mm
             printf("  [%4.0f,%4.0f,%4.0f,%4.0f,%4.0f,%4.0f]  %8.1f %8.1f %8.1f %8.0f\n",
-                   p[0],p[1],p[2],p[3],p[4],p[5], tc.X*1000,tc.Y*1000,tc.Z*1000, r);
+                   p[0],p[1],p[2],p[3],p[4],p[5], tc.X,tc.Y,tc.Z, r);
         }
         printf("\n");
     }
@@ -408,9 +408,9 @@ int main() {
     for (int i=0;i<numPositions;i++) {
         SO_COORD_REF tc; checker.forwardKinematics(placeConfigs[i].place, tc);
         auto& t=boxTargets[i].pos_mm;
-        double e=std::sqrt(std::pow(tc.X*1000-t.x(),2)+std::pow(tc.Y*1000-t.y(),2)+std::pow(tc.Z*1000-t.z(),2));
+        double e=std::sqrt(std::pow(tc.X-t.x(),2)+std::pow(tc.Y-t.y(),2)+std::pow(tc.Z-t.z(),2));
         printf("    %-10s target=(%.0f,%.0f,%.0f) actual=(%.0f,%.0f,%.0f) err=%.1f%s\n",
-               boxTargets[i].label.c_str(), t.x(),t.y(),t.z(), tc.X*1000,tc.Y*1000,tc.Z*1000,
+               boxTargets[i].label.c_str(), t.x(),t.y(),t.z(), tc.X,tc.Y,tc.Z,
                e, e<5?"":"  ⚠️");
     }
 
@@ -498,7 +498,8 @@ int main() {
             if (s==5) {
                 checker.removeTool(6); printf("    📦 工具球OFF\n");
                 SO_COORD_REF tc; checker.forwardKinematics(pc.place,tc);
-                double tx=tc.X*1000, ty=tc.Y*1000, tz=tc.Z*1000;
+                // FK2 v1.0.0 返回mm, 直接使用
+                double tx=tc.X, ty=tc.Y, tz=tc.Z;
                 int eid=46+t;
                 bool ok=checker.addEnvObstacleBall(eid,Eigen::Vector3d(tx,ty,tz-scene::BOX_HZ/2),boxEnvR);
                 printf("    📦 放置→envId=%d (%.0f,%.0f,%.0f) r=%.0f: %s\n",eid,tx,ty,tz-scene::BOX_HZ/2,boxEnvR,ok?"✅":"❌");
@@ -560,7 +561,8 @@ int main() {
         fprintf(fpSum,"\n# Box TCP (base frame, mm):\n");
         for (int i=0;i<numPositions;i++) {
             SO_COORD_REF tc; checker.forwardKinematics(placeConfigs[i].place,tc);
-            fprintf(fpSum,"box_%d_tcp_mm: %.1f %.1f %.1f\n",i,tc.X*1000,tc.Y*1000,tc.Z*1000);
+            // FK2 v1.0.0 返回mm, 直接输出
+            fprintf(fpSum,"box_%d_tcp_mm: %.1f %.1f %.1f\n",i,tc.X,tc.Y,tc.Z);
         }
         fprintf(fpSum,"\n# IK place (deg):\n");
         for (int i=0;i<numPositions;i++) {

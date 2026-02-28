@@ -27,6 +27,10 @@ upperGeo = [0,0,-50, 0,0,100, 100];
 wristGeo = [0,0,20, 140];
 
 homeJ = [0, -90, 0, 0, 90, 0];
+% v1.0.0 必须先调用 initilizeRobotType + setKinParams
+calllib('libHRCInterface','initilizeRobotType', int32(1));
+kinParams = [DH, 0, 0];  % 10-element: DH[8] + {0, 0}
+calllib('libHRCInterface','setKinParams', kinParams);
 calllib('libHRCInterface','initACAreaConstrainPackageInterface',...
     int32(1), DH, baseGeo, lowerGeo, elbowGeo, upperGeo, wristGeo, homeJ);
 

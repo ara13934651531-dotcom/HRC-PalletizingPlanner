@@ -1,12 +1,23 @@
 function testS50_Palletizing_v15()
 %% testS50_Palletizing_v15 - HR_S50-2000 v5.0 正确布局 + 完整碰撞 + 3D仿真
-%  v15.3 — 基于 v15.2 + FK2坐标系一致性修复:
+%  v15.4 — 基于 v15.3 + libHRCInterface v1.0.0 迁移:
 %
-%  v15.3 修复清单:
+%  v15.4 修复清单:
+%    1. SO库升级至 libHRCInterface v1.0.0
+%       - 新初始化流程: initilizeRobotType(1) → setKinParams → initAC
+%       - SO_INT 从 short 改为 int (int16→int32)
+%    2. FK2 输出单位从 m 改为 mm (v1.0.0 返回真实DH物理坐标, mm)
+%       - scanLastTcp_mm 移除 *1000 (FK2已返回mm)
+%       - pall_tcp_so 回退分支移除 /1000
+%    3. FK2 v1.0.0 返回真实 DH 物理坐标系 (非旧版压缩FK2)
+%       - ZERO [0,0,0,0,0,0] → TCP=(-1841.5, -390.2, 138.0) mm
+%       - HOME [0,-90,0,0,90,0] → TCP=(-158.5, -255.7, 2272.5) mm
+%    4. TODO: fk2Skeleton() 仍使用旧压缩FK2模型, 需替换为真实DH FK
+%       - 当前仅影响3D渲染 (机器人骨架位置近似), 不影响数据正确性
+%       - 所有碰撞/IK/FK数据通过SO库获取, 坐标系正确
+%
+%  v15.3 修复清单 (保留):
 %    1. 所有渲染统一使用FK2骨架模型 (与场景坐标系一致)
-%       - FK2 和 URDF FK 使用完全不同的坐标系 (压缩臂长 vs 物理臂长)
-%       - 场景布局(框架/传送带/电箱/箱子位置)全部在FK2坐标系中
-%       - URDF FK渲染会导致机器人超出场景边界, TCP坐标不匹配
 %    2. cfg_nBoxes默认1 (逐步验证, 确保正确后再扩展)
 %    3. C++同步限制为1个箱子 (MAX_BOXES=1)
 %
@@ -274,8 +285,12 @@ try
     wristGeo    = COLLISION_GEO.wrist;
     initJoint   = [0, -90, 0, 0, 90, 0];
     
+    % v1.0.0 必须先调用 initilizeRobotType + setKinParams
+    calllib('libHRCInterface', 'initilizeRobotType', int32(1));
+    kinParams = [DH_MM, 0, 0];  % 10-element: DH[8] + {0, 0}
+    calllib('libHRCInterface', 'setKinParams', kinParams);
     calllib('libHRCInterface', 'initACAreaConstrainPackageInterface', ...
-        int16(1), dh, baseGeo, lowerArmGeo, elbowGeo, upperArmGeo, wristGeo, initJoint);
+        int32(1), dh, baseGeo, lowerArmGeo, elbowGeo, upperArmGeo, wristGeo, initJoint);
     
     flags = int8([1, 1, 1]);
     calllib('libHRCInterface', 'setCPSelfColliderLinkModelOpenStateInterface', flags);
@@ -581,7 +596,7 @@ if soLoaded
         nTasks, min(pall_minD_so), max(pall_minD_so));
 else
     pall_minD_so = pall_minD;
-    pall_tcp_so = [pall_tcp/1000, zeros(nTasks,3)];  % mm→m 匹配FK2输出单位
+    pall_tcp_so = [pall_tcp, zeros(nTasks,3)];  % C++输出mm, FK2 v1.0.0也返回mm
 end
 
 %% ╔══════════════════════════════════════════════════════════════════════╗
@@ -639,7 +654,7 @@ if soLoaded
         tcpS.X=0; tcpS.Y=0; tcpS.Z=0; tcpS.A=0; tcpS.B=0; tcpS.C=0;
         [~, tcpS] = calllib('libHRCInterface', 'forwardKinematics2', q_deg, tcpS);
         so_pall_tcp(ri,:) = [tcpS.X, tcpS.Y, tcpS.Z, tcpS.A, tcpS.B, tcpS.C];
-        scanLastTcp_mm = [tcpS.X*1000, tcpS.Y*1000, tcpS.Z*1000];  % 记录TCP用于placed box
+        scanLastTcp_mm = [tcpS.X, tcpS.Y, tcpS.Z];  % FK2 v1.0.0 已返回mm
         
         % TCP Z轴: 从FK2 A,B,C (ZYX Euler deg) 计算 (避免混用urdfFK)
         % R = Rz(A)*Ry(B)*Rx(C), Z-axis = R*[0;0;1]

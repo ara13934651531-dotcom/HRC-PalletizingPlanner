@@ -178,9 +178,10 @@ ScenarioResult runScenario(
                 // SO FK未返回TCP位姿 — 使用直接FK调用
                 SO_COORD_REF tcp;
                 if (checker.forwardKinematics(pt.config, tcp)) {
-                    cs.tcpPos_mm[0] = tcp.X * 1000.0;
-                    cs.tcpPos_mm[1] = tcp.Y * 1000.0;
-                    cs.tcpPos_mm[2] = tcp.Z * 1000.0;
+                    // FK2 v1.0.0 直接返回mm, 无需转换
+                    cs.tcpPos_mm[0] = tcp.X;
+                    cs.tcpPos_mm[1] = tcp.Y;
+                    cs.tcpPos_mm[2] = tcp.Z;
                     cs.tcpOrient_deg[0] = tcp.A;
                     cs.tcpOrient_deg[1] = tcp.B;
                     cs.tcpOrient_deg[2] = tcp.C;

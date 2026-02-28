@@ -1,0 +1,18 @@
+{
+    "ToolNum": 1,
+    "tool1": {
+        "start": [0, 0, 0],
+        "end": [-0.12, 0, 0.12],
+        "radius": 0.05,
+        "type": "capsule",
+        "referenceFrame": "Wrist_Frame"
+    },
+
+    "tool2": {
+        "start": [-0.12, 0, 0.12],
+        "end": [-0.08, 0, 0.23],
+        "radius": 0.07,
+        "type": "capsule",
+        "referenceFrame": "Wrist_Frame"
+    }
+}

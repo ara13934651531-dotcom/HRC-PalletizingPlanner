@@ -1,0 +1,47 @@
+{
+    "RobType": "S10",
+    "DH": {
+        "d1": 0.1475,
+        "d2": 0.1985,
+        "d3": 0.1380,
+        "d4": 0.127,
+        "d5": 0.127,
+        "d6": 0.1155,
+        "a2": 0.607,
+        "a3": 0.566
+    },
+    "base": {
+        "start": [0, 0, 0.02],
+        "end": [0, 0, 0.18],
+        "radius": 0.09,
+        "type": "capsule",
+        "referenceFrame": "BaseFrame"
+    },
+    "lowerArm": {
+        "start": [0.00, 0, 0.22],
+        "end": [0.60, 0, 0.22],
+        "radius": 0.09,
+        "type": "capsule",
+        "referenceFrame": "LowerArmFrame"
+    },
+    "elbow": {
+        "start": [-0.01, 0, 0.06],
+        "end": [0.566, 0, 0.06],
+        "radius": 0.06,
+        "type": "capsule",
+        "referenceFrame": "ElbowFrame"
+    },
+    "upperArm": {
+        "start": [0, 0, -0.05],
+        "end": [0, 0, 0.1],
+        "radius": 0.05,
+        "type": "capsule",
+        "referenceFrame": "UpperArmFrame"
+    },
+    "wrist": {
+        "offset": [0, 0, 0.02],
+        "radius": 0.09,
+        "type": "sphere",
+        "referenceFrame": "WristFrame"
+    }
+}

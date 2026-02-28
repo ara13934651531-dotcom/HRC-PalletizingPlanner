@@ -1,66 +1,117 @@
-#include "InterfaceDataStruct.h"
+#pragma once
 
-#ifndef COMPLIME_CPP_INTERFACE
+/**
+ * @file algorithmLibInterface.h
+ * @brief HansRobot 碰撞检测与运动学公共 C API
+ *
+ * 本头文件声明了 libHRCInterface.so 导出的全部 57 个函数接口，
+ * 覆盖坐标变换、正逆解、安全平面、区域限制、自碰撞检测、
+ * 环境碰撞检测、急停预测和 TCP 管理 8 大功能模块。
+ *
+ * 支持型号: Elfin3 / Elfin5 / Elfin10 / Elfin15 /
+ *          S05 / S10 / S20 / S30 / S50
+ *
+ * 单位约定: 长度 mm, 角度 deg (除特别标注 rad 的参数)
+ *
+ * 线程安全: 同一时刻仅允许单线程调用（非线程安全）
+ *
+ * @version 1.0.0
+ * @date    2026-02-26
+ */
+
+/* ── 库版本信息 ── */
+#define HRC_VERSION_MAJOR  1
+#define HRC_VERSION_MINOR  0
+#define HRC_VERSION_PATCH  0
+#define HRC_VERSION_STRING "1.0.0"
+
+#ifdef _WIN32
+#define EXPORTED_SYMBOL __declspec(dllexport)
+#else
+#define EXPORTED_SYMBOL __attribute__((visibility("default")))
+#endif
+
+
+#include "hansTypeDef.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-#endif
 
 
-//   ********************************* 老版本安全平面相关接口   ***********************************************
-/**
- * @brief 初始化机器人工具位置
- * @param robotPosition 机器人的工具位置坐标
- * @return 无返回值
- */
-extern void initRobotToolPositionInterface(MC_COORD_REF robotPosition);
-
-/**
- * @brief 获取TCP末端与安全平面的距离和趋势
- * @param robotPosition 机器人人的 TCP 位姿
- * @param id 查询的安全平面 ID
- * @param distance 返回 TCP 末端与安全平面的相对距离，安全平面的 Z 轴方向定义为安全平面的正方向
- * @param trendency 返回 TCP 相对平面的运动趋势
- * @return 操作成功返回整数值，失败返回错误代码
- */
-extern RTS_IEC_INT getDistanceInterface(
-    MC_COORD_REF robotPosition,  // 机器人人的 TCP 位姿
-    RTS_IEC_INT id,              // 查询的安全平面 ID
-    RTS_IEC_LREAL* distance,     // TCP 末端与安全平面的相对距离
-    RTS_IEC_INT* trendency       // TCP 相对平面的运动趋势
+EXPORTED_SYMBOL MC_COORD_REF translateXYZtoZYZ
+(
+	MC_COORD_REF input
 );
 
-/**
- * @brief 更新机器人位置
- * @param robotPosition 更新后的机器人工具位置坐标
- * @return 无返回值
- */
-extern void updateRobotPositionInterface(MC_COORD_REF robotPosition);
-
-/**
- * @brief 获取平面状态
- * @param openList 返回的平面状态列表，指示哪些平面是打开的
- * @return 无返回值
- */
-extern void getPlaneStatesInterface(RTS_IEC_BOOL* openList);
-
-/**
- * @brief 移除指定的安全平面
- * @param id 要移除的安全平面 ID
- * @return 操作成功返回整数值，失败返回错误代码
- */
-extern RTS_IEC_INT removeSafePlaneInterface(RTS_IEC_INT id);
-
-/**
- * @brief 设置安全平面
- * @param pose 安全平面的参考坐标系的姿态，坐标系的 XY 平面为安全平面，Z 轴是安全平面的正方向。格式为 (x, y, z, Rx, Ry, Rz) 欧拉矩阵的相乘顺序为 RzRyRx
- * @param id 安全平面 ID
- * @return 操作成功返回整数值，失败返回错误代码
- */
-extern RTS_IEC_INT setSafePlaneInterface(
-    MC_COORD_REF pose,  // 安全平面的参考坐标系的姿态
-    RTS_IEC_INT id      // 安全平面 ID
+EXPORTED_SYMBOL MC_COORD_REF translateZYZtoXYZ
+(
+	MC_COORD_REF input
 );
+
+EXPORTED_SYMBOL MC_COORD_REF base2UserCoordTrans
+(
+	MC_COORD_REF base,
+	MC_COORD_REF userCoord
+);
+
+EXPORTED_SYMBOL MC_COORD_REF baseTCP2BaseCoordTrans
+(
+	MC_COORD_REF baseTCP,
+	MC_COORD_REF TCP
+);
+
+EXPORTED_SYMBOL MC_COORD_REF baseVel2UserCoordTrans
+(
+	MC_COORD_REF baseVel,
+	MC_COORD_REF userCoord
+);
+
+EXPORTED_SYMBOL MC_COORD_REF user2BaseCoordTrans
+(
+	MC_COORD_REF user,
+	MC_COORD_REF userCoord
+);
+
+
+//   ***********************    正逆解   **************************************************
+// 初始化机器人类型
+EXPORTED_SYMBOL void initilizeRobotType(RTS_IEC_INT robotType);
+
+// 设置杆件长度参数
+EXPORTED_SYMBOL RTS_IEC_BOOL setKinParams(RTS_IEC_LREAL* kinParams);
+
+EXPORTED_SYMBOL void setAbsoluteCalibParams
+(
+	RTS_IEC_LREAL scaleParam,			/* VAR_INPUT */	/* reducer scale param; */
+	RTS_IEC_LREAL reducerParams[6][7],	/* VAR_INPUT */	/* reducer params; */
+	RTS_IEC_LREAL jointCalib[5][6]		/* VAR_INPUT */	/* jointCalibParams; */
+);
+
+// 设置关节边界；
+EXPORTED_SYMBOL RTS_IEC_BOOL setJointSpceLimits(
+	RTS_IEC_LREAL* upper,
+	RTS_IEC_LREAL* lower);
+
+
+EXPORTED_SYMBOL RTS_IEC_BOOL setToolCoordinateSystem(RTS_IEC_LREAL* tool);
+
+EXPORTED_SYMBOL void updateFlexibleCompensateTorqueHRC(RTS_IEC_LREAL* torque);
+
+// 正解；
+EXPORTED_SYMBOL RTS_IEC_BOOL forwardKinematics2(RTS_IEC_LREAL* jointPosition, MC_COORD_REF* endFrame);
+
+
+//逆解；
+EXPORTED_SYMBOL RTS_IEC_BOOL inverseKinematics(MC_COORD_REF endFrame, RTS_IEC_LREAL* jointRefPos, RTS_IEC_LREAL* jointPos);
+
+// 计算笛卡尔速度
+EXPORTED_SYMBOL void calculateCartesianVelAndAccFromJoint(
+	RTS_IEC_LREAL* jointposition,			/* VAR_INPUT */
+	RTS_IEC_LREAL* jointVelocity,			/* VAR_INPUT */
+	RTS_IEC_LREAL* jointAcceleration,			/* VAR_INPUT */
+	MC_COORD_REF* cartVel,				/* VAR_OUTPUT */
+	MC_COORD_REF* cartAcc				/* VAR_OUTPUT */);
 
 /**
  * @brief 检查工具是否安全
@@ -68,8 +119,11 @@ extern RTS_IEC_INT setSafePlaneInterface(
  * @return 如果工具在安全状态返回 TRUE，否则返回 FALSE
  */
 extern RTS_IEC_BOOL isToolSafeInterface(MC_COORD_REF pose);
-
-
+/**
+ * @brief 设置线性轴的方向
+ * @param direction //设置直线轴的运动方向，只能[1,0,0],[0,1,0],[0,0,1];
+ */
+EXPORTED_SYMBOL void setLinearAxisDirection(RTS_IEC_LREAL* direction);
 
 ////////////////////////////////////////////// 新版本安全平面相关接口 ///////////////////////////////////////////////
 
@@ -112,7 +166,7 @@ void initACAreaConstrainPackageInterface(
  * @param velocity 这个参数用于计算TCP的碰撞预测功能，当前周期的 TCP 运动线速度 (x, y, z) 单位：mm/s^1
  */
 void updateACAreaConstrainPackageInterface(RTS_IEC_LREAL jointPositions[6], 
-                        RTS_IEC_LREAL jointVelocity[6]);
+                        RTS_IEC_LREAL jointVelocity[6], RTS_IEC_LREAL jointAccelerations[6]);
 
 
 
@@ -124,7 +178,7 @@ void updateACAreaConstrainPackageInterface(RTS_IEC_LREAL jointPositions[6],
  * @param ee2Tool TCP坐标 (X, Y, Z, Rx, Ry, Rz)  单位：mm, deg
  * @return 
  */
-extern void setACToolCoordinateInterface(MC_COORD_REF ee2Tool);
+EXPORTED_SYMBOL void setACToolCoordinateInterface(MC_COORD_REF ee2Tool);
 
 /**
  * @brief 添加一个区域限制半平面
@@ -132,7 +186,7 @@ extern void setACToolCoordinateInterface(MC_COORD_REF ee2Tool);
  * @param id 区域限制半平面的 ID (许可范围为 0-7)
  * @return 新添加的半平面的 ID
  */
-extern RTS_IEC_INT addACHalfPlaneAreaInterface(MC_COORD_REF pose, RTS_IEC_INT id);
+EXPORTED_SYMBOL RTS_IEC_INT addACHalfPlaneAreaInterface(MC_COORD_REF pose, RTS_IEC_INT id);
 
 /**
  * @brief 使用长宽高添加一个有向包络框限制区域
@@ -141,10 +195,10 @@ extern RTS_IEC_INT addACHalfPlaneAreaInterface(MC_COORD_REF pose, RTS_IEC_INT id
  * @param id 有向包络框的 ID (许可范围为 8-12)
  * @return 新添加的有向包络框的 ID
  */
-extern RTS_IEC_INT addACOrientedBoundingBoxAreaDefindLWHInterface(MC_COORD_REF pose, RTS_IEC_LREAL lwh[3], RTS_IEC_INT id);
+EXPORTED_SYMBOL RTS_IEC_INT addACOrientedBoundingBoxAreaDefindLWHInterface(MC_COORD_REF pose, RTS_IEC_LREAL lwh[3], RTS_IEC_INT id);
 
 
-extern RTS_IEC_INT addACOrientedBoundingBoxAreaDefindOffsetLWHInterface(MC_COORD_REF pose, RTS_IEC_LREAL offset[3], RTS_IEC_LREAL lwh[3], RTS_IEC_INT id);
+EXPORTED_SYMBOL RTS_IEC_INT addACOrientedBoundingBoxAreaDefindOffsetLWHInterface(MC_COORD_REF pose, RTS_IEC_LREAL offset[3], RTS_IEC_LREAL lwh[3], RTS_IEC_INT id);
 
 /**
  * @brief 使用对角角点定义一个有向包络框限制区域
@@ -154,7 +208,7 @@ extern RTS_IEC_INT addACOrientedBoundingBoxAreaDefindOffsetLWHInterface(MC_COORD
  * @param id 有向包络框的 ID (许可范围为 8-12)
  * @return 新添加的有向包络框的 ID
  */
-extern RTS_IEC_INT addACOrientedBoundingBoxAreaDefine2PInterface(MC_COORD_REF pose, RTS_IEC_LREAL p1[3], RTS_IEC_LREAL p2[3], RTS_IEC_INT id);
+EXPORTED_SYMBOL RTS_IEC_INT addACOrientedBoundingBoxAreaDefine2PInterface(MC_COORD_REF pose, RTS_IEC_LREAL p1[3], RTS_IEC_LREAL p2[3], RTS_IEC_INT id);
 
 
 
@@ -189,22 +243,23 @@ extern RTS_IEC_INT addACOrientedBoundingBoxAreaDefine2PInterface(MC_COORD_REF po
     Plane = 4                // 平面碰撞模型 
  * @param dataList      该参数表述碰撞体 UI 数据, 大小为长度为 7 行9列 [7][9]
     1. Ball 球碰撞模型
-    data 数据的【0-2】元素表示在 base 坐标下的球心偏移，格式为 （x,y,z）单位 m
+    data 数据的【0-2】元素表示在 base 坐标下的球心偏移，格式为 （x,y,z）单位 mm
     data 数据的【3-8】元素填充为 0
     --------
     2. Capsule 胶囊碰撞模型
-    data 数据的【0-2】元素表示在 base 坐标下的一个胶囊端点，格式为 （x,y,z）单位 m
-    data 数据的【3-5】元素表示在 base 坐标下的另一个胶囊端点，格式为 （x,y,z）单位 m
+    data 数据的【0-2】元素表示在 base 坐标下的一个胶囊端点，格式为 （x,y,z）单位 mm
+    data 数据的【3-5】元素表示在 base 坐标下的另一个胶囊端点，格式为 （x,y,z）单位 mm
    --------
-    2. Capsule 胶囊碰撞模型
-    data 数据的【0-6】元素表示圆角框在base下的几何中心坐标，格式为偏移+欧拉角（ZYX）（x,y,z,Rx,Ry,Rz）单位 m/rad
-    data 数据的【7-8】元素表示圆角框的xyz方向对应的长宽高（x,y,z）单位 m/rad
+    3. Lozenge 棱体碰撞模型
+    data 数据的【0-2】元素表示圆角框在base下的几何中心坐标，格式为偏移（x,y,z）单位 mm
+    data 数据的【3-5】元素表示欧拉角（ZYX）（Rx,Ry,Rz）单位 deg
+    data 数据的【6-8】元素表示圆角框的xyz方向对应的长宽高（x,y,z）单位 mm
 
- * @param radiusList     该参数表述碰撞体半径, 长度为 7
+ * @param radiusList     该参数表述碰撞体半径, 长度为 7，单位 mm
     
  */
 
-extern void getUIInfoMationInterface(
+EXPORTED_SYMBOL void getUIInfoMationInterface(
     RTS_IEC_DINT collideIndex_out[7], 
     RTS_IEC_DINT collideType_out[7], 
     RTS_IEC_LREAL dataList_out[7][9], 
@@ -214,22 +269,22 @@ extern void getUIInfoMationInterface(
  * 将工具的碰撞模型设置为球体。
  * 
  * @param toolIndex 修改的工具 index，当前最多支持两个工具，只能选择 1 或者 2；
- * @param offset 球体中心相对于工具 TCP 坐标系中的偏移（x,y,z）Unit:（m）；
- * @param radius 球体的半径 Unit:（m）；
+ * @param offset 球体中心相对于工具 TCP 坐标系中的偏移（x,y,z）Unit:（mm）；
+ * @param radius 球体的半径 Unit:（mm）；
  * @return  判断是否添加成功 
  */
-extern RTS_BOOL setCPToolCollisionBallShapeInterface(RTS_IEC_LINT toolIndex, RTS_IEC_LREAL offset[3], RTS_IEC_LREAL radius);
+EXPORTED_SYMBOL RTS_IEC_INT setCPToolCollisionBallShapeInterface(RTS_IEC_LINT toolIndex, RTS_IEC_LREAL offset[3], RTS_IEC_LREAL radius);
 
 /** 
  * 将工具的碰撞模型设置为胶囊体。
  * 
  * @param toolIndex 修改的工具 index，当前最多支持两个工具，只能选择 1 或者 2；
- * @param startPoint 胶囊体相对于工具 TCP 坐标系的起始点坐标 （x,y,z）Unit:（m）；
- * @param endPoint 胶囊体相对于工具 TCP 坐标系的终止点坐标 （x,y,z）Unit:（m）；
- * @param radius 胶囊体的半径  Unit:（m）；
+ * @param startPoint 胶囊体相对于工具 TCP 坐标系的起始点坐标 （x,y,z）Unit:（mm）；
+ * @param endPoint 胶囊体相对于工具 TCP 坐标系的终止点坐标 （x,y,z）Unit:（mm）；
+ * @param radius 胶囊体的半径  Unit:（mm）；
  * @return  判断是否添加成功 
  */
-extern RTS_BOOL setCPToolCollisonCapsuleShapeInterface(RTS_IEC_LINT toolIndex, RTS_IEC_LREAL startPoint[3], RTS_IEC_LREAL endPoint[3], RTS_IEC_LREAL radius);
+EXPORTED_SYMBOL RTS_IEC_INT setCPToolCollisonCapsuleShapeInterface(RTS_IEC_LINT toolIndex, RTS_IEC_LREAL startPoint[3], RTS_IEC_LREAL endPoint[3], RTS_IEC_LREAL radius);
 
 
 /** 
@@ -237,7 +292,7 @@ extern RTS_BOOL setCPToolCollisonCapsuleShapeInterface(RTS_IEC_LINT toolIndex, R
  * @param toolIndex 修改的工具 index，当前最多支持两个工具，只能选择 1 或者 2；
  * @return  判断是否删除成功 
 **/
-extern RTS_BOOL removeCPToolCollisonInterface(RTS_IEC_LINT toolIndex);
+EXPORTED_SYMBOL RTS_IEC_INT removeCPToolCollisonInterface(RTS_IEC_LINT toolIndex);
 
 
 /** 
@@ -251,10 +306,10 @@ extern RTS_BOOL removeCPToolCollisonInterface(RTS_IEC_LINT toolIndex);
     Wrist = 5,               // 腕部 
     Tool1 = 6,               // 末端工具1 
     Tool2 = 7,               // 末端工具2
- * @param distance 在没有发生碰撞的情况下 distance 表示 当前待检测连杆的最小距离， 如果发生了碰撞 distance 等于 0  Unit:（m）。
+ * @param distance 在没有发生碰撞的情况下 distance 表示 当前待检测连杆的最小距离， 如果发生了碰撞 distance 等于 0  Unit:（mm）。
  * @return 如果检测到自碰撞则返回 true，否则返回 false。
  */
-extern RTS_BOOL checkCPSelfCollisionInterface(RTS_IEC_LINT* colliderPair, RTS_IEC_LREAL* distance);
+EXPORTED_SYMBOL RTS_IEC_INT checkCPSelfCollisionInterface(RTS_IEC_LINT* colliderPair, RTS_IEC_LREAL* distance);
 
 
 /** 
@@ -264,7 +319,7 @@ extern RTS_BOOL checkCPSelfCollisionInterface(RTS_IEC_LINT* colliderPair, RTS_IE
  * input[1] 是否打开腕部连杆和虚拟墙的碰撞检测
  * input[2] 是否打开工具连杆和虚拟墙的碰撞检测
  */
-extern void setCPSelfColliderLinkModelOpenStateInterface(RTS_IEC_BOOL* input);
+EXPORTED_SYMBOL void setCPSelfColliderLinkModelOpenStateInterface(RTS_IEC_BOOL* input);
 
 
 /**
@@ -272,7 +327,7 @@ extern void setCPSelfColliderLinkModelOpenStateInterface(RTS_IEC_BOOL* input);
  * @param id 要删除的限制区域的 ID
  * @return 是否成功删除限制区域
  */
-extern RTS_IEC_INT deleteACAreaInterface(RTS_IEC_INT id);
+EXPORTED_SYMBOL RTS_IEC_INT deleteACAreaInterface(RTS_IEC_INT id);
 
 
 ////////////////////////////////////////////// 查询类接口  ///////////////////////////////////////////////
@@ -280,7 +335,7 @@ extern RTS_IEC_INT deleteACAreaInterface(RTS_IEC_INT id);
  * @brief 获取当前正在进行碰撞检测的区域 ID 列表
  * @param indexList 存储当前正在进行碰撞检测的区域 ID 列表 （长度13, 0-7 指代安全平面，8-12 指代有向包络）
  */
-extern void getACAreaOpenStateInterface(RTS_IEC_INT indexList[13]);
+EXPORTED_SYMBOL void getACAreaOpenStateInterface(RTS_IEC_INT indexList[13]);
 
 /**
  * @brief 查询区域的相对运动信息
@@ -291,7 +346,7 @@ extern void getACAreaOpenStateInterface(RTS_IEC_INT indexList[13]);
  * @param trendency 相对运动状态（MoveIn，MoveOut，RelativeStatic）
  * @return 是否成功获取相对运动信息
  */
-extern RTS_IEC_INT getACRelativeMotionInfoInterface(RTS_IEC_INT id, RTS_IEC_LREAL* measure, RTS_IEC_INT* trendency);
+EXPORTED_SYMBOL RTS_IEC_INT getACRelativeMotionInfoInterface(RTS_IEC_INT id, RTS_IEC_LREAL* measure, RTS_IEC_INT* trendency);
 
 /**
  * @brief 查询当前 TCP 是否在某一区域内部
@@ -299,18 +354,27 @@ extern RTS_IEC_INT getACRelativeMotionInfoInterface(RTS_IEC_INT id, RTS_IEC_LREA
  * @param checkResult 返回 TCP 是否在区域内部的结果
  * @return 是否成功执行查询
  */
-extern RTS_IEC_INT getACTCPInAreaStatusInterface(RTS_IEC_INT id, RTS_IEC_BOOL* checkResult);
+EXPORTED_SYMBOL RTS_IEC_INT getACTCPInAreaStatusInterface(RTS_IEC_INT id, RTS_IEC_BOOL* checkResult);
 
 /**
  * @brief 查询当前 TCP 是否在所有区域外部
  * @param indexList 存储当前 TCP 在内部的区域 ID 列表 （长度13, 0-7 指代安全平面，8-12 指代有向包络）
  * @return 是否成功执行查询
  */
-extern RTS_IEC_BOOL getACTCPInAreaListInterface(RTS_IEC_INT indexList[13]);
-
+EXPORTED_SYMBOL RTS_IEC_BOOL getACTCPInAreaListInterface(RTS_IEC_INT indexList[13]);
 
 /**
- * @brief 设置停止预测类型
+ * @brief 设置虚拟墙开始产生阻尼力时的距离阈值
+ * @param depth:	虚拟墙限制区域自动驱动阻尼带的距离阈值 。单位：毫米
+ * @return 无返回值
+ */
+EXPORTED_SYMBOL RTS_IEC_BOOL setDepthThresholdForDampingAreaInterface(RTS_IEC_LREAL depth);
+
+EXPORTED_SYMBOL RTS_IEC_BOOL getSafePlaneDampingFactorInterface(RTS_IEC_LREAL* dampFactor);
+
+////////////////////////////////////////////// 急停相关接口  ///////////////////////////////////////////////
+/**
+ * @brief 设置停止预测类型，不同类型对应不同加速度约束和加加速度约束
  * @param stopType 停止预测类型，枚举值：
  * - Cat0 = 1, 使用 cat0 碰撞急停
  * - Cat1 = 2, 使用 cat1 碰撞急停
@@ -318,32 +382,85 @@ extern RTS_IEC_BOOL getACTCPInAreaListInterface(RTS_IEC_INT indexList[13]);
  * - none = 4, 不使用碰撞急停位置预测
  * @return 无返回值
  */
-extern void setStopPredictionTypeInterface(RTS_IEC_INT stopType);
+EXPORTED_SYMBOL void setStopPredictionTypeInterface(RTS_IEC_INT stopType);
 
 /**
- * @brief 设置停止类型和减速
+ * @brief 设置停止类型和减速，
  * @param stopType 停止类型，枚举值：
- * - Cat0 = 1, 使用 cat0 碰撞急, 默认 200 rad/s^2
- * - Cat1 = 2, 使用 cat1 碰撞急停, 默认 60 rad/s^2
+ * - Cat0 = 1, 使用 cat0 碰撞急, 默认 850 °/s^2  8500 °/s^3
+ * - Cat1 = 2, 使用 cat1 碰撞急停, 默认 800 °/s^2  8000 °/s^3
  * - Cat2 = 3, 使用 cat2 碰撞急停，版本预留类型，目前暂时没有做该功能
  * - none = 4, 不使用碰撞急停位置预测
-
+ * @param accel 关节最大加速度约束
+ * @param jeck 关节最大加加速度约束
  */
-extern void setStopTypeAndDecelerationInterface(RTS_IEC_INT stopType, RTS_IEC_LREAL* accel);
-
+EXPORTED_SYMBOL void setStopTypeAndDecelerationInterface(RTS_IEC_INT stopType, RTS_IEC_LREAL* accel, RTS_IEC_LREAL* jeck);
 
 /**
- * @brief 设置虚拟墙开始产生阻尼力时的距离阈值
- * @param depth:	虚拟墙限制区域自动驱动阻尼带的距离阈值 。单位：毫米
- * @return 无返回值
+ * @brief 计算关节刹车距离
+ * @param jointPos 当前关节位置
+ * @param jointVel 当前关节速度
+ * @param jointAcc 当前关节加速度
+ * @param stop_distance 在当前速度和加速度下刹车所需距离
+ * @param stopPos 在当前速度和加速度下刹车停止后关节位置
  */
-extern RTS_IEC_BOOL setDepthThresholdForDampingAreaInterface(RTS_IEC_LREAL depth);
+EXPORTED_SYMBOL void calJointDeaccelerationDistanceInterface(RTS_IEC_LREAL* jointPos, RTS_IEC_LREAL* jointVel, RTS_IEC_LREAL* jointAcc, RTS_IEC_LREAL* stop_distance, RTS_IEC_LREAL* stopPos);
 
-extern RTS_IEC_BOOL getSafePlaneDampingFactorInterface(RTS_IEC_LREAL* dampFactor);
+EXPORTED_SYMBOL double printCollisionPairInterface();
 
-extern double printCollisionPairInterface();
-#ifndef COMPLIME_CPP_INTERFACE
+
+
+
+////////////////////////////////////////////// TCP 更新类接口  ///////////////////////////////////////////////
+
+/**
+ * @brief 初始化 TCP 位置信息
+ * @param p TCP 初始化姿态 (x, y, z, Rx, Ry, Rz) 单位：mm, deg
+ */
+EXPORTED_SYMBOL void initTCPPositionInterface(MC_COORD_REF p);
+
+/**
+ * @brief 更新 TCP 位置信息
+ * @param p 当前周期的 TCP 姿态信息 (x, y, z, Rx, Ry, Rz) 单位：mm, deg
+ */
+EXPORTED_SYMBOL void updateTCPPositionInterface(MC_COORD_REF p);
+
+
+//=============================================================================
+// [env-collision] fix(R2.H2): 环境碰撞检测 CDS 接口导出声明
+//=============================================================================
+
+/** @brief 添加球形环境障碍物, envId [30,45], center(mm), radius(mm) */
+EXPORTED_SYMBOL RTS_IEC_INT addEnvObstacleBallInterface(
+    RTS_IEC_LINT envId, RTS_IEC_LREAL center[3], RTS_IEC_LREAL radius);
+
+/** @brief 添加胶囊体环境障碍物, envId [30,45], startPt/endPt(mm), radius(mm) */
+EXPORTED_SYMBOL RTS_IEC_INT addEnvObstacleCapsuleInterface(
+    RTS_IEC_LINT envId, RTS_IEC_LREAL startPt[3],
+    RTS_IEC_LREAL endPt[3], RTS_IEC_LREAL radius);
+
+/** @brief 添加棱体环境障碍物, ref2local[6](deg,mm), offset[3](mm), xLen/yLen/zLen 尺寸(mm), radius(mm) */
+EXPORTED_SYMBOL RTS_IEC_INT addEnvObstacleLozengeInterface(
+    RTS_IEC_LINT envId, RTS_IEC_LREAL ref2local[6],
+    RTS_IEC_LREAL offset[3], RTS_IEC_LREAL xLen,
+    RTS_IEC_LREAL yLen, RTS_IEC_LREAL zLen, RTS_IEC_LREAL radius);
+
+/** @brief 删除环境障碍物, envId [30,45] */
+EXPORTED_SYMBOL RTS_IEC_INT removeEnvObstacleInterface(RTS_IEC_LINT envId);
+
+/** @brief 更新环境障碍物位姿, pose[6]=[rx,ry,rz(deg),tx,ty,tz(mm)] */
+EXPORTED_SYMBOL RTS_IEC_INT updateEnvObstaclePoseInterface(
+    RTS_IEC_LINT envId, RTS_IEC_LREAL pose[6]);
+
+/** @brief 设置连杆-环境碰撞开关, flags[7]={Base,LowerArm,Elbow,UpperArm,Wrist,Tool1,Tool2} */
+EXPORTED_SYMBOL void setLinkEnvCollisionEnabledInterface(RTS_IEC_BOOL flags[7]);
+
+/** @brief 获取已注册环境障碍物数量 */
+EXPORTED_SYMBOL RTS_IEC_INT getEnvObstacleCountInterface();
+
+/** @brief 查询环境障碍物是否已注册, envId [30,45] */
+EXPORTED_SYMBOL RTS_IEC_INT isEnvObstacleRegisteredInterface(RTS_IEC_LINT envId);
+
 #ifdef __cplusplus
 }
-#endif
 #endif

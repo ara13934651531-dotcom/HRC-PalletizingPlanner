@@ -1,24 +1,29 @@
 /**
  * @file CollisionCheckerSO.hpp
- * @brief 基于 libHRCInterface.so (HansAlgorithmExport) 的碰撞检测器
+ * @brief 基于 libHRCInterface.so v1.0.0 的碰撞检测器
  *
- * 动态加载独立开发的碰撞检测 .so 模块，替代旧的静态库方案。
- * 优势:
- *   - 单一 .so 文件，无需 libCmpAgu.a / libhansKinematics.a
- *   - 支持环境障碍物碰撞检测 (球/胶囊/棱体)
- *   - 更新的 API: updateAC 支持加速度参数
- *   - 内置正/逆运动学 (可用于TCP位姿验证)
+ * 动态加载 libHRCInterface.so v1.0.0 碰撞检测/运动学库。
+ * v1.0.0 初始化流程: initilizeRobotType → setKinParams → initACAreaConstrainPackageInterface
  *
  * 单位约定 (所有 .so 接口):
  *   - 碰撞几何/距离: mm
  *   - 关节角度: deg (接口层自动 rad→deg 转换)
  *   - 碰撞距离输出: mm
- *   - FK输出位置: m (米, 非mm!), 姿态: deg
- *   - IK输入位置: m (米, 非mm!), 姿态: deg
+ *   - FK2输出位置: mm (v1.0.0改为mm, 旧版为m!)
+ *   - FK2输出姿态: deg
+ *   - IK输入位置: m (注意: IK仍用m, 与FK2的mm不同!)
+ *   - IK输出关节角: deg
+ *   - getUIInfoMation 碰撞体数据: mm
+ *   - 环境障碍物坐标: mm
+ *
+ * ⚠️ v1.0.0 重要变更:
+ *   1. FK2返回位置单位从m改为mm
+ *   2. updateACAreaConstrainPackageInterface会原地修改输入数组(deg→rad),
+ *      调用后不要复用输入数组
  *
  * @author Guangdong Huayan Robotics Co., Ltd.
- * @version 3.0.0
- * @date 2026-02-23
+ * @version 4.0.0 (适配 libHRCInterface v1.0.0)
+ * @date 2026-02-27
  */
 
 #pragma once
@@ -114,7 +119,7 @@ struct CollisionReportSO {
     int  envViolatedAreas[13] = {};
     
     // TCP 位姿 (由 .so 内置FK计算)
-    SO_COORD_REF tcpPose = {};     // 位置: m, 姿态: deg (注意: .so FK返回米而非mm)
+    SO_COORD_REF tcpPose = {};     // 位置: mm, 姿态: deg (v1.0.0: FK2返回mm)
     bool hasTcpPose = false;
     
     /// 总体是否安全
@@ -154,13 +159,17 @@ using FnAddEnvCapsule = SO_INT(*)(SO_LINT, SO_LREAL[3], SO_LREAL[3], SO_LREAL);
 using FnAddEnvLozenge = SO_INT(*)(SO_LINT, SO_LREAL[6], SO_LREAL[3],
                                    SO_LREAL, SO_LREAL, SO_LREAL, SO_LREAL);
 using FnRemoveEnv = SO_INT(*)(SO_LINT);
+using FnUpdateEnvPose = SO_INT(*)(SO_LINT, SO_LREAL[6]);
+using FnIsEnvRegistered = SO_INT(*)(SO_LINT);
 using FnSetLinkEnvFlags = void(*)(SO_BOOL[7]);
 using FnGetEnvCount = SO_INT(*)();
 using FnInitTCPPos = void(*)(SO_COORD_REF);
 using FnUpdateTCPPos = void(*)(SO_COORD_REF);
 using FnSetStopType = void(*)(SO_INT, SO_LREAL*, SO_LREAL*);
+using FnSetStopPredType = void(*)(SO_INT);
 using FnCalcCartVelAcc = void(*)(SO_LREAL*, SO_LREAL*, SO_LREAL*,
                                   SO_COORD_REF*, SO_COORD_REF*);
+using FnSetToolCoord = void(*)(SO_COORD_REF);
 
 // ============================================================================
 // CollisionCheckerSO — 新一代碰撞检测器
@@ -223,7 +232,45 @@ public:
             return false;
         }
         
-        // S50 DH参数 + 统一碰撞几何 (从 CollisionGeometry.hpp 引用)
+        // ── v1.0.0 新初始化流程: initilizeRobotType → setKinParams → initAC ──
+        
+        // 1. 初始化机器人类型 (1 = S系列)
+        if (initRobotType_) {
+            initRobotType_(1);
+        } else {
+            fprintf(stderr, "CollisionCheckerSO: ⚠️ initilizeRobotType 不可用 (旧版SO?)\n");
+        }
+        
+        // 2. 设置运动学参数 (10个: DH[8] + 2个保留)
+        if (setKinParams_) {
+            SO_LREAL kinParams[10] = {
+                S50CollisionGeometry::dhParams[0],  // d1
+                S50CollisionGeometry::dhParams[1],  // d2
+                S50CollisionGeometry::dhParams[2],  // d3
+                S50CollisionGeometry::dhParams[3],  // d4
+                S50CollisionGeometry::dhParams[4],  // d5
+                S50CollisionGeometry::dhParams[5],  // d6
+                S50CollisionGeometry::dhParams[6],  // a2
+                S50CollisionGeometry::dhParams[7],  // a3
+                0.0, 0.0  // 保留
+            };
+            setKinParams_(kinParams);
+        } else {
+            fprintf(stderr, "CollisionCheckerSO: ⚠️ setKinParams 不可用 (旧版SO?)\n");
+        }
+        
+        // 3. 设置关节限位 (deg)
+        if (setJointLimits_) {
+            const auto& params = robot_.getParams();
+            SO_LREAL upper[6], lower[6];
+            for (int i = 0; i < 6; i++) {
+                upper[i] = params.jointMax[i] * 180.0 / M_PI;
+                lower[i] = params.jointMin[i] * 180.0 / M_PI;
+            }
+            setJointLimits_(upper, lower);
+        }
+        
+        // 4. S50 DH参数 + 统一碰撞几何 (从 CollisionGeometry.hpp 引用)
         SO_LREAL dh[8];
         for (int i = 0; i < 8; i++) dh[i] = S50CollisionGeometry::dhParams[i];
         
@@ -240,7 +287,7 @@ public:
         // 初始关节 (deg)
         SO_LREAL initJoint[6] = {0, 0, 0, 0, 0, 0};
         
-        // 调用初始化
+        // 调用碰撞功能包初始化
         initAC_(1, dh, baseGeo, lowerArmGeo, elbowGeo, upperArmGeo, wristGeo, initJoint);
         
         // 启用连杆-虚拟墙
@@ -256,7 +303,7 @@ public:
         timing_.initTime_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
         // 直接使用 CollisionGeometry.hpp 中的参数显示 (mm, 无需启发式转换)
-        printf("CollisionCheckerSO: ✅ libHRCInterface.so 初始化成功\n");
+        printf("CollisionCheckerSO: ✅ libHRCInterface.so v1.0.0 初始化成功\n");
         printf("  DH: [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f] mm\n",
              S50CollisionGeometry::dhParams[0], S50CollisionGeometry::dhParams[1],
              S50CollisionGeometry::dhParams[2], S50CollisionGeometry::dhParams[3],
@@ -466,7 +513,8 @@ public:
     /**
      * @brief 正运动学 (使用.so内置)
      * @param config 关节配置 (rad)
-     * @param[out] pose 输出TCP位姿 (位置: m, 始态: deg) 注意: 位置返回米(m)而非毫米(mm)
+     * @param[out] pose 输出TCP位姿 (位置: mm, 姿态: deg)
+     *             v1.0.0: 位置返回mm (旧版返回m)
      * @return 成功/失败
      */
     bool forwardKinematics(const JointConfig& config, SO_COORD_REF& pose) const {
@@ -487,7 +535,8 @@ public:
     
     /**
      * @brief 逆运动学 (使用.so内置)
-     * @param pose 目标TCP位姿 (位置: m, 始态: deg) 注意: 位置单位为米(m)
+     * @param pose 目标TCP位姿 (位置: m, 姿态: deg)
+     *             注意: IK输入位置单位为m, 与FK2输出的mm不同!
      * @param refConfig 参考关节配置 (rad)
      * @param[out] result 输出关节配置 (rad)
      * @return 成功/失败
@@ -652,6 +701,13 @@ private:
         // 可选接口 (不阻断初始化)
         #define TRY_LOAD(var, name) var = (decltype(var))dlsym(handle_, #name)
         
+        // v1.0.0 新接口
+        TRY_LOAD(initRobotType_,   initilizeRobotType);
+        TRY_LOAD(setKinParams_,    setKinParams);
+        TRY_LOAD(setJointLimits_,  setJointSpceLimits);
+        TRY_LOAD(setToolCoord_,    setACToolCoordinateInterface);
+        TRY_LOAD(setStopPredType_, setStopPredictionTypeInterface);
+        
         TRY_LOAD(addOBB_LWH_,     addACOrientedBoundingBoxAreaDefindLWHInterface);
         TRY_LOAD(addHalfPlane_,    addACHalfPlaneAreaInterface);
         TRY_LOAD(deleteArea_,      deleteACAreaInterface);
@@ -667,6 +723,8 @@ private:
         TRY_LOAD(addEnvCapsule_,   addEnvObstacleCapsuleInterface);
         TRY_LOAD(addEnvLozenge_,   addEnvObstacleLozengeInterface);
         TRY_LOAD(removeEnv_,       removeEnvObstacleInterface);
+        TRY_LOAD(updateEnvPose_,   updateEnvObstaclePoseInterface);
+        TRY_LOAD(isEnvRegistered_, isEnvObstacleRegisteredInterface);
         TRY_LOAD(setLinkEnvFlags_, setLinkEnvCollisionEnabledInterface);
         TRY_LOAD(getEnvCount_,     getEnvObstacleCountInterface);
         TRY_LOAD(initTCPPos_,      initTCPPositionInterface);
@@ -697,6 +755,13 @@ private:
     FnGetAreaList    getAreaList_     = nullptr;
     FnGetAreaOpen    getAreaOpen_     = nullptr;
     
+    // v1.0.0 新接口函数指针
+    FnInitRobotType  initRobotType_   = nullptr;
+    FnSetKinParams   setKinParams_    = nullptr;
+    FnSetJointLimits setJointLimits_  = nullptr;
+    FnSetToolCoord   setToolCoord_    = nullptr;
+    FnSetStopPredType setStopPredType_ = nullptr;
+    
     // 可选函数指针
     FnAddOBB_LWH     addOBB_LWH_     = nullptr;
     FnAddHalfPlane   addHalfPlane_    = nullptr;
@@ -713,6 +778,8 @@ private:
     FnAddEnvCapsule  addEnvCapsule_   = nullptr;
     FnAddEnvLozenge  addEnvLozenge_   = nullptr;
     FnRemoveEnv      removeEnv_       = nullptr;
+    FnUpdateEnvPose  updateEnvPose_   = nullptr;
+    FnIsEnvRegistered isEnvRegistered_ = nullptr;
     FnSetLinkEnvFlags setLinkEnvFlags_ = nullptr;
     FnGetEnvCount    getEnvCount_     = nullptr;
     FnInitTCPPos     initTCPPos_      = nullptr;

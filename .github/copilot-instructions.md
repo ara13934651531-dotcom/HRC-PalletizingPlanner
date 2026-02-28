@@ -32,15 +32,19 @@
 | 用户API `JointConfig::fromDegrees()` | **deg** | — |
 | 内部存储 `config.q[i]` / 路径文件 | **rad** | — |
 | HRC `.so` 接口 (update/FK/IK) | **deg** | **mm** |
-| **FK2 (`forwardKinematics2`) 输出** | — | **m** (不是mm!) |
+| **FK2 (`forwardKinematics2`) 输出** | — | **mm** (v1.0.0, 返回真实DH物理坐标) |
 | **FK2 TCP朝向输出 (A,B,C)** | **deg** | — |
+| **IK (`inverseKinematics`) 输入** | — | **m** (注意: 与FK2不同!) |
 | CollisionGeometry.hpp 碰撞几何 | — | **mm** |
 | `getUIInfoMationInterface` 输出 | — | **mm** |
 | `SceneConfig` / `OBBObstacle.lwh` | — | **m** |
 | HRC碰撞距离返回值 (SO) | — | **mm** |
-| MATLAB `fk2Skeleton()` 返回值 | — | **m** |
+| MATLAB `fk2Skeleton()` 返回值 | — | **m** (旧压缩FK2模型, 待替换) |
 | C++ 轨迹文件 TCP坐标 | **deg** | **mm** |
 | MATLAB 世界坐标系 (3D渲染) | — | **m** |
+
+> **⚠️ v1.0.0 关键变更**: FK2 从返回 **m** 改为返回 **mm** (真实DH物理坐标)。
+> IK 仍然接受 **m** 输入。`update()` 会原地修改输入数组 (deg→rad)，必须复制数组。
 
 ## 数据流 Pipeline
 
@@ -386,8 +390,8 @@ robot.getParams();  // DH参数, 关节限位, 速度限制
 | `initACAreaConstrainPackageInterface` | `robType, dh[8], baseGeo, lowerGeo, elbowGeo, upperGeo, wristGeo, initJoint` | void | mm,deg |
 | `updateACAreaConstrainPackageInterface` | `joint[6], vel[6], acc[6]` | void | deg |
 | `checkCPSelfCollisionInterface` | `pair[2], *dist` | SO_INT(1=碰撞) | mm |
-| `forwardKinematics2` | `joint[6], *tcp` | void | **位置m**, 朝向deg |
-| `inverseKinematics` | `*targetTcp, ref[6], *result` | SO_INT | m, deg |
+| `forwardKinematics2` | `joint[6], *tcp` | void | **位置mm**, 朝向deg |
+| `inverseKinematics` | `*targetTcp, ref[6], *result` | SO_INT | **位置m** (注意与FK2不同!), deg |
 | `getUIInfoMationInterface` | `idx[7], type[7], data[63], radius[7]` | void | mm |
 | `setCPToolCollisionBallShapeInterface` | `toolIdx, offset[3], radius` | SO_INT | mm |
 | `setCPToolCollisonCapsuleShapeInterface` | `toolIdx, start[3], end[3], radius` | SO_INT | mm |
@@ -402,7 +406,7 @@ robot.getParams();  // DH参数, 关节限位, 速度限制
 
 ```c
 typedef struct {
-    SO_LREAL X, Y, Z, A, B, C;  // 位置(m) + 朝向(deg)
+    SO_LREAL X, Y, Z, A, B, C;  // 位置(mm) + 朝向(deg)  [v1.0.0: FK2返回mm]
 } MC_COORD_REF;
 ```
 
@@ -422,7 +426,7 @@ dh[8] = [d1, d2, d3, d4, d5, d6, a2, a3]
 | C类型 | SO类型 | MATLAB类型 |
 |-------|--------|------------|
 | `double` | `SO_LREAL` | `double` |
-| `short` | `SO_INT` | `int16` |
+| `int` | `SO_INT` | `int32` |
 | `int` | `SO_DINT` | `int32` |
 | `long long` | `SO_LINT` | `int64` |
 | `signed char` | `SO_BOOL` | `int8` |
@@ -463,29 +467,27 @@ a2=900.0  a3=941.5
 | 安全裕度(自碰撞) | `10.0` | -- |
 | 安全裕度(环境) | `5.0` | -- |
 
-## 四套FK实现与约定差异（关键陷阱）
+## FK实现（v1.0.0 统一为真实DH坐标系）
 
-系统中存在四套FK实现，约定**互不兼容**：
+### v1.0.0 FK2 返回真实DH物理坐标 (mm)
 
 | FK实现 | ZERO构型TCP位置 | 可信度 |
 |--------|----------------|--------|
-| FK2 (`forwardKinematics2`) | (0, 0, 1175)mm -- 竖直 | 唯一正确 |
+| FK2 (`forwardKinematics2`) v1.0.0 | (-1841.5, -390.2, 138.0)mm — 水平伸出 | **唯一正确** |
 | `getUIInfoMation` | 不同约定 | 仅碰撞体 |
-| C++ DH FK (已移除) | 偏差~2284mm | X |
-| Python DH FK | 偏差~2984mm | X |
+| MATLAB `fk2Skeleton()` | (0, 0, 1175)mm — 旧压缩模型 | **已过时, 待替换** |
 
-### ⚠️ FK2 与 getUIInfoMation 使用完全不同的坐标系
+### v1.0.0 FK2 参考值
 
-**这是最关键的陷阱**: FK2 和 getUIInfoMation 返回的坐标在**完全不同的参考系**中：
+| 构型 | FK2 TCP (mm) | 说明 |
+|------|---------|------|
+| ZERO [0,0,0,0,0,0] | (-1841.5, -390.2, 138.0) | 手臂水平伸出, sum(a2+a3)=1841.5 |
+| HOME [0,-90,0,0,90,0] | (-158.5, -255.7, 2272.5) | 手臂竖直向上 |
 
-| 构型 | FK2 TCP (mm) | getUIInfo 手臂方向 | 说明 |
-|------|---------|-----------|------|
-| HOME [0,-90,0,0,90,0] | (800, 0, 65) — 水平 | Z=296→2158 — 竖直向上 | 同一构型, 完全不同! |
-| ZERO [0,0,0,0,0,0] | (0, 0, 1175) — 竖直 | X=0→-900 — 水平 | 同一构型, 完全不同! |
-
-- FK2 使用**压缩有效臂长** (总臂长~1175mm), 所有场景布局/IK/轨迹数据都在FK2坐标系
-- getUIInfoMation/URDF FK 使用**物理臂长** (总臂长~1842mm), 是真实物理坐标系
-- 两者之间**不存在简单的关节角偏移映射** (暴力搜索验证: 最佳偏移残差150-575mm/构型)
+- FK2 v1.0.0 使用**真实DH物理臂长** (总臂长~1842mm)
+- 所有场景布局/IK/轨迹数据都在FK2坐标系中
+- IK接受 **m** 输入, FK2返回 **mm** — 需要除以1000转换
+- `update()` 会原地修改输入数组 (deg→rad), 必须复制数组后使用
 
 ### 场景坐标系 = FK2 坐标系
 
@@ -496,12 +498,10 @@ a2=900.0  a3=941.5
 - 碰撞障碍物注册坐标 (addEnvObstacle*)
 - NumericalIK 的 target_mm
 
-在FK2空间中, 手臂伸展长度(~800mm)可以在框架(1200mm宽)内操作。
-在物理空间中, 手臂(~1842mm)远超框架边界, URDF FK渲染会导致机器人伸出场景之外。
+### FK2 经验骨架模型 (旧版, 仅MATLAB渲染用, 待替换)
 
-### FK2 经验骨架模型
-
-通过对 SO 库 FK2 输出系统性圆拟合导出的精确骨架:
+> **⚠️ 此模型仅适用于旧版SO库的压缩FK2坐标系, v1.0.0 FK2 已返回真实DH坐标。**
+> MATLAB渲染暂时仍使用此模型, 将在后续版本中替换为真实DH FK。
 
 ```
 H=220mm (肩高), L1=380mm (大臂), L2=420mm (小臂), L3=155mm (腕->TCP)
@@ -518,16 +518,15 @@ TCP      = Wrist    + L3 * [sin(a235)*arm_dir, cos(a235)]
 
 - J4/J6 只影响TCP**朝向**，不影响TCP**位置**
 - q2符号取反 (`a2 = -q2`)
-- H=220mm != d1=296.5mm -- FK2内部使用非标准DH约定
-- 此模型**用于MATLAB场景可视化**, 所有C++路径规划通过SO FK
+- H=220mm != d1=296.5mm -- 旧版FK2内部使用非标准DH约定
 
 ### FK使用规则
 
-1. C++ 所有FK/IK -> `CollisionCheckerSO.forwardKinematics()`
-2. MATLAB 场景渲染 + TCP -> `fk2Skeleton()` / `renderCapsuleRobotHandles()` (FK2坐标系)
-3. MATLAB STL纯展示 -> `urdfFK()` (物理坐标系, **不可与FK2场景混用**)
+1. C++ 所有FK/IK -> `CollisionCheckerSO.forwardKinematics()` (v1.0.0 真实DH mm)
+2. MATLAB 碰撞/IK数据 -> SO FK2 (v1.0.0 真实DH mm)
+3. MATLAB 场景渲染 -> `fk2Skeleton()` (旧压缩模型, **待替换**)
 4. `getUIInfoMation` -> 仅碰撞体几何, 不用于TCP
-5. **切勿混用**不同FK的坐标 — URDF FK渲染的机器人会超出FK2场景边界
+5. NumericalIK -> 通过SO FK2迭代求解, 输入/输出均为mm
 
 ## 码垛场景布局 (机器人基座坐标系)
 
@@ -721,7 +720,7 @@ target_link_libraries(testMyTest stdc++ m pthread dl)
 |---|------|------|------|
 | 1 | 单位 | `config.q[0] = 90` | `JointConfig::fromDegrees(...)` |
 | 2 | FK来源 | `robot.forwardKinematics()` | `checker.forwardKinematics()` |
-| 3 | FK2单位 | 当作mm | 位置是**m**, 朝向是deg |
+| 3 | FK2单位 | FK2返回m, 乘1000转mm | v1.0.0: FK2直接返回**mm**, 无需转换 |
 | 4 | TCP约束 | `freeTcpDuringTransit=true` | `constrainTcpHorizontal=true` |
 | 5 | MATLAB SO | 直接loadlibrary | 先dlopen_global桩函数 |
 | 6 | MC_COORD_REF | 不初始化/不捕获输出 | 逐字段初始化+[~,tcpS]捕获 |

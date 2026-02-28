@@ -1,0 +1,11 @@
+{
+    "toolNum": 1,
+    "tool1": {
+        "start": [0.2, 0, 0.1],
+        "end": [-0.2, 0, 0.1],
+        "radius": 0.08,
+        "type": "capsule",
+        "referenceFrame": "ToolFrame"
+    }
+
+}

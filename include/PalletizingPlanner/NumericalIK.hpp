@@ -8,7 +8,7 @@
  * 单位:
  *   - 目标位置: mm (毫米)
  *   - 关节角度: rad (内部) / deg (API输入)
- *   - FK输出: m (CollisionCheckerSO.forwardKinematics返回米)
+ *   - FK输出: mm (v1.0.0: CollisionCheckerSO.forwardKinematics返回mm)
  *
  * @author Guangdong Huayan Robotics Co., Ltd.
  * @version 1.0.0
@@ -67,13 +67,13 @@ inline IKResult numericalIK(CollisionCheckerSO& checker,
     for (int iter = 0; iter < maxIter; iter++) {
         result.iterations = iter + 1;
 
-        // 当前TCP位置 (FK返回m, 转mm)
+        // 当前TCP位置 (v1.0.0 FK2直接返回mm)
         SO_COORD_REF tcp;
         if (!checker.forwardKinematics(q, tcp)) {
             result.posError_mm = 1e10;
             return result;
         }
-        Eigen::Vector3d pos(tcp.X * 1000.0, tcp.Y * 1000.0, tcp.Z * 1000.0);
+        Eigen::Vector3d pos(tcp.X, tcp.Y, tcp.Z);
 
         // 位置误差
         Eigen::Vector3d err = target_mm - pos;
@@ -95,7 +95,7 @@ inline IKResult numericalIK(CollisionCheckerSO& checker,
                 J.col(j).setZero();
                 continue;
             }
-            J.col(j) = (Eigen::Vector3d(tp.X * 1000.0, tp.Y * 1000.0, tp.Z * 1000.0) - pos) / eps;
+            J.col(j) = (Eigen::Vector3d(tp.X, tp.Y, tp.Z) - pos) / eps;
         }
 
         // DLS: dq = J^T * (J*J^T + λ²I)^(-1) * err
