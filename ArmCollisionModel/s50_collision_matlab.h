@@ -125,11 +125,12 @@ extern void setCPSelfColliderLinkModelOpenStateInterface(
 /**
  * @brief 正运动学计算 TCP 位姿
  * @param jointDeg  关节角 [6] (deg)
- * @param tcp       输出: TCP位姿 {X,Y,Z,A,B,C} (位置: m, 姿态: deg)
- * @return 成功/失败
- * @note  位置返回米(m)!
+ * @param tcp       输出: TCP位姿 {X,Y,Z,A,B,C} (位置: mm, 姿态: deg)
+ * @note  v1.0.0: 位置返回 mm (真实DH物理坐标),不再是 m!
+ * @note  MATLAB声明为void以匹配calllib输出参数顺序
+ *        (实际SO库返回SO_INT, 但MATLAB不需要该返回值)
  */
-extern SO_INT forwardKinematics2(
+extern void forwardKinematics2(
     SO_LREAL  jointDeg[6],
     MC_COORD_REF *tcp);
 
@@ -245,10 +246,13 @@ extern double printCollisionPairInterface(void);
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  坐标变换
+ *  注: base2UserCoordTrans / baseTCP2BaseCoordTrans 返回 MC_COORD_REF by-value,
+ *      MATLAB loadlibrary 不支持 struct 返回类型, 故此处注释掉。
+ *      如需使用, 请通过 C MEX 封装调用。
  * ═══════════════════════════════════════════════════════════════════════ */
 
-extern MC_COORD_REF base2UserCoordTrans(MC_COORD_REF base, MC_COORD_REF userCoord);
-extern MC_COORD_REF baseTCP2BaseCoordTrans(MC_COORD_REF baseTCP, MC_COORD_REF TCP);
+/* extern MC_COORD_REF base2UserCoordTrans(MC_COORD_REF base, MC_COORD_REF userCoord); */
+/* extern MC_COORD_REF baseTCP2BaseCoordTrans(MC_COORD_REF baseTCP, MC_COORD_REF TCP); */
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  笛卡尔速度计算

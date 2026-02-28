@@ -1,8 +1,22 @@
 function testS50_Palletizing_v15()
 %% testS50_Palletizing_v15 - HR_S50-2000 v5.0 正确布局 + 完整碰撞 + 3D仿真
-%  v15.4 — 基于 v15.3 + libHRCInterface v1.0.0 迁移:
+%  v15.5 — 基于 v15.4 + 真实DH碰撞体渲染:
 %
-%  v15.4 修复清单:
+%  v15.5 修复清单:
+%    1. renderCapsuleRobotHandles 改用 SO 库 getUIInfoMation 真实碰撞体
+%       - 替代旧 fk2Skeleton 经验骨架模型 (坐标系完全错误)
+%       - 碰撞体位置直接来自 SO 库 (mm, DH物理坐标系)
+%       - FK2 获取精确 TCP 位置 (mm, 真实DH坐标)
+%    2. TCP 轨迹计算改用 soFK2_tcp (真实DH FK2)
+%       - Fig 4/7 TCP 轨迹: fk2Skeleton → soFK2_tcp
+%       - 保留 fk2Skeleton 作为 SO 不可用时的后备
+%    3. s50_collision_matlab.h 修复:
+%       - FK2 声明为 void (匹配 MATLAB calllib 输出参数顺序)
+%       - 注释掉 MC_COORD_REF by-value 返回函数 (MATLAB 不支持)
+%       - FK2 文档: m → mm (v1.0.0)
+%    4. 新增辅助函数: soFK2_tcp, soGetCollisionBodies
+%
+%  v15.4 修复清单 (保留):
 %    1. SO库升级至 libHRCInterface v1.0.0
 %       - 新初始化流程: initilizeRobotType(1) → setKinParams → initAC
 %       - SO_INT 从 short 改为 int (int16→int32)
@@ -12,7 +26,7 @@ function testS50_Palletizing_v15()
 %    3. FK2 v1.0.0 返回真实 DH 物理坐标系 (非旧版压缩FK2)
 %       - ZERO [0,0,0,0,0,0] → TCP=(-1841.5, -390.2, 138.0) mm
 %       - HOME [0,-90,0,0,90,0] → TCP=(-158.5, -255.7, 2272.5) mm
-%    4. TODO: fk2Skeleton() 仍使用旧压缩FK2模型, 需替换为真实DH FK
+%    4. [已完成 v15.5] fk2Skeleton() 已替换为 SO getUIInfoMation 真实碰撞体
 %       - 当前仅影响3D渲染 (机器人骨架位置近似), 不影响数据正确性
 %       - 所有碰撞/IK/FK数据通过SO库获取, 坐标系正确
 %
@@ -909,7 +923,7 @@ fig3 = figure('Position',[20 20 1920 1080],'Color','w','Name','Collision Geometr
 % 3a: 静态全场景 + 环境碰撞体
 ax3a = subplot(1,2,1,'Parent',fig3);
 hold(ax3a,'on');
-% FK2骨架渲染 (与场景坐标系一致, 不使用URDF FK — 坐标系不同)
+% SO碰撞体渲染 (真实DH坐标系, v1.0.0 getUIInfoMation)
 renderCapsuleRobotHandles(ax3a, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
 
 % 绘制环境碰撞体: 框架柱胶囊 (红色半透明)
@@ -980,7 +994,7 @@ hold(ax3b,'on');
 if nTasks > 0
     ti_mid = ceil(nTasks/2);
     q_deg_mid = pall_keyQ(ti_mid,:);
-    % FK2骨架渲染 (与场景坐标系一致)
+    % SO碰撞体渲染 (真实DH坐标系)
     renderCapsuleRobotHandles(ax3b, q_deg_mid, [baseX,baseY,baseZ], JOINTS);
     
     title(ax3b,sprintf('Task %d: .so 碰撞包络模型 | d=%.0fmm', ti_mid, pall_minD_so(ti_mid)),...
@@ -1099,10 +1113,10 @@ for vi = 1:min(4, length(keyPoses))
     end
     
     q_rad = deg2rad(pall_keyQ(ti,:));
-    % FK2骨架渲染 (与场景坐标系一致)
+    % SO碰撞体渲染 (真实DH坐标系)
     renderCapsuleRobotHandles(ax, pall_keyQ(ti,:), [baseX,baseY,baseZ], JOINTS);
     
-    % TCP轨迹 (FK2骨架模型 — 与C++规划输出坐标系一致)
+    % TCP轨迹 (SO FK2 真实DH坐标, mm→m)
     mask = pall_raw(:,1)==pall_tasks(ti);
     rows = pall_raw(mask,:);
     q_all = rows(:,4:9);
@@ -1110,8 +1124,12 @@ for vi = 1:min(4, length(keyPoses))
     tcp_traj = zeros(ceil(nR/step),3); idx=0;
     for ri = 1:step:nR
         idx=idx+1;
-        skel = fk2Skeleton(q_all(ri,:));
-        tcp_traj(idx,:) = skel(5,:) + [baseX, baseY, baseZ];
+        if soLoaded
+            tcp_traj(idx,:) = soFK2_tcp(q_all(ri,:))/1000 + [baseX, baseY, baseZ];
+        else
+            skel = fk2Skeleton(q_all(ri,:));
+            tcp_traj(idx,:) = skel(5,:) + [baseX, baseY, baseZ];
+        end
     end
     tcp_traj = tcp_traj(1:idx,:);
     plot3(ax, tcp_traj(:,1), tcp_traj(:,2), tcp_traj(:,3), '-','Color',[1 0.3 0 0.85],'LineWidth',2.5);
@@ -1286,8 +1304,12 @@ for ti = 1:nTasks
     tcp_p = zeros(ceil(nR/step),3); idx=0;
     for ri = 1:step:nR
         idx=idx+1;
-        skel = fk2Skeleton(q_all_ti(ri,:));
-        tcp_p(idx,:) = skel(5,:) + [baseX, baseY, baseZ];
+        if soLoaded
+            tcp_p(idx,:) = soFK2_tcp(q_all_ti(ri,:))/1000 + [baseX, baseY, baseZ];
+        else
+            skel = fk2Skeleton(q_all_ti(ri,:));
+            tcp_p(idx,:) = skel(5,:) + [baseX, baseY, baseZ];
+        end
     end
     tcp_p = tcp_p(1:idx,:);
     plot3(ax7a, tcp_p(:,1), tcp_p(:,2), tcp_p(:,3), '-','LineWidth',1.5,'Color',[cmap_pall(ti,:) 0.8]);
@@ -1301,7 +1323,7 @@ for ti = 1:nTasks
 end
 drawGround_v11(ax7a, -2.0, 2.0, -3.0, 1.5);
 q_home = deg2rad([0,-90,0,0,90,0]);
-    % FK2骨架渲染 (与场景坐标系一致)
+    % SO碰撞体渲染 (真实DH坐标系)
     renderCapsuleRobotHandles(ax7a, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
 
 % 环境碰撞体
@@ -1342,8 +1364,12 @@ hold(ax7b,'on');
 if soLoaded && ~isempty(tcpOrientError_deg)
     stride = max(1, floor(nPall/200));
     for ri = 1:stride:nPall
-        skel = fk2Skeleton(pall_raw(ri,4:9));
-        pos = skel(5,:) + [baseX, baseY, baseZ];
+        if soLoaded
+            pos = soFK2_tcp(pall_raw(ri,4:9))/1000 + [baseX, baseY, baseZ];
+        else
+            skel = fk2Skeleton(pall_raw(ri,4:9));
+            pos = skel(5,:) + [baseX, baseY, baseZ];
+        end
         % 使用FK2 A,B,C 导出的TCP Z轴 (so_pall_tcpAxis), 避免骨架近似误差
         zdir = so_pall_tcpAxis(ri,:) * 0.05;  % 已归一化, 缩放用于显示
         err = tcpOrientError_deg(ri);
@@ -1355,7 +1381,7 @@ if soLoaded && ~isempty(tcpOrientError_deg)
     end
 end
 drawGround_v11(ax7b, -2.0, 2.0, -3.0, 1.5);
-    % FK2骨架渲染 (与场景坐标系一致)
+    % SO碰撞体渲染 (真实DH坐标系)
     renderCapsuleRobotHandles(ax7b, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
 xlabel(ax7b,'X','FontSize',10,'FontName',CJK_FONT);
 ylabel(ax7b,'Y','FontSize',10,'FontName',CJK_FONT);
@@ -1513,7 +1539,7 @@ for ti = 1:nAnimTasks
             delete(prevRobotH(isvalid(prevRobotH)));
         end
         
-        % FK2骨架渲染+TCP (与场景坐标系一致, 不使用URDF FK)
+        % SO碰撞体渲染+TCP (真实DH坐标系, getUIInfoMation)
         [prevRobotH, tcp] = renderCapsuleRobotHandles(ax3d, q_deg, [baseX,baseY,baseZ], JOINTS);
         taskTrail = [taskTrail; tcp]; %#ok<AGROW>
         
@@ -1882,15 +1908,12 @@ function T_all = urdfFK(JOINTS, q_rad)
 end
 
 function joints_m = fk2Skeleton(q_deg)
-    % FK2 经验骨架模型 — 返回5个关节位置 (米, 机器人基座坐标系)
-    % 通过对 SO 库 forwardKinematics2 输出的圆拟合经验导出, 已验证:
-    %   ZERO [0,0,0,0,0,0]   → TCP=(0, 0, 1.175)  ✓
-    %   HOME [0,-90,0,0,90,0]→ TCP=(0.800, 0, 0.065) ✓
-    %   J3=-90               → TCP=(0.380, 0, 0.795) ✓
-    %   J3=+90               → TCP=(0.380, 0, -0.355) ✓
-    %
-    % joints_m: 5x3 = [Base; Shoulder; Elbow; Wrist; TCP] 单位: 米
-    H = 0.220; L1 = 0.380; L2 = 0.420; L3 = 0.155; % 有效连杆长度 (m)
+    % [已废弃] 旧版 FK2 经验骨架模型 — 坐标系与 v1.0.0 FK2 不一致
+    % 仅保留作为 SO 库不可用时的后备
+    % v1.0.0 FK2 真实值:
+    %   ZERO [0,0,0,0,0,0]   → TCP=(-1841.5, -390.2, 138.0) mm
+    %   HOME [0,-90,0,0,90,0]→ TCP=(-158.5, -255.7, 2272.5) mm
+    H = 0.220; L1 = 0.380; L2 = 0.420; L3 = 0.155;
     q1 = q_deg(1); q2 = q_deg(2); q3 = q_deg(3); q5 = q_deg(5);
     arm_dir = [cosd(q1), sind(q1), 0];
     a2 = -q2; a23 = -q2 + q3; a235 = -q2 + q3 + q5;
@@ -1900,6 +1923,36 @@ function joints_m = fk2Skeleton(q_deg)
     wrist    = elbow    + L2 * [sind(a23)*arm_dir(1), sind(a23)*arm_dir(2), cosd(a23)];
     tcp_pos  = wrist    + L3 * [sind(a235)*arm_dir(1), sind(a235)*arm_dir(2), cosd(a235)];
     joints_m = [base; shoulder; elbow; wrist; tcp_pos];
+end
+
+function tcp_mm = soFK2_tcp(q_deg)
+    % 调用 SO 库 FK2 获取 TCP 位置 (mm, 真实DH坐标系)
+    % 输入: q_deg — 关节角 (deg)
+    % 输出: tcp_mm — [X, Y, Z] (mm)
+    % 注意: 使用 q_deg 的副本, FK2 不修改输入
+    q_fk = double(q_deg(:)');
+    tcpS = libstruct('MC_COORD_REF');
+    tcpS.X=0; tcpS.Y=0; tcpS.Z=0; tcpS.A=0; tcpS.B=0; tcpS.C=0;
+    [~, tcpS] = calllib('libHRCInterface', 'forwardKinematics2', q_fk, tcpS);
+    tcp_mm = [tcpS.X, tcpS.Y, tcpS.Z];
+end
+
+function [bodyData, tcp_mm] = soGetCollisionBodies(q_deg)
+    % 调用 SO 库 update + getUIInfo + FK2, 返回碰撞体数据 (mm)
+    % bodyData.type(i) : 1=球, 2=胶囊
+    % bodyData.data(i,:) : 9-element, 胶囊=[p1x,p1y,p1z, p2x,p2y,p2z, ...]
+    % bodyData.radius(i) : 半径 (mm)
+    % tcp_mm : FK2 TCP [X,Y,Z] (mm)
+    q_up = double(q_deg(:)');
+    calllib('libHRCInterface','updateACAreaConstrainPackageInterface', q_up, zeros(1,6), zeros(1,6));
+    collIdx = int32(zeros(1,7)); collType = int32(zeros(1,7));
+    dataList = zeros(1,63); radiusList = zeros(1,7);
+    [~, collType, dataList, radiusList] = calllib('libHRCInterface',...
+        'getUIInfoMationInterface', collIdx, collType, dataList, radiusList);
+    bodyData.type = collType;
+    bodyData.data = reshape(dataList, 9, 7)';
+    bodyData.radius = radiusList;
+    tcp_mm = soFK2_tcp(q_deg);
 end
 
 function renderSTLRobot(ax, meshData, JOINTS, q_rad, colors, alpha)
@@ -1955,40 +2008,76 @@ function handles = renderSTLRobotHandles(ax, meshData, JOINTS, q_rad, colors, al
         'MarkerFaceColor',[0.3 0.3 0.3],'LineWidth',1);
 end
 
-%% 碰撞包络模型渲染 (使用FK2经验骨架模型, 关节位置与C++ FK2一致)
+%% 碰撞包络模型渲染 (使用SO库真实DH碰撞体, v1.0.0)
 function [handles, tcp_world] = renderCapsuleRobotHandles(ax, q_deg, baseOffset, ~)
     % 渲染机器人碰撞包络并返回TCP世界坐标 (m)
-    % 使用FK2经验骨架模型计算关节位置, 保证TCP与C++规划输出一致
+    % v15.5: 使用 SO 库 getUIInfoMation 获取真实碰撞体位置 (mm, DH坐标系)
+    %        + forwardKinematics2 获取TCP位置 (mm)
+    %        替代旧版 fk2Skeleton 经验模型
     % 输入: q_deg=关节角(deg), baseOffset=[bx,by,bz] 基座世界坐标(m)
     % 输出: handles=图形句柄, tcp_world=TCP世界坐标 [x,y,z](m)
-    capsuleColors = {[0.4 0.4 0.45], [0.2 0.4 0.8], [0.2 0.7 0.3], ...
-                     [0.9 0.5 0.1], [0.6 0.2 0.8]};
-    capsuleAlpha = 0.45;
-    capsuleR = [0.160, 0.140, 0.120, 0.100]; % 连杆碰撞半径 (m): 基座/大臂/小臂/腕部 (匹配CollisionGeometry.hpp)
     
     bx = baseOffset(1); by = baseOffset(2); bz = baseOffset(3);
     
-    % FK2 骨架计算 (纯数学, 无需SO库)
-    joints = fk2Skeleton(q_deg); % 5x3: [Base; Shoulder; Elbow; Wrist; TCP] (m)
-    joints_w = joints + [bx, by, bz]; % 世界坐标
-    
-    handles = gobjects(6,1); % 4连杆胶囊 + TCP标记 + 骨架线
-    
-    % 绘制4段连杆胶囊: Base→Shoulder, Shoulder→Elbow, Elbow→Wrist, Wrist→TCP
-    for li = 1:4
-        p1 = joints_w(li,:);
-        p2 = joints_w(li+1,:);
-        handles(li) = drawCapsule3D_h(ax, p1, p2, capsuleR(li), capsuleColors{li}, capsuleAlpha);
+    if libisloaded('libHRCInterface')
+        % --- SO库: 获取真实碰撞体位置 ---
+        [bodyData, tcp_mm] = soGetCollisionBodies(q_deg);
+        tcp_world = tcp_mm / 1000 + [bx, by, bz];
+        
+        capsuleColors = {[0.4 0.4 0.45], [0.2 0.4 0.8], [0.2 0.7 0.3], ...
+                         [0.9 0.5 0.1], [0.6 0.2 0.8]};
+        capsuleAlpha = 0.45;
+        
+        handles = gobjects(7, 1);  % 5碰撞体 + TCP标记 + 骨架线
+        skelPts = [bx, by, bz];  % 基座原点
+        
+        for bi = 1:5
+            if bodyData.type(bi) == 0, continue; end
+            d = bodyData.data(bi, :);
+            r_m = bodyData.radius(bi) / 1000;
+            
+            if bodyData.type(bi) == 2  % 胶囊
+                p1_w = d(1:3)/1000 + [bx, by, bz];
+                p2_w = d(4:6)/1000 + [bx, by, bz];
+                handles(bi) = drawCapsule3D_h(ax, p1_w, p2_w, r_m, capsuleColors{bi}, capsuleAlpha);
+                % 骨架: 取胶囊中点
+                skelPts(end+1,:) = (p1_w + p2_w) / 2; %#ok<AGROW>
+            elseif bodyData.type(bi) == 1  % 球
+                c_w = d(1:3)/1000 + [bx, by, bz];
+                [Xs,Ys,Zs] = sphere(10);
+                handles(bi) = surf(ax, Xs*r_m+c_w(1), Ys*r_m+c_w(2), Zs*r_m+c_w(3),...
+                    'FaceColor', capsuleColors{bi}, 'FaceAlpha', capsuleAlpha, 'EdgeColor','none');
+                skelPts(end+1,:) = c_w; %#ok<AGROW>
+            end
+        end
+        
+        % TCP标记 (红色五角星)
+        handles(6) = plot3(ax, tcp_world(1), tcp_world(2), tcp_world(3),...
+            'rp','MarkerSize',14,'MarkerFaceColor','r','LineWidth',1.5);
+        
+        % 骨架线 (基座→碰撞体中心→TCP)
+        skelPts(end+1,:) = tcp_world;
+        handles(7) = plot3(ax, skelPts(:,1), skelPts(:,2), skelPts(:,3), 'k--o',...
+            'MarkerSize',5,'MarkerFaceColor',[0.3 0.3 0.3],'LineWidth',1.2);
+    else
+        % --- 后备: 旧版FK2骨架模型 (SO库不可用时) ---
+        capsuleR = [0.160, 0.140, 0.120, 0.100];
+        capsuleColors = {[0.4 0.4 0.45], [0.2 0.4 0.8], [0.2 0.7 0.3], ...
+                         [0.9 0.5 0.1], [0.6 0.2 0.8]};
+        capsuleAlpha = 0.45;
+        joints = fk2Skeleton(q_deg);
+        joints_w = joints + [bx, by, bz];
+        handles = gobjects(6,1);
+        for li = 1:4
+            handles(li) = drawCapsule3D_h(ax, joints_w(li,:), joints_w(li+1,:), ...
+                capsuleR(li), capsuleColors{li}, capsuleAlpha);
+        end
+        tcp_world = joints_w(5,:);
+        handles(5) = plot3(ax, tcp_world(1), tcp_world(2), tcp_world(3),...
+            'rp','MarkerSize',14,'MarkerFaceColor','r','LineWidth',1.5);
+        handles(6) = plot3(ax, joints_w(:,1), joints_w(:,2), joints_w(:,3), 'k--o',...
+            'MarkerSize',5,'MarkerFaceColor',[0.3 0.3 0.3],'LineWidth',1.2);
     end
-    
-    % TCP标记 (红色五角星)
-    tcp_world = joints_w(5,:);
-    handles(5) = plot3(ax, tcp_world(1), tcp_world(2), tcp_world(3),...
-        'rp','MarkerSize',14,'MarkerFaceColor','r','LineWidth',1.5);
-    
-    % 骨架连线 (关节->关节)
-    handles(6) = plot3(ax, joints_w(:,1), joints_w(:,2), joints_w(:,3), 'k--o',...
-        'MarkerSize',5,'MarkerFaceColor',[0.3 0.3 0.3],'LineWidth',1.2);
 end
 
 function h = drawCapsule3D_h(ax, p1, p2, r, col, alpha)
