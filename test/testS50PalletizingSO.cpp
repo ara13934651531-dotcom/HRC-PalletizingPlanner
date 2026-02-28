@@ -343,16 +343,17 @@ int main() {
 
     // 码垛顺序: 里→外(BK→FR), 左→右(L→R), 下→上(L1→L3)
     // 每个XY位置先堆满3层再移到下一个位置
+    constexpr int MAX_BOXES = 1;  // 调试: 1=验证, 3=演示, 12=完整码垛
     std::vector<BoxTarget> boxTargets;
     const char* lN[] = {"L1","L2","L3"};
     const char* cN[] = {"BK","FR"};
     const char* rN[] = {"L","R"};
 
-    for (int col=0; col<2; col++) {          // 里→外: BK(0) → FR(1)
+    for (int col=0; col<2 && (int)boxTargets.size()<MAX_BOXES; col++) {
         double y = (col==0) ? boxBackY : boxFrontY;
-        for (int row=0; row<2; row++) {      // 左→右: L(0) → R(1)
+        for (int row=0; row<2 && (int)boxTargets.size()<MAX_BOXES; row++) {
             double x = (row==0) ? boxLeftX : boxRightX;
-            for (int layer=0; layer<3; layer++) {  // 下→上: L1(0) → L3(2)
+            for (int layer=0; layer<3 && (int)boxTargets.size()<MAX_BOXES; layer++) {
                 double tcpZ = palSurf + (layer+1)*scene::BOX_HZ;
                 char lb[32]; snprintf(lb,32,"%s-%s-%s",lN[layer],cN[col],rN[row]);
                 BoxTarget bt; bt.label = lb;

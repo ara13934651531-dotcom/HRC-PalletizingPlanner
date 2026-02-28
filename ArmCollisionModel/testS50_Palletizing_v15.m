@@ -1,13 +1,19 @@
 function testS50_Palletizing_v15()
 %% testS50_Palletizing_v15 - HR_S50-2000 v5.0 正确布局 + 完整碰撞 + 3D仿真
-%  v15.2 — 基于 v15.1 + 视觉保真度/框架几何修复:
+%  v15.3 — 基于 v15.2 + FK2坐标系一致性修复:
 %
-%  v15.2 修复清单:
-%    1. 始终使用STL模型渲染机器人 (URDF FK尺寸正确), FK2骨架仅用于碰撞叠加
+%  v15.3 修复清单:
+%    1. 所有渲染统一使用FK2骨架模型 (与场景坐标系一致)
+%       - FK2 和 URDF FK 使用完全不同的坐标系 (压缩臂长 vs 物理臂长)
+%       - 场景布局(框架/传送带/电箱/箱子位置)全部在FK2坐标系中
+%       - URDF FK渲染会导致机器人超出场景边界, TCP坐标不匹配
+%    2. cfg_nBoxes默认1 (逐步验证, 确保正确后再扩展)
+%    3. C++同步限制为1个箱子 (MAX_BOXES=1)
+%
+%  v15.2 修复清单 (保留):
 %    2. 框架顶梁改为平行于Y轴 (匹配实物: 连接近端→远端立柱)
 %    3. 移除框架侧挡板碰撞体 (实物框架无中层横杆)
 %    4. 近端面仅保留底边 (无顶边/中间栏杆, 开放式便于机器人进出)
-%    5. cfg_nBoxes默认3 (可调, 清爽演示)
 %
 %  v15.1 修复清单:
 %    1. SO库环境碰撞注册: 框架4柱+2顶梁, 电箱4边, 传送带3面
@@ -90,7 +96,7 @@ cfg_conv.beltH=0.035; cfg_conv.rollerR=0.030; cfg_conv.nRollers=18;
 cfg_conv.color=[0.30,0.30,0.32];
 cfg_box.lx=0.35; cfg_box.wy=0.28; cfg_box.hz=0.25;
 cfg_box.color=[0.65,0.45,0.25];
-cfg_nBoxes = 3;   % 箱子数目 (可调: 3=演示, 12=完整码垛)
+cfg_nBoxes = 1;   % 箱子数目 (可调: 1=验证, 3=演示, 12=完整码垛)
 cfg_animTaskLimit = 0;  % 0=全部任务 (调试时可设为3限制前N个)
 cfg_frameGap = 0.05; cfg_convGap = 0.20;  % 匹配C++ CONV_GAP=200mm
 cfg_convOffY = -0.80; cfg_convBoxYStart = -1.50; cfg_convBoxYStep = 0.25;  % 箱子从Y=-2.30开始,12个均在传送带范围内
@@ -888,11 +894,8 @@ fig3 = figure('Position',[20 20 1920 1080],'Color','w','Name','Collision Geometr
 % 3a: 静态全场景 + 环境碰撞体
 ax3a = subplot(1,2,1,'Parent',fig3);
 hold(ax3a,'on');
-q_home = deg2rad([0,-90,0,0,90,0]);
-renderSTLRobotOnBase(ax3a, meshData, JOINTS, q_home, LINK_COLORS, 0.5, Tbase);
-if soLoaded  % 叠加碰撞包络 (半透明)
-    renderCapsuleRobotHandles(ax3a, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
-end
+% FK2骨架渲染 (与场景坐标系一致, 不使用URDF FK — 坐标系不同)
+renderCapsuleRobotHandles(ax3a, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
 
 % 绘制环境碰撞体: 框架柱胶囊 (红色半透明)
 for ci = 1:size(ENV_COLL.frameColumns, 1)
@@ -962,11 +965,8 @@ hold(ax3b,'on');
 if nTasks > 0
     ti_mid = ceil(nTasks/2);
     q_deg_mid = pall_keyQ(ti_mid,:);
-    q_rad_mid = deg2rad(q_deg_mid);
-    renderSTLRobotOnBase(ax3b, meshData, JOINTS, q_rad_mid, LINK_COLORS, 0.3, Tbase);
-    if soLoaded  % 叠加碰撞包络
-        renderCapsuleRobotHandles(ax3b, q_deg_mid, [baseX,baseY,baseZ], JOINTS);
-    end
+    % FK2骨架渲染 (与场景坐标系一致)
+    renderCapsuleRobotHandles(ax3b, q_deg_mid, [baseX,baseY,baseZ], JOINTS);
     
     title(ax3b,sprintf('Task %d: .so 碰撞包络模型 | d=%.0fmm', ti_mid, pall_minD_so(ti_mid)),...
         'FontSize',11,'FontWeight','bold','FontName',CJK_FONT);
@@ -981,7 +981,7 @@ saveFig(fig3, outputDir, '03_collision_geometry_env');
 timing.rendering_ms = timing.rendering_ms + toc(tFig)*1000;
 
 %% ╔══════════════════════════════════════════════════════════════════════╗
-%% ║  Figure 4: 码垛 3D 场景 + STL (多视角) + 环境碰撞体                ║
+%% ║  Figure 4: 码垛 3D 场景 (多视角) + 环境碰撞体                      ║
 %% ╚══════════════════════════════════════════════════════════════════════╝
 fprintf('>>> Fig 4: Palletizing 3D scene (%d-box layout)...\n', nBoxes);
 tFig = tic;
@@ -1084,7 +1084,8 @@ for vi = 1:min(4, length(keyPoses))
     end
     
     q_rad = deg2rad(pall_keyQ(ti,:));
-    renderSTLRobotOnBase(ax, meshData, JOINTS, q_rad, LINK_COLORS, LINK_ALPHA, Tbase);
+    % FK2骨架渲染 (与场景坐标系一致)
+    renderCapsuleRobotHandles(ax, pall_keyQ(ti,:), [baseX,baseY,baseZ], JOINTS);
     
     % TCP轨迹 (FK2骨架模型 — 与C++规划输出坐标系一致)
     mask = pall_raw(:,1)==pall_tasks(ti);
@@ -1285,8 +1286,8 @@ for ti = 1:nTasks
 end
 drawGround_v11(ax7a, -2.0, 2.0, -3.0, 1.5);
 q_home = deg2rad([0,-90,0,0,90,0]);
+    % FK2骨架渲染 (与场景坐标系一致)
     renderCapsuleRobotHandles(ax7a, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
-    renderSTLRobotOnBase(ax7a, meshData, JOINTS, q_home, LINK_COLORS, 0.25, Tbase);
 
 % 环境碰撞体
 for eci = 1:size(ENV_COLL.frameColumns, 1)
@@ -1339,8 +1340,8 @@ if soLoaded && ~isempty(tcpOrientError_deg)
     end
 end
 drawGround_v11(ax7b, -2.0, 2.0, -3.0, 1.5);
+    % FK2骨架渲染 (与场景坐标系一致)
     renderCapsuleRobotHandles(ax7b, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
-    renderSTLRobotOnBase(ax7b, meshData, JOINTS, q_home, LINK_COLORS, 0.2, Tbase);
 xlabel(ax7b,'X','FontSize',10,'FontName',CJK_FONT);
 ylabel(ax7b,'Y','FontSize',10,'FontName',CJK_FONT);
 zlabel(ax7b,'Z','FontSize',10,'FontName',CJK_FONT);
@@ -1497,11 +1498,8 @@ for ti = 1:nAnimTasks
             delete(prevRobotH(isvalid(prevRobotH)));
         end
         
-        % 始终使用STL模型渲染 (URDF FK尺寸正确) + 计算TCP
-        prevRobotH = renderSTLRobotHandles(ax3d, meshDataLow, JOINTS, q_rad, LINK_COLORS, LINK_ALPHA, Tbase);
-        Ts = urdfFK(JOINTS, q_rad);
-        tw = Tbase * Ts{8};
-        tcp = tw(1:3,4)';
+        % FK2骨架渲染+TCP (与场景坐标系一致, 不使用URDF FK)
+        [prevRobotH, tcp] = renderCapsuleRobotHandles(ax3d, q_deg, [baseX,baseY,baseZ], JOINTS);
         taskTrail = [taskTrail; tcp]; %#ok<AGROW>
         
         % 携带箱子 + 工具碰撞球

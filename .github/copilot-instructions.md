@@ -474,6 +474,31 @@ a2=900.0  a3=941.5
 | C++ DH FK (已移除) | 偏差~2284mm | X |
 | Python DH FK | 偏差~2984mm | X |
 
+### ⚠️ FK2 与 getUIInfoMation 使用完全不同的坐标系
+
+**这是最关键的陷阱**: FK2 和 getUIInfoMation 返回的坐标在**完全不同的参考系**中：
+
+| 构型 | FK2 TCP (mm) | getUIInfo 手臂方向 | 说明 |
+|------|---------|-----------|------|
+| HOME [0,-90,0,0,90,0] | (800, 0, 65) — 水平 | Z=296→2158 — 竖直向上 | 同一构型, 完全不同! |
+| ZERO [0,0,0,0,0,0] | (0, 0, 1175) — 竖直 | X=0→-900 — 水平 | 同一构型, 完全不同! |
+
+- FK2 使用**压缩有效臂长** (总臂长~1175mm), 所有场景布局/IK/轨迹数据都在FK2坐标系
+- getUIInfoMation/URDF FK 使用**物理臂长** (总臂长~1842mm), 是真实物理坐标系
+- 两者之间**不存在简单的关节角偏移映射** (暴力搜索验证: 最佳偏移残差150-575mm/构型)
+
+### 场景坐标系 = FK2 坐标系
+
+**所有**场景元素的坐标都定义在FK2空间中:
+- 框架 (1200×650×2000mm)、电箱、传送带、托盘的位置
+- C++ IK目标点 (boxTargets.pos_mm)
+- 轨迹文件中的TCP坐标 (cols 17-19)
+- 碰撞障碍物注册坐标 (addEnvObstacle*)
+- NumericalIK 的 target_mm
+
+在FK2空间中, 手臂伸展长度(~800mm)可以在框架(1200mm宽)内操作。
+在物理空间中, 手臂(~1842mm)远超框架边界, URDF FK渲染会导致机器人伸出场景之外。
+
 ### FK2 经验骨架模型
 
 通过对 SO 库 FK2 输出系统性圆拟合导出的精确骨架:
@@ -494,15 +519,15 @@ TCP      = Wrist    + L3 * [sin(a235)*arm_dir, cos(a235)]
 - J4/J6 只影响TCP**朝向**，不影响TCP**位置**
 - q2符号取反 (`a2 = -q2`)
 - H=220mm != d1=296.5mm -- FK2内部使用非标准DH约定
-- 此模型**仅用于MATLAB可视化**, 所有C++路径规划通过SO FK
+- 此模型**用于MATLAB场景可视化**, 所有C++路径规划通过SO FK
 
 ### FK使用规则
 
 1. C++ 所有FK/IK -> `CollisionCheckerSO.forwardKinematics()`
-2. MATLAB TCP位置 -> `fk2Skeleton()` (FK2骨架模型)
-3. MATLAB STL渲染 -> `urdfFK()` (URDF关节驱动)
+2. MATLAB 场景渲染 + TCP -> `fk2Skeleton()` / `renderCapsuleRobotHandles()` (FK2坐标系)
+3. MATLAB STL纯展示 -> `urdfFK()` (物理坐标系, **不可与FK2场景混用**)
 4. `getUIInfoMation` -> 仅碰撞体几何, 不用于TCP
-5. **切勿混用**不同FK的坐标
+5. **切勿混用**不同FK的坐标 — URDF FK渲染的机器人会超出FK2场景边界
 
 ## 码垛场景布局 (机器人基座坐标系)
 
@@ -703,6 +728,8 @@ target_link_libraries(testMyTest stdc++ m pthread dl)
 | 7 | DH数组 | 标准d/a交替 | `[d1,d2,a2,d3,a3,d4,d5,d6]` |
 | 8 | FK约定混用 | urdfFK算TCP | fk2Skeleton算TCP |
 | 9 | getUIInfo | 用于TCP位置 | 仅用于碰撞体几何 |
+| 10 | URDF渲染+FK2场景 | `renderSTLRobotOnBase`+FK2场景 | `renderCapsuleRobotHandles` (FK2一致) |
+| 11 | HOME描述 | "手臂竖直向上" | FK2: 水平伸出; 物理: 竖直向上 (不同坐标系!) |
 
 ## S曲线轨迹执行
 
