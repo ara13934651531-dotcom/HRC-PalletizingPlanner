@@ -283,31 +283,17 @@ int main() {
         printf("    envId=%d (%.0f,%.0f): %s\n", frmIds[i], frmX[i], frmY[i], ok?"✅":"❌");
     }
 
-    // 2根顶梁 (平行于X轴, 连接近端两根立柱顶部和远端两根立柱顶部)
+    // 2根顶梁 (平行于Y轴, 连接同侧近端→远端立柱顶部)
     printf("\n  === 框架顶梁 (envId 20-21) ===\n");
     {
-        // 近端顶梁: 左近端→右近端 (Y=fNY, Z=fZT)
+        // 左侧顶梁: 左近端→左远端 (X=-fHW, Z=fZT)
         bool ok0 = checker.addEnvObstacleCapsule(20,
-            Eigen::Vector3d(-fHW, fNY, fZT), Eigen::Vector3d(fHW, fNY, fZT), fR);
-        printf("    envId=20 近端顶梁: %s\n", ok0?"✅":"❌");
-        // 远端顶梁: 左远端→右远端 (Y=fFY, Z=fZT)
+            Eigen::Vector3d(-fHW, fNY, fZT), Eigen::Vector3d(-fHW, fFY, fZT), fR);
+        printf("    envId=20 左侧顶梁: %s\n", ok0?"✅":"❌");
+        // 右侧顶梁: 右近端→右远端 (X=fHW, Z=fZT)
         bool ok1 = checker.addEnvObstacleCapsule(21,
-            Eigen::Vector3d(-fHW, fFY, fZT), Eigen::Vector3d(fHW, fFY, fZT), fR);
-        printf("    envId=21 远端顶梁: %s\n", ok1?"✅":"❌");
-    }
-
-    // 2块侧挡板 (平行于Y轴, 连接同侧近端和远端立柱, 中间高度)
-    printf("\n  === 框架侧挡板 (envId 22-23) ===\n");
-    {
-        double panelZ = (fZB + fZT) / 2;  // 挡板在框架高度中间
-        // 左侧挡板: 左近端→左远端 (X=-fHW)
-        bool ok0 = checker.addEnvObstacleCapsule(22,
-            Eigen::Vector3d(-fHW, fNY, panelZ), Eigen::Vector3d(-fHW, fFY, panelZ), fR);
-        printf("    envId=22 左侧挡板: %s\n", ok0?"✅":"❌");
-        // 右侧挡板: 右近端→右远端 (X=fHW)
-        bool ok1 = checker.addEnvObstacleCapsule(23,
-            Eigen::Vector3d(fHW, fNY, panelZ), Eigen::Vector3d(fHW, fFY, panelZ), fR);
-        printf("    envId=23 右侧挡板: %s\n", ok1?"✅":"❌");
+            Eigen::Vector3d(fHW, fNY, fZT), Eigen::Vector3d(fHW, fFY, fZT), fR);
+        printf("    envId=21 右侧顶梁: %s\n", ok1?"✅":"❌");
     }
 
     printf("\n  === 电箱 (envId 10-13) ===\n");
@@ -566,7 +552,7 @@ int main() {
         fprintf(fpSum,"self_collisions: %d\nenv_collisions: %d\nmin_dist_mm: %.2f\n",
                 totalCollisions,totalEnvCollisions,globalMinDist_mm);
         fprintf(fpSum,"order: FIFO_in2out_left2right_bottom2top_columnwise\n");
-        fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+2_sidepanel+%d_placed\n",(int)taskResults.size());
+        fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+%d_placed\n",(int)taskResults.size());
         fprintf(fpSum,"tool_collision: ball_r%.0fmm\nframe_gap_mm: %.0f\nframe_cy_mm: %.0f\n",
                 boxToolR,scene::FRAME_GAP,fcy);
 

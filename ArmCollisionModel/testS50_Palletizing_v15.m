@@ -1,15 +1,22 @@
 function testS50_Palletizing_v15()
 %% testS50_Palletizing_v15 - HR_S50-2000 v5.0 正确布局 + 完整碰撞 + 3D仿真
-%  v15.1 — 基于 v15.0 + 系统性碰撞仿真修复:
+%  v15.2 — 基于 v15.1 + 视觉保真度/框架几何修复:
+%
+%  v15.2 修复清单:
+%    1. 始终使用STL模型渲染机器人 (URDF FK尺寸正确), FK2骨架仅用于碰撞叠加
+%    2. 框架顶梁改为平行于Y轴 (匹配实物: 连接近端→远端立柱)
+%    3. 移除框架侧挡板碰撞体 (实物框架无中层横杆)
+%    4. 近端面仅保留底边 (无顶边/中间栏杆, 开放式便于机器人进出)
+%    5. cfg_nBoxes默认3 (可调, 清爽演示)
 %
 %  v15.1 修复清单:
-%    1. SO库环境碰撞注册: 框架4柱+2顶梁+2侧挡板, 电箱4边, 传送带3面
+%    1. SO库环境碰撞注册: 框架4柱+2顶梁, 电箱4边, 传送带3面
 %    2. 动画循环工具碰撞球管理: seg2启用/seg6移除 + 已放置箱子注册
 %    3. TCP姿态分析使用FK2 A,B,C (ZYX Euler), 消除urdfFK混用 (#4指导规则)
 %    4. 碰撞包络半径匹配CollisionGeometry.hpp (160/140/120/100mm)
-%    5. drawFrame_v11渲染前边(ei=1:4), 与碰撞体完整对齐
+%    5. drawFrame_v11渲染: 近端底边+远端底顶+左右顶梁 (匹配实物框架)
 %    6. TCP方向quiver使用FK2导出Z轴, 非骨架近似
-%    7. cfg_nBoxes=12, TCP_ORIENT_TOL_DEG=30°, cfg_convGap=0.20 匹配C++
+%    7. cfg_nBoxes可调, TCP_ORIENT_TOL_DEG=30°, cfg_convGap=0.20 匹配C++
 %    8. 框架碰撞半径 30mm→50mm (匹配C++ FRM_TUBE_R+20)
 %    9. pall_tcp_so 单位修复 (mm/1000→m, 非*1000)
 %
@@ -83,7 +90,7 @@ cfg_conv.beltH=0.035; cfg_conv.rollerR=0.030; cfg_conv.nRollers=18;
 cfg_conv.color=[0.30,0.30,0.32];
 cfg_box.lx=0.35; cfg_box.wy=0.28; cfg_box.hz=0.25;
 cfg_box.color=[0.65,0.45,0.25];
-cfg_nBoxes = 12;  % 12箱完整码垛 (3层×2行×2列)
+cfg_nBoxes = 3;   % 箱子数目 (可调: 3=演示, 12=完整码垛)
 cfg_animTaskLimit = 0;  % 0=全部任务 (调试时可设为3限制前N个)
 cfg_frameGap = 0.05; cfg_convGap = 0.20;  % 匹配C++ CONV_GAP=200mm
 cfg_convOffY = -0.80; cfg_convBoxYStart = -1.50; cfg_convBoxYStep = 0.25;  % 箱子从Y=-2.30开始,12个均在传送带范围内
@@ -170,16 +177,10 @@ ENV_COLL.frameColumns = [  % [x,y,z1,z2,r] (m, 基坐标系)
     -frmHW, frmFY, frmZB, frmZT, frmR;
      frmHW, frmFY, frmZB, frmZT, frmR;
 ];
-% 框架顶梁 (envId 20-21, 平行于X轴, 连接同侧两根立柱顶部)
+% 框架顶梁 (envId 20-21, 平行于Y轴, 连接近端→远端立柱顶部)
 ENV_COLL.frameTopBars = [  % [x1,y1,z1, x2,y2,z2, r]
-    -frmHW, frmNY, frmZT,  frmHW, frmNY, frmZT, frmR;   % 近端顶梁
-    -frmHW, frmFY, frmZT,  frmHW, frmFY, frmZT, frmR;   % 远端顶梁
-];
-% 框架侧挡板 (envId 22-23, 平行于Y轴, 在框架高度中间)
-frmPanelZ = (frmZB + frmZT) / 2;  % 挡板在框架高度中间
-ENV_COLL.frameSidePanels = [  % [x1,y1,z1, x2,y2,z2, r]
-    -frmHW, frmNY, frmPanelZ, -frmHW, frmFY, frmPanelZ, frmR;  % 左侧挡板
-     frmHW, frmNY, frmPanelZ,  frmHW, frmFY, frmPanelZ, frmR;  % 右侧挡板
+    -frmHW, frmNY, frmZT, -frmHW, frmFY, frmZT, frmR;   % 左侧顶梁 (Y平行)
+     frmHW, frmNY, frmZT,  frmHW, frmFY, frmZT, frmR;   % 右侧顶梁 (Y平行)
 ];
 % 电箱碰撞体 (4条边, 基坐标系)
 cabHW = cab.widthX/2; cabHD = cab.depthY/2;
@@ -198,7 +199,7 @@ ENV_COLL.conveyor = [  % [x1,y1,z1, x2,y2,z2, r]
     cvX+cvHW, cvY-cvHL, -0.2,  cvX+cvHW, cvY+cvHL, -0.2, ENV_COLL.convR_m;
     cvX,      cvY-cvHL, cvSZ-0.02, cvX,  cvY+cvHL, cvSZ-0.02, cvHW;
 ];
-fprintf('  ENV_COLL: frame(4)=[%.3f,%.3f]->[%.3f,%.3f] cab(4) conv(3)\n', ...
+fprintf('  ENV_COLL: frame(4col+2topY)=[%.3f,%.3f]->[%.3f,%.3f] cab(4) conv(3)\n', ...
     frmNY, frmFY, frmZB, frmZT);
 
 fprintf('\n');
@@ -321,18 +322,6 @@ try
         fprintf('    框架顶梁 envId=%d: %s\n', envId, soStat{(result==0)+1});
     end
     
-    % 框架侧挡板 (envId 22-23)
-    for ci = 1:size(ENV_COLL.frameSidePanels, 1)
-        sp = ENV_COLL.frameSidePanels(ci,:);
-        startPt = [sp(1), sp(2), sp(3)] * 1000;
-        endPt   = [sp(4), sp(5), sp(6)] * 1000;
-        r_mm    = sp(7) * 1000;
-        envId   = int64(21 + ci);  % envId 22,23
-        result  = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', envId, startPt, endPt, r_mm);
-        envRegOK = envRegOK + (result == 0);
-        fprintf('    框架侧挡板 envId=%d: %s\n', envId, soStat{(result==0)+1});
-    end
-    
     % 电箱 (envId 10-13, 胶囊体)
     for ci = 1:size(ENV_COLL.cabinet, 1)
         cc = ENV_COLL.cabinet(ci,:);
@@ -361,7 +350,7 @@ try
     envCount = calllib('libHRCInterface', 'getEnvObstacleCountInterface');
     fprintf('    注册成功: %d/%d, SO报告障碍物: %d\n', envRegOK, ...
         size(ENV_COLL.frameColumns,1)+size(ENV_COLL.frameTopBars,1)+ ...
-        size(ENV_COLL.frameSidePanels,1)+size(ENV_COLL.cabinet,1)+ ...
+        size(ENV_COLL.cabinet,1)+ ...
         size(ENV_COLL.conveyor,1), envCount);
     
 catch ME
@@ -900,10 +889,9 @@ fig3 = figure('Position',[20 20 1920 1080],'Color','w','Name','Collision Geometr
 ax3a = subplot(1,2,1,'Parent',fig3);
 hold(ax3a,'on');
 q_home = deg2rad([0,-90,0,0,90,0]);
-if soLoaded
+renderSTLRobotOnBase(ax3a, meshData, JOINTS, q_home, LINK_COLORS, 0.5, Tbase);
+if soLoaded  % 叠加碰撞包络 (半透明)
     renderCapsuleRobotHandles(ax3a, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
-else
-    renderSTLRobotOnBase(ax3a, meshData, JOINTS, q_home, LINK_COLORS, 0.5, Tbase);
 end
 
 % 绘制环境碰撞体: 框架柱胶囊 (红色半透明)
@@ -919,13 +907,6 @@ for ci = 1:size(ENV_COLL.frameTopBars, 1)
     p1 = [tb(1), tb(2), tb(3)] + [baseX, baseY, baseZ];
     p2 = [tb(4), tb(5), tb(6)] + [baseX, baseY, baseZ];
     drawCapsule3D(ax3a, p1, p2, tb(7), [0.9 0.7 0.1], 0.18);
-end
-% 框架侧挡板 (粉色半透明)
-for ci = 1:size(ENV_COLL.frameSidePanels, 1)
-    sp = ENV_COLL.frameSidePanels(ci,:);
-    p1 = [sp(1), sp(2), sp(3)] + [baseX, baseY, baseZ];
-    p2 = [sp(4), sp(5), sp(6)] + [baseX, baseY, baseZ];
-    drawCapsule3D(ax3a, p1, p2, sp(7), [0.9 0.3 0.6], 0.15);
 end
 
 % 绘制环境碰撞体: 电气柜胶囊 (橙色半透明)
@@ -970,7 +951,7 @@ drawPallet_v11(ax3a, pallet, frame, CJK_FONT);
 xlabel(ax3a,'X (m)','FontSize',10,'FontName',CJK_FONT);
 ylabel(ax3a,'Y (m)','FontSize',10,'FontName',CJK_FONT);
 zlabel(ax3a,'Z (m)','FontSize',10,'FontName',CJK_FONT);
-title(ax3a,'环境碰撞体: 框架柱(红)+电气柜(橙)+传送带(灰)+放置箱(蓝)','FontSize',11,'FontWeight','bold','FontName',CJK_FONT);
+title(ax3a,'环境碰撞体: 框架柱(红)+顶梁(黄)+电气柜(橙)+传送带(灰)+放置箱(蓝)','FontSize',11,'FontWeight','bold','FontName',CJK_FONT);
 axis(ax3a,'equal'); grid(ax3a,'on');
 xlim(ax3a,[-2.0 2.0]); ylim(ax3a,[-3.0 1.5]); zlim(ax3a,[0 3.5]);
 view(ax3a,135,25); camlight('headlight'); lighting(ax3a,'gouraud');
@@ -981,11 +962,10 @@ hold(ax3b,'on');
 if nTasks > 0
     ti_mid = ceil(nTasks/2);
     q_deg_mid = pall_keyQ(ti_mid,:);
-    if soLoaded
+    q_rad_mid = deg2rad(q_deg_mid);
+    renderSTLRobotOnBase(ax3b, meshData, JOINTS, q_rad_mid, LINK_COLORS, 0.3, Tbase);
+    if soLoaded  % 叠加碰撞包络
         renderCapsuleRobotHandles(ax3b, q_deg_mid, [baseX,baseY,baseZ], JOINTS);
-    else
-        q_rad_mid = deg2rad(q_deg_mid);
-        renderSTLRobotOnBase(ax3b, meshData, JOINTS, q_rad_mid, LINK_COLORS, 0.3, Tbase);
     end
     
     title(ax3b,sprintf('Task %d: .so 碰撞包络模型 | d=%.0fmm', ti_mid, pall_minD_so(ti_mid)),...
@@ -1003,7 +983,7 @@ timing.rendering_ms = timing.rendering_ms + toc(tFig)*1000;
 %% ╔══════════════════════════════════════════════════════════════════════╗
 %% ║  Figure 4: 码垛 3D 场景 + STL (多视角) + 环境碰撞体                ║
 %% ╚══════════════════════════════════════════════════════════════════════╝
-fprintf('>>> Fig 4: Palletizing 3D scene (12-box layout)...\n');
+fprintf('>>> Fig 4: Palletizing 3D scene (%d-box layout)...\n', nBoxes);
 tFig = tic;
 fig4 = figure('Position',[20 20 1920 1080],'Color','w','Name','Palletizing 3D Scene v15');
 
@@ -1090,12 +1070,6 @@ for vi = 1:min(4, length(keyPoses))
         p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
         drawCapsule3D(ax, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.10);
     end
-    for eci = 1:size(ENV_COLL.frameSidePanels, 1)
-        sp = ENV_COLL.frameSidePanels(eci,:);
-        p1_w = [sp(1)+baseX, sp(2)+baseY, sp(3)+baseZ];
-        p2_w = [sp(4)+baseX, sp(5)+baseY, sp(6)+baseZ];
-        drawCapsule3D(ax, p1_w, p2_w, sp(7), [0.9 0.3 0.6], 0.10);
-    end
     for eci = 1:size(ENV_COLL.cabinet, 1)
         cc = ENV_COLL.cabinet(eci,:);
         p1_w = [cc(1)+baseX, cc(2)+baseY, cc(3)+baseZ];
@@ -1109,12 +1083,8 @@ for vi = 1:min(4, length(keyPoses))
         drawCapsule3D(ax, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.08);
     end
     
-    if soLoaded
-        renderCapsuleRobotHandles(ax, pall_keyQ(ti,:), [baseX,baseY,baseZ], JOINTS);
-    else
-        q_rad = deg2rad(pall_keyQ(ti,:));
-        renderSTLRobotOnBase(ax, meshData, JOINTS, q_rad, LINK_COLORS, LINK_ALPHA, Tbase);
-    end
+    q_rad = deg2rad(pall_keyQ(ti,:));
+    renderSTLRobotOnBase(ax, meshData, JOINTS, q_rad, LINK_COLORS, LINK_ALPHA, Tbase);
     
     % TCP轨迹 (FK2骨架模型 — 与C++规划输出坐标系一致)
     mask = pall_raw(:,1)==pall_tasks(ti);
@@ -1315,11 +1285,8 @@ for ti = 1:nTasks
 end
 drawGround_v11(ax7a, -2.0, 2.0, -3.0, 1.5);
 q_home = deg2rad([0,-90,0,0,90,0]);
-if soLoaded
     renderCapsuleRobotHandles(ax7a, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
-else
     renderSTLRobotOnBase(ax7a, meshData, JOINTS, q_home, LINK_COLORS, 0.25, Tbase);
-end
 
 % 环境碰撞体
 for eci = 1:size(ENV_COLL.frameColumns, 1)
@@ -1333,12 +1300,6 @@ for eci = 1:size(ENV_COLL.frameTopBars, 1)
     p1_w = [tb(1)+baseX, tb(2)+baseY, tb(3)+baseZ];
     p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
     drawCapsule3D(ax7a, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.08);
-end
-for eci = 1:size(ENV_COLL.frameSidePanels, 1)
-    sp = ENV_COLL.frameSidePanels(eci,:);
-    p1_w = [sp(1)+baseX, sp(2)+baseY, sp(3)+baseZ];
-    p2_w = [sp(4)+baseX, sp(5)+baseY, sp(6)+baseZ];
-    drawCapsule3D(ax7a, p1_w, p2_w, sp(7), [0.9 0.3 0.6], 0.08);
 end
 for eci = 1:size(ENV_COLL.cabinet, 1)
     cc = ENV_COLL.cabinet(eci,:);
@@ -1378,11 +1339,8 @@ if soLoaded && ~isempty(tcpOrientError_deg)
     end
 end
 drawGround_v11(ax7b, -2.0, 2.0, -3.0, 1.5);
-if soLoaded
     renderCapsuleRobotHandles(ax7b, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
-else
     renderSTLRobotOnBase(ax7b, meshData, JOINTS, q_home, LINK_COLORS, 0.2, Tbase);
-end
 xlabel(ax7b,'X','FontSize',10,'FontName',CJK_FONT);
 ylabel(ax7b,'Y','FontSize',10,'FontName',CJK_FONT);
 zlabel(ax7b,'Z','FontSize',10,'FontName',CJK_FONT);
@@ -1390,7 +1348,7 @@ title(ax7b,'TCP Z轴朝向 (绿=好 黄=警 红=差)','FontSize',12,'FontWeight'
 grid(ax7b,'on'); axis(ax7b,'equal'); view(ax7b,140,30);
 camlight('headlight'); lighting(ax7b,'gouraud');
 
-sgtitle(fig7,'TCP轨迹+姿态分析 (v15 — 12箱FIFO码垛)',...
+sgtitle(fig7,sprintf('TCP轨迹+姿态分析 (v15 — %d箱FIFO码垛)', nBoxes),...
     'FontSize',16,'FontWeight','bold','FontName',CJK_FONT,'Color',[0.1 0.1 0.3]);
 saveFig(fig7, outputDir, '07_tcp_trajectory_orientation');
 timing.rendering_ms = timing.rendering_ms + toc(tFig)*1000;
@@ -1398,7 +1356,7 @@ timing.rendering_ms = timing.rendering_ms + toc(tFig)*1000;
 %% ╔══════════════════════════════════════════════════════════════════════╗
 %% ║  Figure 8: 码垛3D动态回放 (低模STL + 环境碰撞体)                   ║
 %% ╚══════════════════════════════════════════════════════════════════════╝
-fprintf('>>> Fig 8: Dynamic replay (12-box, env collision overlay)...\n');
+fprintf('>>> Fig 8: Dynamic replay (%d-box, env collision overlay)...\n', nBoxes);
 tFig = tic;
 fig8 = figure('Position',[50 50 1700 950],'Color','w','Renderer','opengl','Name','Dynamic Replay v15');
 
@@ -1423,13 +1381,6 @@ for eci = 1:size(ENV_COLL.frameTopBars, 1)
     p1_w = [tb(1)+baseX, tb(2)+baseY, tb(3)+baseZ];
     p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
     drawCapsule3D(ax3d, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.10);
-end
-% 环境碰撞体: 框架侧挡板 (粉色半透明)
-for eci = 1:size(ENV_COLL.frameSidePanels, 1)
-    sp = ENV_COLL.frameSidePanels(eci,:);
-    p1_w = [sp(1)+baseX, sp(2)+baseY, sp(3)+baseZ];
-    p2_w = [sp(4)+baseX, sp(5)+baseY, sp(6)+baseZ];
-    drawCapsule3D(ax3d, p1_w, p2_w, sp(7), [0.9 0.3 0.6], 0.10);
 end
 % 环境碰撞体: 电气柜 (橙色半透明)
 for eci = 1:size(ENV_COLL.cabinet, 1)
@@ -1546,15 +1497,11 @@ for ti = 1:nAnimTasks
             delete(prevRobotH(isvalid(prevRobotH)));
         end
         
-        % 使用碰撞包络模型 (SO库权威碰撞几何 + SO FK权威TCP)
-        if soLoaded
-            [prevRobotH, tcp] = renderCapsuleRobotHandles(ax3d, q_deg, [baseX, baseY, baseZ], JOINTS);
-        else
-            prevRobotH = renderSTLRobotHandles(ax3d, meshDataLow, JOINTS, q_rad, LINK_COLORS, LINK_ALPHA, Tbase);
-            Ts = urdfFK(JOINTS, q_rad);
-            tw = Tbase * Ts{8};
-            tcp = tw(1:3,4)';
-        end
+        % 始终使用STL模型渲染 (URDF FK尺寸正确) + 计算TCP
+        prevRobotH = renderSTLRobotHandles(ax3d, meshDataLow, JOINTS, q_rad, LINK_COLORS, LINK_ALPHA, Tbase);
+        Ts = urdfFK(JOINTS, q_rad);
+        tw = Tbase * Ts{8};
+        tcp = tw(1:3,4)';
         taskTrail = [taskTrail; tcp]; %#ok<AGROW>
         
         % 携带箱子 + 工具碰撞球
@@ -2223,17 +2170,19 @@ end
 
 function drawFrame_v11(ax,f,cylN)
     r=f.tubeR;wx=f.widthX;dy=f.depthY;h=f.height;cx=f.cx;cy=f.cy;
+    % corners: 1=left-near, 2=right-near, 3=right-far, 4=left-far
     c=[cx-wx/2 cy-dy/2;cx+wx/2 cy-dy/2;cx+wx/2 cy+dy/2;cx-wx/2 cy+dy/2];
     % 4根立柱
     for i=1:4, drawTube_v11(ax,c(i,1),c(i,2),0,c(i,1),c(i,2),h,r,f.color,cylN); end
-    % 水平横梁: 4条边 × 4层高度 (含前边, ei=1:4)
-    edges={[1,2],[2,3],[3,4],[4,1]};
-    for hz=[0.05 h/3 2*h/3 h-0.05]
-        for ei=1:4
-            i1=edges{ei}(1);i2=edges{ei}(2);
-            drawTube_v11(ax,c(i1,1),c(i1,2),hz,c(i2,1),c(i2,2),hz,r*.8,f.color,cylN);
-        end
-    end
+    rb = r*0.8;  % 横梁半径
+    % 近端面 (Y-neg): 仅底边 (无顶边, 无中间栏杆)
+    drawTube_v11(ax,c(1,1),c(1,2),0.05,c(2,1),c(2,2),0.05,rb,f.color,cylN);
+    % 远端面 (Y-pos): 底边 + 顶边
+    drawTube_v11(ax,c(3,1),c(3,2),0.05,c(4,1),c(4,2),0.05,rb,f.color,cylN);
+    drawTube_v11(ax,c(3,1),c(3,2),h-0.05,c(4,1),c(4,2),h-0.05,rb,f.color,cylN);
+    % 顶部: 2根侧梁 (平行于Y轴, 连接近端→远端)
+    drawTube_v11(ax,c(1,1),c(1,2),h-0.05,c(4,1),c(4,2),h-0.05,rb,f.color,cylN);  % 左侧
+    drawTube_v11(ax,c(2,1),c(2,2),h-0.05,c(3,1),c(3,2),h-0.05,rb,f.color,cylN);  % 右侧
 end
 
 function drawPallet_v11(ax,pal,frm,fontName)
