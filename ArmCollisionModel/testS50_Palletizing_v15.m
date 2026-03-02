@@ -1,5 +1,5 @@
 function testS50_Palletizing_v15()
-%% testS50_Palletizing_v15 - HR_S50-2000 v5.0 正确布局 + 完整碰撞 + 3D仿真
+%% testS50_Palletizing_v15 - HR_S50-2000 v6.0 面板碰撞 + 中转路点 + 3D仿真
 %  v16.0 — 基于 v15.4 + 真实DH FK碰撞体渲染:
 %
 %  v16.0 修复清单:
@@ -46,7 +46,7 @@ function testS50_Palletizing_v15()
 %
 %  v15.0 修复清单:
 %    1. 修复makeRotRPY: URDF标准 Rz*Ry*Rx (之前是Rx*Ry*Rz → 机械臂渲染错误)
-%    2. 场景布局匹配C++ v5.0: FRM_D=650,FRAME_GAP=50,PAL_H=500,CONV_GAP=200
+%    2. 场景布局匹配C++ v6.0: FRM_D=650,FRAME_GAP=50,PAL_H=500,CONV_GAP=200
 %    3. 箱子放置位读取C++实际IK求解TCP位置 (消除MATLAB独立计算的偏差)
 %    4. 完整环境碰撞体: 电箱(4)+传送带(3)+框架(4)+已放箱(12) 全可视化
 %    5. 码垛顺序: 里→外,左→右,下→上 与C++ FIFO匹配
@@ -54,12 +54,12 @@ function testS50_Palletizing_v15()
 %  数据源:
 %    data/so_palletizing_trajectory.txt — C++码垛轨迹 (19列, deg)
 %    data/so_palletizing_profile.csv    — 碰撞距离曲线 (16列)
-%    data/so_palletizing_summary.txt    — v5.0摘要 (含IK TCP位置)
+%    data/so_palletizing_summary.txt    — v6.0摘要 (含IK TCP位置)
 %    data/so_collision_trajectory.txt   — C++碰撞仿真轨迹 (27列, deg)
 %    libHRCInterface.so — 实时碰撞检测 (HansAlgorithmExport)
 %
 %  @file   testS50_Palletizing_v15.m
-%  @brief  HR_S50-2000 v5.0 精确布局 + 完整环境碰撞可视化
+%  @brief  HR_S50-2000 v6.0 面板碰撞 + 中转路点 + 完整环境碰撞可视化
 %  @date   2026-02-24
 %  Copyright (c) 2026 Guangdong Huayan Robotics Co., Ltd.
 
@@ -102,7 +102,7 @@ JOINTS = [
 ];
 
 % --- 场景参数 ---
-% --- 场景参数 (匹配C++ v5.0 scene namespace) ---
+% --- 场景参数 (匹配C++ v6.0 scene namespace) ---
 cfg_cab.widthX=0.55; cfg_cab.depthY=0.65; cfg_cab.heightZ=0.80;
 cfg_cab.color=[0.95,0.95,0.93];
 cfg_frame.widthX=1.20; cfg_frame.depthY=0.65; cfg_frame.height=2.00;  % 深度650mm匹配C++
@@ -119,7 +119,7 @@ cfg_animTaskLimit = 0;  % 0=全部任务 (调试时可设为3限制前N个)
 cfg_frameGap = 0.05; cfg_convGap = 0.20;  % 匹配C++ CONV_GAP=200mm
 cfg_convOffY = -0.80; cfg_convBoxYStart = -1.50; cfg_convBoxYStep = 0.25;  % 箱子从Y=-2.30开始,12个均在传送带范围内
 
-% --- 环境碰撞体 (由场景参数动态计算, 与C++ v5.0一致) ---
+% --- 环境碰撞体 (由场景参数动态计算, 与C++ v6.0一致) ---
 % 注: 坐标为机器人基座坐标系(m), 下方初始化时根据scene参数计算
 ENV_COLL.boxR_m = 0.250;   % 已放置箱碰撞球半径
 ENV_COLL.toolR_m = 0.225;  % 工具碰撞球半径
@@ -187,7 +187,7 @@ convSurfZ   = conv.heightZ + conv.rollerR + conv.beltH;
 palletSurfZ = pallet.heightZ;
 Tbase = eye(4); Tbase(1,4)=baseX; Tbase(2,4)=baseY; Tbase(3,4)=baseZ;
 
-% === 动态计算环境碰撞体坐标 (机器人基坐标系, m, 与C++ v5.0一致) ===
+% === 动态计算环境碰撞体坐标 (机器人基坐标系, m, 与C++ v6.0一致) ===
 frmHW = frame.widthX/2;
 frmCY = frame.cy;
 frmNY = frmCY - frame.depthY/2;
@@ -502,7 +502,7 @@ if exist(collSummFile, 'file')
     collSummary = readSummaryFile(collSummFile);
 end
 
-% 加载CSV profile (v5.0: 16列含envCollision)
+% 加载CSV profile (v6.0: 16列含envCollision)
 profileData = [];
 profileFile = fullfile(dataDir, 'so_palletizing_profile.csv');
 if exist(profileFile, 'file')
@@ -529,15 +529,16 @@ end
 timing.dataLoad_ms = toc(tData)*1000;
 fprintf('  加载耗时: %.1f ms\n', timing.dataLoad_ms);
 
-% v5.0 summary字段解析
+% v6.0 summary字段解析
 selfCollisions = str2double(getField(pallSummary, 'self_collisions', ...
                     getField(pallSummary, 'collisions', '0')));
 envCollisions  = str2double(getField(pallSummary, 'env_collisions', '0'));
 taskOrder      = getField(pallSummary, 'order', 'unknown');
 envObstacles   = getField(pallSummary, 'env_obstacles', 'none');
 toolCollision  = getField(pallSummary, 'tool_collision', 'none');
+wallPanels     = getField(pallSummary, 'wall_panels', 'none');
 
-fprintf('\n  v5.0 Stats: self=%d env=%d order=%s\n', selfCollisions, envCollisions, taskOrder);
+fprintf('\n  v6.0 Stats: self=%d env=%d order=%s\n', selfCollisions, envCollisions, taskOrder);
 fprintf('  Env obstacles: %s | Tool: %s\n', envObstacles, toolCollision);
 
 %% ╔══════════════════════════════════════════════════════════════════════╗
@@ -929,13 +930,13 @@ ylabel(ax2e,'Min Dist (mm)','FontSize',10,'FontName',CJK_FONT);
 title(ax2e,sprintf('码垛安全裕度 (%d tasks)', nTasks),'FontSize',11,'FontWeight','bold','FontName',CJK_FONT);
 grid(ax2e,'on');
 
-% 2f: v5.0 碰撞统计摘要卡
+% 2f: v6.0 碰撞统计摘要卡
 ax2f = subplot(2,3,6,'Parent',fig2); axis(ax2f,'off');
 xlim(ax2f,[0 1]); ylim(ax2f,[0 1]); hold(ax2f,'on');
 rectangle(ax2f,'Position',[0.02 0.02 0.96 0.96],'FaceColor',[0.97 0.97 1.0],...
     'EdgeColor',[0.3 0.3 0.6],'LineWidth',2,'Curvature',0.05);
 yP = 0.92;
-text(ax2f,0.50,yP,'v5.0 碰撞统计','FontSize',14,'FontWeight','bold',...
+text(ax2f,0.50,yP,'v6.0 碰撞统计','FontSize',14,'FontWeight','bold',...
     'HorizontalAlignment','center','Color',[0.1 0.1 0.3],'FontName',CJK_FONT);
 yP = yP - 0.08;
 if envCollisions == 0, envc=[0 0.6 0.2]; else, envc=[0.9 0.1 0.1]; end
@@ -1747,15 +1748,20 @@ end
 timing.animation_ms = toc(tFig)*1000;
 
 %% ╔══════════════════════════════════════════════════════════════════════╗
-%% ║  Figure 9: 综合仪表盘 + v5.0统计                                   ║
+%% ║  Figure 9: 综合仪表盘 + v6.0统计                                   ║
 %% ╚══════════════════════════════════════════════════════════════════════╝
-fprintf('>>> Fig 9: Summary dashboard (v5.0 stats)...\n');
+fprintf('>>> Fig 9: Summary dashboard (v6.0 stats)...\n');
 tFig = tic;
 fig9 = figure('Position',[20 20 1920 1080],'Color','w','Name','Dashboard v15');
 
 % 9a: 安全评分
 ax9a = subplot(2,3,1,'Parent',fig9);
-scores = [min(so_pall_dist)/700*100, ...
+% SelfSafety: min自碰撞距离/400*100 (400mm=安全阈值, >=400mm得满分)
+% EnvSafety: 无环境碰撞则100%, 否则0%
+% AvgMargin: 平均最小距离/5 (capped at 100)
+% S-Curve: 固定95% (使用华数S曲线库)
+% TCPOrient: 100-搬运段平均TCP偏差/1.8
+scores = [min(100, min(so_pall_dist)/400*100), ...
           100*(envCollisions==0), ...  % 环境碰撞评分
           min(100, mean(pall_minD_so)/5), ...
           95, ...  % S-Curve质量
@@ -1791,14 +1797,26 @@ ylabel(ax9b,'Min Dist (mm)','FontSize',10,'FontName',CJK_FONT);
 title(ax9b,sprintf('码垛安全裕度 (%d tasks)', nTasks),'FontSize',11,'FontWeight','bold','FontName',CJK_FONT);
 grid(ax9b,'on');
 
-% 9c: 耗时分解
+% 9c: 耗时分解 — C++管线 vs MATLAB渲染 (双层饼图)
 ax9c = subplot(2,3,3,'Parent',fig9);
-timings_arr = [timing.soInit_ms, timing.meshLoad_ms, timing.dataLoad_ms, ...
-               timing.collisionCheck_ms, timing.rendering_ms, timing.animation_ms];
-labels_arr = {'碰撞初始化','STL加载','数据加载','碰撞检测','静态渲染','动画'};
-valid = timings_arr > 0;
+% C++管线: 从summary提取
+cppPlan_ms = str2double(getField(pallSummary,'planning_total_ms','0'));
+cppParam_ms = str2double(getField(pallSummary,'param_total_ms','0'));
+cppColl_ms = str2double(getField(pallSummary,'collision_runtime_ms','0'));
+cppInit_ms = str2double(getField(pallSummary,'init_ms','0'));
+cppIK_ms = str2double(getField(pallSummary,'ik_ms','0'));
+cppTotal_ms = cppInit_ms + cppIK_ms + cppPlan_ms + cppParam_ms + cppColl_ms;
+matlab_ms = timing.soInit_ms + timing.meshLoad_ms + timing.dataLoad_ms + ...
+            timing.collisionCheck_ms + timing.rendering_ms + timing.animation_ms;
+pie_data = [max(cppTotal_ms, 0.01), timing.collisionCheck_ms, ...
+            timing.rendering_ms, timing.animation_ms];
+pie_labels = {sprintf('C++管线\n%.0fms', cppTotal_ms), ...
+              sprintf('碰撞扫描\n%.0fms', timing.collisionCheck_ms), ...
+              sprintf('静态渲染\n%.0fs', timing.rendering_ms/1000), ...
+              sprintf('动画\n%.0fs', timing.animation_ms/1000)};
+valid = pie_data > 0;
 if any(valid)
-    pie(ax9c, timings_arr(valid), labels_arr(valid));
+    pie(ax9c, pie_data(valid), pie_labels(valid));
     title(ax9c,'耗时分解','FontSize',12,'FontWeight','bold','FontName',CJK_FONT);
 end
 
@@ -1824,21 +1842,22 @@ for si = 1:length(stats)
     yP=yP-0.04;
 end
 
-% 9e: C++ v5.0 Pipeline Stats
+% 9e: C++ v6.0 Pipeline Stats
 ax9e = subplot(2,3,5,'Parent',fig9); axis(ax9e,'off');
 xlim(ax9e,[0 1]); ylim(ax9e,[0 1]); hold(ax9e,'on');
 yP = 0.95;
-text(ax9e,0.05,yP,'C++ v5.0 Pipeline Stats','FontSize',14,'FontWeight','bold',...
+text(ax9e,0.05,yP,'C++ v6.0 Pipeline Stats','FontSize',14,'FontWeight','bold',...
     'FontName',CJK_FONT,'Color',[0.1 0.1 0.3]);
 yP = yP-0.06;
 pipeStats = {
-    sprintf('码垛位: %s, 运动段: %s', getField(pallSummary,'positions','?'), getField(pallSummary,'segments','?'));
+    sprintf('码垛位: %s, 运动段: %s (9段中转路点)', getField(pallSummary,'positions','?'), getField(pallSummary,'segments','?'));
     sprintf('运动时间: %s s', getField(pallSummary,'total_motion_s','?'));
     sprintf('自碰撞: %d | 环境碰撞: %d', selfCollisions, envCollisions);
     sprintf('最小距离: %s mm', getField(pallSummary,'min_dist_mm','?'));
     sprintf('任务顺序: %s', taskOrder);
     '';
     sprintf('环境障碍: %s', envObstacles);
+    sprintf('面板封锁: %s', wallPanels);
     sprintf('工具碰撞体: %s', toolCollision);
     '';
     sprintf('RRT*规划: %s ms', getField(pallSummary,'planning_total_ms','?'));
@@ -1861,15 +1880,18 @@ yP = 0.95;
 text(ax9f,0.05,yP,'System Info','FontSize',14,'FontWeight','bold',...
     'FontName',CJK_FONT,'Color',[0.1 0.1 0.3]);
 yP = yP-0.06;
+wallPanelInfo = getField(pallSummary, 'wall_panels', 'none');
+nSegs = getField(pallSummary, 'segments', '?');
 sysInfo = {
     sprintf('STL原始: %d面, 低模: %d面 (%.0f%%↓)', totalFaces, totalFacesLow, (1-totalFacesLow/totalFaces)*100);
     sprintf('碰撞源: %s', ifelse(soLoaded, '.so (实时)', 'C++ (离线)'));
     sprintf('箱子: %d个 (%.0f×%.0f×%.0fcm)', nBoxes, box.lx*100, box.wy*100, box.hz*100);
-    sprintf('码垛布局: 3层×2行×2列');
+    sprintf('运动段: %s段 (中转路点)', nSegs);
     '';
-    sprintf('框架碰撞柱: 4根 (r=50mm, 胶囊体)');
+    sprintf('框架碰撞: 4立柱+2顶梁+12面板 (r=50/150mm)');
     sprintf('箱碰撞球: r=250mm (已放置)');
     sprintf('工具碰撞球: r=225mm (搬运中)');
+    sprintf('面板: %s', wallPanelInfo);
     '';
     sprintf('.so avg: %s us/call', getField(pallSummary,'coll_total_avg_us','?'));
     sprintf('.so calls: %s', getField(pallSummary,'coll_calls','?'));
@@ -1890,7 +1912,7 @@ for si = 1:length(sysInfo)
     yP=yP-0.04;
 end
 
-sgtitle(fig9,sprintf('HR\\_S50-2000 v15 仪表盘 (v5.0 环境碰撞 + FIFO + %d箱)', nBoxes),...
+sgtitle(fig9,sprintf('HR\\_S50-2000 v15 仪表盘 (v6.0 面板碰撞 + 中转路点 + %d箱)', nBoxes),...
     'FontSize',15,'FontWeight','bold','FontName',CJK_FONT,'Color',[0.1 0.1 0.3]);
 saveFig(fig9, outputDir, '09_dashboard_v15');
 timing.rendering_ms = timing.rendering_ms + toc(tFig)*1000;
@@ -1927,7 +1949,7 @@ fprintf('  ╠══════════════════════
 fprintf('  ║  总计               %8.1f  %7.2f  100.0%%     ║\n', totalMs, totalElapsed_s);
 fprintf('  ╚════════════════════════════════════════════════════════════╝\n');
 fprintf('\n');
-fprintf('  v5.0 碰撞统计:\n');
+fprintf('  v6.0 碰撞统计:\n');
 fprintf('    自碰撞: %d | 环境碰撞: %d\n', selfCollisions, envCollisions);
 fprintf('    任务顺序: %s\n', taskOrder);
 fprintf('    环境障碍: %s\n', envObstacles);
