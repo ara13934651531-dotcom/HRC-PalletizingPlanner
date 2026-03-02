@@ -602,6 +602,28 @@ public:
         return addEnvCapsule_(id, s, e, radius_mm) == 0;
     }
     
+    /**
+     * @brief 添加棱体(圆角OBB)环境障碍物
+     * @param id 环境障碍物ID (有效范围: 1-29, 46+)
+     * @param ref2local 本地坐标系位姿 [rx,ry,rz(deg), tx,ty,tz(mm)]
+     * @param offset_mm 中心偏移 (mm)
+     * @param xLen_mm X轴尺寸 (mm)
+     * @param yLen_mm Y轴尺寸 (mm)
+     * @param zLen_mm Z轴尺寸 (mm)
+     * @param radius_mm 圆角半径 (mm)
+     */
+    bool addEnvObstacleLozenge(int id, const double ref2local[6],
+                                const Eigen::Vector3d& offset_mm,
+                                double xLen_mm, double yLen_mm, double zLen_mm,
+                                double radius_mm) {
+        if (!initialized_ || !addEnvLozenge_) return false;
+        std::lock_guard<std::mutex> lock(mutex_);
+        SO_LREAL r2l[6] = {ref2local[0], ref2local[1], ref2local[2],
+                            ref2local[3], ref2local[4], ref2local[5]};
+        SO_LREAL off[3] = {offset_mm.x(), offset_mm.y(), offset_mm.z()};
+        return addEnvLozenge_(id, r2l, off, xLen_mm, yLen_mm, zLen_mm, radius_mm) == 0;
+    }
+    
     bool removeEnvObstacle(int id) {
         if (!initialized_ || !removeEnv_) return false;
         std::lock_guard<std::mutex> lock(mutex_);

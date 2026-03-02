@@ -206,21 +206,37 @@ ENV_COLL.frameTopBars = [  % [x1,y1,z1, x2,y2,z2, r]
     -frmHW, frmNY, frmZT, -frmHW, frmFY, frmZT, frmR;   % 左侧顶梁 (Y平行)
      frmHW, frmNY, frmZT,  frmHW, frmFY, frmZT, frmR;   % 右侧顶梁 (Y平行)
 ];
-% 框架面板碰撞 (3个封闭面, 各4根横杆, 前面开放)
-% 后面(Y=frmFY) + 左面(X=-frmHW) + 右面(X=frmHW) 各4根水平横杆
-% 前面(Y=frmNY, 朝机器人, -Y方向) 开放 — 机械臂从此进入框架
-ENV_COLL.wallR_m = 0.150;  % 面板等效碰撞半径 150mm
-wallR = ENV_COLL.wallR_m;
-wallZ = [frmZB+0.250, frmZB+0.750, frmZB+1.250, frmZB+1.750];
-% = [-0.550, -0.050, 0.450, 0.950] in base frame
-ENV_COLL.wallBack = zeros(4,7);   % 后面 (Y=frmFY, 沿X方向)
-ENV_COLL.wallLeft = zeros(4,7);   % 左面 (X=-frmHW, 沿Y方向)
-ENV_COLL.wallRight = zeros(4,7);  % 右面 (X=frmHW, 沿Y方向)
-for wi = 1:4
-    ENV_COLL.wallBack(wi,:)  = [-frmHW, frmFY, wallZ(wi),  frmHW, frmFY, wallZ(wi), wallR];
-    ENV_COLL.wallLeft(wi,:)  = [-frmHW, frmNY, wallZ(wi), -frmHW, frmFY, wallZ(wi), wallR];
-    ENV_COLL.wallRight(wi,:) = [ frmHW, frmNY, wallZ(wi),  frmHW, frmFY, wallZ(wi), wallR];
-end
+% 框架面板碰撞 — 3个 Lozenge OBB (替代12条横杆胶囊)
+% Lozenge = 圆角长方体, 无缝覆盖整面 (后/左/右), 前面(Y=frmNY)开放
+% 参数: ref2local=[rx,ry,rz(deg), tx,ty,tz(m)], offset(m), dims=[xLen,yLen,zLen](m), radius(m)
+wallThick  = 0.060;  % 面板厚度 60mm
+wallRadius_m = 0.050;  % 圆角半径 50mm
+wallCenterZ  = (frmZB + frmZT) / 2;  % 面板Z中心 (m, 基坐标系)
+ENV_COLL.wallLozenge = struct();
+% 后面 (Y=frmFY): XZ平面
+ENV_COLL.wallLozenge(1).name = '后面';
+ENV_COLL.wallLozenge(1).envId = 5;
+ENV_COLL.wallLozenge(1).ref2local = [0, 0, 0, 0, frmFY, wallCenterZ];   % [deg, m]
+ENV_COLL.wallLozenge(1).offset = [0, 0, 0];
+ENV_COLL.wallLozenge(1).dims = [frame.widthX, wallThick, frame.height];  % [m]
+ENV_COLL.wallLozenge(1).radius = wallRadius_m;
+ENV_COLL.wallLozenge(1).center = [0, frmFY, wallCenterZ];  % 渲染用中心 (m)
+% 左面 (X=-frmHW): YZ平面
+ENV_COLL.wallLozenge(2).name = '左面';
+ENV_COLL.wallLozenge(2).envId = 9;
+ENV_COLL.wallLozenge(2).ref2local = [0, 0, 0, -frmHW, frmCY, wallCenterZ];
+ENV_COLL.wallLozenge(2).offset = [0, 0, 0];
+ENV_COLL.wallLozenge(2).dims = [wallThick, frame.depthY, frame.height];
+ENV_COLL.wallLozenge(2).radius = wallRadius_m;
+ENV_COLL.wallLozenge(2).center = [-frmHW, frmCY, wallCenterZ];
+% 右面 (X=frmHW): YZ平面
+ENV_COLL.wallLozenge(3).name = '右面';
+ENV_COLL.wallLozenge(3).envId = 25;
+ENV_COLL.wallLozenge(3).ref2local = [0, 0, 0, frmHW, frmCY, wallCenterZ];
+ENV_COLL.wallLozenge(3).offset = [0, 0, 0];
+ENV_COLL.wallLozenge(3).dims = [wallThick, frame.depthY, frame.height];
+ENV_COLL.wallLozenge(3).radius = wallRadius_m;
+ENV_COLL.wallLozenge(3).center = [frmHW, frmCY, wallCenterZ];
 % 电箱碰撞体 (4条边, 基坐标系)
 cabHW = cab.widthX/2; cabHD = cab.depthY/2;
 cabZB = frmZB; cabZT = -0.08;  % 电箱顶略低于机器人基座
@@ -238,7 +254,7 @@ ENV_COLL.conveyor = [  % [x1,y1,z1, x2,y2,z2, r]
     cvX+cvHW, cvY-cvHL, -0.2,  cvX+cvHW, cvY+cvHL, -0.2, ENV_COLL.convR_m;
     cvX,      cvY-cvHL, cvSZ-0.02, cvX,  cvY+cvHL, cvSZ-0.02, cvHW;
 ];
-fprintf('  ENV_COLL: frame(4col+2topY+12wall)=[%.3f,%.3f]->[%.3f,%.3f] cab(4) conv(3)\n', ...
+fprintf('  ENV_COLL: frame(4col+2topY+3wallLoz)=[%.3f,%.3f]->[%.3f,%.3f] cab(4) conv(3)\n', ...
     frmNY, frmFY, frmZB, frmZT);
 
 fprintf('\n');
@@ -389,28 +405,26 @@ try
         fprintf('    传送带 envId=%d: %s\n', envId, soStat{(result==0)+1});
     end
     
-    % 框架面板 (envId 5-9, 22-28, 3面×4层横杆)
-    wallNames = {'后面', '左面', '右面'};
-    wallData = {ENV_COLL.wallBack, ENV_COLL.wallLeft, ENV_COLL.wallRight};
-    wallIds = {[5,6,7,8], [9,22,23,24], [25,26,27,28]};
-    for fi = 1:3
-        wd = wallData{fi};
-        ids = wallIds{fi};
-        for wi = 1:size(wd,1)
-            startPt = [wd(wi,1), wd(wi,2), wd(wi,3)] * 1000;
-            endPt   = [wd(wi,4), wd(wi,5), wd(wi,6)] * 1000;
-            r_mm    = wd(wi,7) * 1000;
-            envId   = int64(ids(wi));
-            result  = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', envId, startPt, endPt, r_mm);
-            envRegOK = envRegOK + (result == 0);
-            fprintf('    %s面板 envId=%d Z=%.0fmm: %s\n', wallNames{fi}, envId, wd(wi,3)*1000, soStat{(result==0)+1});
-        end
+    % 框架面板 — 3个 Lozenge OBB (envId 5, 9, 25)
+    for fi = 1:length(ENV_COLL.wallLozenge)
+        wl = ENV_COLL.wallLozenge(fi);
+        r2l = wl.ref2local;
+        r2l_mm = [r2l(1:3), r2l(4:6)*1000];  % 角度保持deg, 位置m→mm
+        off_mm = wl.offset * 1000;
+        dims_mm = wl.dims * 1000;
+        r_mm = wl.radius * 1000;
+        envId = int64(wl.envId);
+        result = calllib('libHRCInterface', 'addEnvObstacleLozengeInterface', ...
+            envId, r2l_mm, off_mm, dims_mm(1), dims_mm(2), dims_mm(3), r_mm);
+        envRegOK = envRegOK + (result == 0);
+        fprintf('    %s面板 envId=%d Lozenge (%.0f×%.0f×%.0f mm, r=%.0f): %s\n', ...
+            wl.name, wl.envId, dims_mm(1), dims_mm(2), dims_mm(3), r_mm, soStat{(result==0)+1});
     end
     
     % 验证障碍物数量
     expectedTotal = size(ENV_COLL.frameColumns,1)+size(ENV_COLL.frameTopBars,1)+ ...
         size(ENV_COLL.cabinet,1)+size(ENV_COLL.conveyor,1)+ ...
-        size(ENV_COLL.wallBack,1)+size(ENV_COLL.wallLeft,1)+size(ENV_COLL.wallRight,1);
+        length(ENV_COLL.wallLozenge);  % 3个 Lozenge 替代12根横杆
     envCount = calllib('libHRCInterface', 'getEnvObstacleCountInterface');
     fprintf('    注册成功: %d/%d, SO报告障碍物: %d\n', envRegOK, expectedTotal, envCount);
     
@@ -984,7 +998,7 @@ for ci = 1:size(ENV_COLL.cabinet, 1)
     cc = ENV_COLL.cabinet(ci,:);
     p1 = [cc(1), cc(2), cc(3)] + [baseX, baseY, baseZ];
     p2 = [cc(4), cc(5), cc(6)] + [baseX, baseY, baseZ];
-    drawCylinder3D(ax3a, p1, p2, cc(7), [0.8 0.6 0.2], 0.18);
+    drawCylinder3D(ax3a, p1, p2, cc(7), [0.8 0.6 0.2], 0.15);
 end
 
 % 绘制环境碰撞体: 传送带 (灰色半透明, 无端盖球)
@@ -992,17 +1006,13 @@ for ci = 1:size(ENV_COLL.conveyor, 1)
     cv = ENV_COLL.conveyor(ci,:);
     p1 = [cv(1), cv(2), cv(3)] + [baseX, baseY, baseZ];
     p2 = [cv(4), cv(5), cv(6)] + [baseX, baseY, baseZ];
-    drawCylinder3D(ax3a, p1, p2, cv(7), [0.5 0.5 0.5], 0.15);
+    drawCylinder3D(ax3a, p1, p2, cv(7), [0.5 0.5 0.5], 0.12);
 end
-% 环境碰撞体: 框架墙面板 (绿色半透明矩形面板, 替代厚圆柱以消除端面圆形伪影)
-wallTypes_3 = {ENV_COLL.wallBack, ENV_COLL.wallLeft, ENV_COLL.wallRight};
-for fi = 1:3
-    wd = wallTypes_3{fi};
-    for wi = 1:size(wd,1)
-        p1 = [wd(wi,1), wd(wi,2), wd(wi,3)] + [baseX, baseY, baseZ];
-        p2 = [wd(wi,4), wd(wi,5), wd(wi,6)] + [baseX, baseY, baseZ];
-        drawWallPanel3D(ax3a, p1, p2, wd(wi,7), [0.3 0.8 0.3], 0.18);
-    end
+% 环境碰撞体: 框架墙面板 — Lozenge OBB (绿色半透明矩形面板)
+for fi = 1:length(ENV_COLL.wallLozenge)
+    wl = ENV_COLL.wallLozenge(fi);
+    center_w = wl.center + [baseX, baseY, baseZ];
+    drawOBBWall3D(ax3a, center_w, wl.dims, [0.3 0.8 0.3], 0.08);
 end
 
 % 显示全部码垛位碰撞球 (蓝色半透明) — 使用C++实际TCP位置
@@ -1151,23 +1161,19 @@ for vi = 1:min(4, length(keyPoses))
         cc = ENV_COLL.cabinet(eci,:);
         p1_w = [cc(1)+baseX, cc(2)+baseY, cc(3)+baseZ];
         p2_w = [cc(4)+baseX, cc(5)+baseY, cc(6)+baseZ];
-        drawCylinder3D(ax, p1_w, p2_w, cc(7), [0.8 0.6 0.2], 0.12);
+        drawCylinder3D(ax, p1_w, p2_w, cc(7), [0.8 0.6 0.2], 0.10);
     end
     for eci = 1:size(ENV_COLL.conveyor, 1)
         cv = ENV_COLL.conveyor(eci,:);
         p1_w = [cv(1)+baseX, cv(2)+baseY, cv(3)+baseZ];
         p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
-        drawCylinder3D(ax, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.10);
+        drawCylinder3D(ax, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.08);
     end
-    % 环境碰撞体: 框架墙面板 (绿色半透明矩形面板)
-    wallTypes_4 = {ENV_COLL.wallBack, ENV_COLL.wallLeft, ENV_COLL.wallRight};
-    for fi = 1:3
-        wd = wallTypes_4{fi};
-        for wi = 1:size(wd,1)
-            p1_w = [wd(wi,1)+baseX, wd(wi,2)+baseY, wd(wi,3)+baseZ];
-            p2_w = [wd(wi,4)+baseX, wd(wi,5)+baseY, wd(wi,6)+baseZ];
-            drawWallPanel3D(ax, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.15);
-        end
+    % 环境碰撞体: 框架墙面板 — Lozenge OBB (绿色半透明)
+    for fi = 1:length(ENV_COLL.wallLozenge)
+        wl = ENV_COLL.wallLozenge(fi);
+        center_w = wl.center + [baseX, baseY, baseZ];
+        drawOBBWall3D(ax, center_w, wl.dims, [0.3 0.8 0.3], 0.06);
     end
     
     q_rad = deg2rad(pall_keyQ(ti,:));
@@ -1389,23 +1395,19 @@ for eci = 1:size(ENV_COLL.cabinet, 1)
     cc = ENV_COLL.cabinet(eci,:);
     p1_w = [cc(1)+baseX, cc(2)+baseY, cc(3)+baseZ];
     p2_w = [cc(4)+baseX, cc(5)+baseY, cc(6)+baseZ];
-    drawCylinder3D(ax7a, p1_w, p2_w, cc(7), [0.8 0.6 0.2], 0.10);
+    drawCylinder3D(ax7a, p1_w, p2_w, cc(7), [0.8 0.6 0.2], 0.08);
 end
 for eci = 1:size(ENV_COLL.conveyor, 1)
     cv = ENV_COLL.conveyor(eci,:);
     p1_w = [cv(1)+baseX, cv(2)+baseY, cv(3)+baseZ];
     p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
-    drawCylinder3D(ax7a, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.08);
+    drawCylinder3D(ax7a, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.06);
 end
-% 环境碰撞体: 框架墙面板 (绿色半透明矩形面板)
-wallTypes_7 = {ENV_COLL.wallBack, ENV_COLL.wallLeft, ENV_COLL.wallRight};
-for fi = 1:3
-    wd = wallTypes_7{fi};
-    for wi = 1:size(wd,1)
-        p1_w = [wd(wi,1)+baseX, wd(wi,2)+baseY, wd(wi,3)+baseZ];
-        p2_w = [wd(wi,4)+baseX, wd(wi,5)+baseY, wd(wi,6)+baseZ];
-        drawWallPanel3D(ax7a, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.12);
-    end
+% 环境碰撞体: 框架墙面板 — Lozenge OBB (绿色半透明)
+for fi = 1:length(ENV_COLL.wallLozenge)
+    wl = ENV_COLL.wallLozenge(fi);
+    center_w = wl.center + [baseX, baseY, baseZ];
+    drawOBBWall3D(ax7a, center_w, wl.dims, [0.3 0.8 0.3], 0.06);
 end
 
 xlabel(ax7a,'X','FontSize',10,'FontName',CJK_FONT);
@@ -1481,24 +1483,20 @@ for eci = 1:size(ENV_COLL.cabinet, 1)
     cc = ENV_COLL.cabinet(eci,:);
     p1_w = [cc(1)+baseX, cc(2)+baseY, cc(3)+baseZ];
     p2_w = [cc(4)+baseX, cc(5)+baseY, cc(6)+baseZ];
-    drawCylinder3D(ax3d, p1_w, p2_w, cc(7), [0.8 0.6 0.2], 0.12);
+    drawCylinder3D(ax3d, p1_w, p2_w, cc(7), [0.8 0.6 0.2], 0.10);
 end
 % 环境碰撞体: 传送带 (灰色半透明, 无端盖球)
 for eci = 1:size(ENV_COLL.conveyor, 1)
     cv = ENV_COLL.conveyor(eci,:);
     p1_w = [cv(1)+baseX, cv(2)+baseY, cv(3)+baseZ];
     p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
-    drawCylinder3D(ax3d, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.10);
+    drawCylinder3D(ax3d, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.08);
 end
-% 环境碰撞体: 框架墙面板 (绿色半透明矩形面板)
-wallTypes_8 = {ENV_COLL.wallBack, ENV_COLL.wallLeft, ENV_COLL.wallRight};
-for fi = 1:3
-    wd = wallTypes_8{fi};
-    for wi = 1:size(wd,1)
-        p1_w = [wd(wi,1)+baseX, wd(wi,2)+baseY, wd(wi,3)+baseZ];
-        p2_w = [wd(wi,4)+baseX, wd(wi,5)+baseY, wd(wi,6)+baseZ];
-        drawWallPanel3D(ax3d, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.15);
-    end
+% 环境碰撞体: 框架墙面板 — Lozenge OBB (绿色半透明, 低alpha避免遮蔽箱子)
+for fi = 1:length(ENV_COLL.wallLozenge)
+    wl = ENV_COLL.wallLozenge(fi);
+    center_w = wl.center + [baseX, baseY, baseZ];
+    drawOBBWall3D(ax3d, center_w, wl.dims, [0.3 0.8 0.3], 0.06);
 end
 
 bz_center = convSurfZ + box.hz/2;
@@ -2248,6 +2246,31 @@ function drawWallPanel3D(ax, p1, p2, r, col, alpha)
     patch(ax, 'XData', x, 'YData', y, 'ZData', z, ...
         'FaceColor', col, 'FaceAlpha', alpha, ...
         'EdgeColor', col, 'EdgeAlpha', min(alpha*2.5, 0.5), 'LineWidth', 0.5);
+end
+
+function drawOBBWall3D(ax, center, dims, col, alpha)
+    % 绘制 Lozenge OBB 墙面板 (退化为扁平矩形面片)
+    % center: 面板中心 (世界坐标, m)
+    % dims: [xLen, yLen, zLen] (m) — 最薄轴自动作为法线
+    hx = dims(1)/2; hy = dims(2)/2; hz = dims(3)/2;
+    [~, thinAxis] = min(dims);
+    switch thinAxis
+        case 1  % YZ面板 (薄X) — 左/右墙
+            x = center(1) * [1 1 1 1];
+            y = center(2) + [-hy, hy, hy, -hy];
+            z = center(3) + [-hz, -hz, hz, hz];
+        case 2  % XZ面板 (薄Y) — 后墙
+            x = center(1) + [-hx, hx, hx, -hx];
+            y = center(2) * [1 1 1 1];
+            z = center(3) + [-hz, -hz, hz, hz];
+        case 3  % XY面板 (薄Z) — 地板/天花板
+            x = center(1) + [-hx, hx, hx, -hx];
+            y = center(2) + [-hy, hy, hy, -hy];
+            z = center(3) * [1 1 1 1];
+    end
+    patch(ax, 'XData', x, 'YData', y, 'ZData', z, ...
+        'FaceColor', col, 'FaceAlpha', alpha, ...
+        'EdgeColor', col*0.7, 'EdgeAlpha', min(alpha*3, 0.4), 'LineWidth', 0.5);
 end
 
 function drawInfoPanel_v15(ax, taskIdx, nTotal, q_deg, vel, tcp, dist, time_s, cjkFont, dColor, soActive, carrying, nPlaced, nBoxTotal, envColl)

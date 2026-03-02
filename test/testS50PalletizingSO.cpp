@@ -364,47 +364,37 @@ int main() {
         printf("    envId=21 右侧顶梁: %s\n", ok1?"✅":"❌");
     }
 
-    // ---- 框架面板碰撞 (3个封闭面, 各4根横杆, 前面开放) ----
-    // 后面(Y=fFY) + 左面(X=-fHW) + 右面(X=fHW) 各4根水平横杆
-    // 前面(Y=fNY, 朝机器人, -Y方向) 开放 — 机械臂从此进入框架
-    // r=150mm: 保证最细手臂连杆(r=100mm)无法穿过间隙
-    printf("\n  === 框架面板 (envId 5-9, 22-28) ===\n");
+    // ---- 框架面板碰撞 — 3个 Lozenge OBB (后/左/右, 前面开放) ----
+    // Lozenge = 圆角长方体, 替代原12根横杆胶囊: 无缝覆盖整面, 碰撞更精确
+    printf("\n  === 框架面板 (envId 5, 9, 25 — Lozenge OBB) ===\n");
     {
-        const double wallR = 150.0;  // 面板等效碰撞半径(mm)
-        // 4个高度层: 均匀覆盖 fZB..fZT (底=-800 → 顶=1200)
-        const double wallZ[4] = { fZB + 250, fZB + 750, fZB + 1250, fZB + 1750 };
-        // = { -550, -50, 450, 950 } in base frame
+        const double wallThick = 60.0;    // 面板厚度 (mm)
+        const double wallRadius = 50.0;   // 圆角半径 (mm), 与立柱碰撞半径一致
+        const double centerZ = (fZB + fZT) / 2.0;  // 面板Z中心
 
-        // 后面 (Y=fFY=1025): envId 5,6,7,8 — 水平横杆沿X方向
-        printf("    --- 后面 (Y=%.0f) ---\n", fFY);
-        for (int i = 0; i < 4; i++) {
-            int eid = 5 + i;
-            bool ok = checker.addEnvObstacleCapsule(eid,
-                Eigen::Vector3d(-fHW, fFY, wallZ[i]),
-                Eigen::Vector3d( fHW, fFY, wallZ[i]), wallR);
-            printf("      envId=%d Z=%.0f: %s\n", eid, wallZ[i], ok?"✅":"❌");
-        }
+        // 后面 (Y=fFY): XZ平面, 面板沿X方向×Z方向
+        double r2l_back[6] = {0, 0, 0, 0, fFY, centerZ};  // [deg, mm]
+        bool ok = checker.addEnvObstacleLozenge(5, r2l_back,
+            Eigen::Vector3d::Zero(), scene::FRM_W, wallThick, scene::FRM_H, wallRadius);
+        printf("    后面 envId=5 Lozenge (%.0f×%.0f×%.0f mm, r=%.0f): %s\n",
+               scene::FRM_W, wallThick, scene::FRM_H, wallRadius, ok?"✅":"❌");
 
-        // 左面 (X=-fHW=-600): envId 9,22,23,24 — 水平横杆沿Y方向
-        printf("    --- 左面 (X=%.0f) ---\n", -fHW);
-        int leftIds[4] = {9, 22, 23, 24};
-        for (int i = 0; i < 4; i++) {
-            bool ok = checker.addEnvObstacleCapsule(leftIds[i],
-                Eigen::Vector3d(-fHW, fNY, wallZ[i]),
-                Eigen::Vector3d(-fHW, fFY, wallZ[i]), wallR);
-            printf("      envId=%d Z=%.0f: %s\n", leftIds[i], wallZ[i], ok?"✅":"❌");
-        }
+        // 左面 (X=-fHW): YZ平面, 面板沿Y方向×Z方向
+        double r2l_left[6] = {0, 0, 0, -fHW, fcy, centerZ};
+        ok = checker.addEnvObstacleLozenge(9, r2l_left,
+            Eigen::Vector3d::Zero(), wallThick, scene::FRM_D, scene::FRM_H, wallRadius);
+        printf("    左面 envId=9 Lozenge (%.0f×%.0f×%.0f mm, r=%.0f): %s\n",
+               wallThick, scene::FRM_D, scene::FRM_H, wallRadius, ok?"✅":"❌");
 
-        // 右面 (X=fHW=600): envId 25,26,27,28 — 水平横杆沿Y方向
-        printf("    --- 右面 (X=%.0f) ---\n", fHW);
-        int rightIds[4] = {25, 26, 27, 28};
-        for (int i = 0; i < 4; i++) {
-            bool ok = checker.addEnvObstacleCapsule(rightIds[i],
-                Eigen::Vector3d(fHW, fNY, wallZ[i]),
-                Eigen::Vector3d(fHW, fFY, wallZ[i]), wallR);
-            printf("      envId=%d Z=%.0f: %s\n", rightIds[i], wallZ[i], ok?"✅":"❌");
-        }
-        printf("    面板总计: 12根横杆 (3面×4层, r=%.0fmm)\n", wallR);
+        // 右面 (X=fHW): YZ平面, 面板沿Y方向×Z方向
+        double r2l_right[6] = {0, 0, 0, fHW, fcy, centerZ};
+        ok = checker.addEnvObstacleLozenge(25, r2l_right,
+            Eigen::Vector3d::Zero(), wallThick, scene::FRM_D, scene::FRM_H, wallRadius);
+        printf("    右面 envId=25 Lozenge (%.0f×%.0f×%.0f mm, r=%.0f): %s\n",
+               wallThick, scene::FRM_D, scene::FRM_H, wallRadius, ok?"✅":"❌");
+
+        printf("    面板总计: 3个 Lozenge OBB (厚%.0fmm + r=%.0fmm, 有效厚度%.0fmm)\n",
+               wallThick, wallRadius, wallThick + 2*wallRadius);
     }
 
     printf("\n  === 电箱 (envId 10-13) ===\n");
@@ -675,8 +665,8 @@ int main() {
         fprintf(fpSum,"self_collisions: %d\nenv_collisions: %d\nmin_dist_mm: %.2f\n",
                 totalCollisions,totalEnvCollisions,globalMinDist_mm);
         fprintf(fpSum,"order: single_box_conveyor_to_frame\n");
-        fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+12_wallpanel+1_placed\n");
-        fprintf(fpSum,"wall_panels: back(4)+left(4)+right(4)_r150mm\n");
+        fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+3_wallLozenge+1_placed\n");
+        fprintf(fpSum,"wall_panels: back+left+right_lozenge_r50mm\n");
         fprintf(fpSum,"tool_collision: ball_r%.0fmm\nframe_gap_mm: %.0f\nframe_cy_mm: %.0f\n",
                 boxToolR,scene::FRAME_GAP,fcy);
 
