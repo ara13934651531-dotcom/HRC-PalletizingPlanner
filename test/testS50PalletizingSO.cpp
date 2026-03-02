@@ -4,7 +4,7 @@
  *
  * v6.0 核心变更:
  *   1. 简化为单箱搬运: 传送带拾取 → 框架内放置 (1条清晰轨迹)
- *   2. 框架三面面板碰撞: 后面/左面/右面各4根横杆 (r=150mm) 封锁
+ *   2. 框架三面面板碰撞: 后面/左面/右面各4层胶囊横杆 (r=150mm, 间距500mm) 封锁
  *   3. 前面(朝机器人)开放: 机械臂从前面进入框架
  *   4. 箱子放置在框架中心偏前 (避开面板碰撞区)
  *   5. 增强RRT*参数: 更多迭代/更长时间应对复杂约束
@@ -68,6 +68,7 @@ struct SegmentResult {
     double paramTime_ms = 0, collCheckTime_ms = 0, totalSegmentTime_ms = 0;
     int planIterations = 0, planNodes = 0, pathWaypoints = 0;
     double pathLength_rad = 0;
+    int tcpExclusionViolations = 0;  // TCP进入排除区计数
 };
 
 struct TaskResult {
@@ -208,34 +209,161 @@ SegmentResult executeP2P(const char* name,
 }
 
 // ============================================================================
-// 辅助: RRT*规划段
+// 辅助: 检查直线路径是否穿越TCP排除区 (FK采样)
+// ============================================================================
+static bool isDirectPathInWorkspace(
+    const JointConfig& start, const JointConfig& target,
+    CollisionCheckerSO& checker,
+    const std::vector<TCPPlannerConfig::TCPExclusionBox>& exclusionBoxes,
+    int nSamples = 40)
+{
+    if (exclusionBoxes.empty()) return true;
+    for (int i = 0; i <= nSamples; i++) {
+        double t = (double)i / nSamples;
+        JointConfig q = start.interpolate(target, t);
+        SO_COORD_REF tcp;
+        if (!checker.forwardKinematics(q, tcp)) return false;
+        for (const auto& box : exclusionBoxes) {
+            if (box.contains(tcp.X, tcp.Y, tcp.Z)) return false;
+        }
+    }
+    return true;
+}
+
+// ============================================================================
+// 辅助: 递归路径分割 — 当RRT失败时自动将长段拆成短段
+// ============================================================================
+static Path planWithSplitting(
+    const JointConfig& start, const JointConfig& target,
+    CollisionCheckerSO& checker, PathPlannerSO& planner,
+    const std::vector<TCPPlannerConfig::TCPExclusionBox>& exclusionBoxes,
+    int depth, int maxDepth,
+    double& totalPlanMs, double& totalOptMs, int& totalIter, int& totalNodes)
+{
+    double dist = start.distanceTo(target);
+
+    // 1) 直线路径: 自碰撞 + TCP排除区 双重检查
+    bool selfOk = checker.isPathCollisionFree(start, target, 0.03);
+    bool wsOk = isDirectPathInWorkspace(start, target, checker, exclusionBoxes);
+    if (selfOk && wsOk) {
+        Path p;
+        Waypoint w0(start); w0.pathParam=0; Waypoint w1(target); w1.pathParam=1;
+        p.waypoints.push_back(w0); p.waypoints.push_back(w1);
+        printf("        %*s直线ok (dist=%.2f)\n", depth*2, "", dist);
+        return p;
+    }
+
+    // 2) RRT* 规划
+    auto pr = planner.plan(start, target);
+    auto pt = planner.getTimingReport();
+    totalPlanMs += pt.planningTotal_ms;
+    totalOptMs += pt.optimizationTotal_ms;
+    totalIter += pt.planIterations;
+    totalNodes += pt.nodesExplored;
+    printf("        %*sRRT* depth=%d dist=%.2f: plan=%.1fms nodes=%d\n",
+           depth*2, "", depth, dist, pt.planningTotal_ms, pt.nodesExplored);
+
+    if (pr.isSuccess() && !pr.optimizedPath.empty()) {
+        // 验证RRT路径不穿过排除区
+        if (!exclusionBoxes.empty() && pr.optimizedPath.size() >= 2) {
+            bool wallOk = true;
+            for (size_t i = 0; i+1 < pr.optimizedPath.waypoints.size() && wallOk; i++)
+                wallOk = isDirectPathInWorkspace(pr.optimizedPath.waypoints[i].config,
+                         pr.optimizedPath.waypoints[i+1].config, checker, exclusionBoxes);
+            if (wallOk) return pr.optimizedPath;
+            printf("        %*sRRT路径穿墙, 继续分割\n", depth*2, "");
+        } else {
+            return pr.optimizedPath;
+        }
+    }
+    if (pr.isSuccess() && !pr.rawPath.empty()) {
+        if (!exclusionBoxes.empty() && pr.rawPath.size() >= 2) {
+            bool wallOk = true;
+            for (size_t i = 0; i+1 < pr.rawPath.waypoints.size() && wallOk; i++)
+                wallOk = isDirectPathInWorkspace(pr.rawPath.waypoints[i].config,
+                         pr.rawPath.waypoints[i+1].config, checker, exclusionBoxes);
+            if (wallOk) return pr.rawPath;
+            printf("        %*sraw路径穿墙, 继续分割\n", depth*2, "");
+        } else {
+            return pr.rawPath;
+        }
+    }
+
+    // 3) RRT失败 — 在中点分割, 递归规划两半段
+    if (depth < maxDepth) {
+        // 尝试多种分割比例, 选择第一个有效中间点
+        double splitTs[] = {0.5, 0.4, 0.6, 0.33, 0.67};
+        for (double t : splitTs) {
+            JointConfig mid = start.interpolate(target, t);
+            if (!checker.isCollisionFree(mid)) continue;
+
+            // 检查中间点TCP是否水平
+            SO_COORD_REF tcp;
+            checker.forwardKinematics(mid, tcp);
+            double Br = tcp.B * M_PI / 180, Cr = tcp.C * M_PI / 180;
+            double zz = std::cos(Br) * std::cos(Cr);
+            double downDev = std::acos(std::clamp(-zz, -1.0, 1.0)) * 180.0 / M_PI;
+            if (downDev > 30.0) continue;
+
+            printf("        %*s分割 t=%.2f (%.2f→%.2f+%.2f) TCP:Z↓dev=%.1f°\n",
+                   depth*2, "", t, dist,
+                   start.distanceTo(mid), mid.distanceTo(target), downDev);
+
+            Path p1 = planWithSplitting(start, mid, checker, planner, exclusionBoxes,
+                                        depth+1, maxDepth, totalPlanMs, totalOptMs, totalIter, totalNodes);
+            if (p1.empty()) continue;
+
+            Path p2 = planWithSplitting(mid, target, checker, planner, exclusionBoxes,
+                                        depth+1, maxDepth, totalPlanMs, totalOptMs, totalIter, totalNodes);
+            if (p2.empty()) continue;
+
+            // 拼接: p1 + p2(跳过首点避免重复)
+            Path combined;
+            combined.waypoints = p1.waypoints;
+            for (size_t i = 1; i < p2.waypoints.size(); i++)
+                combined.waypoints.push_back(p2.waypoints[i]);
+            combined.updatePathParameters();
+            printf("        %*s拼接成功 (%zu航点)\n", depth*2, "", combined.size());
+            return combined;
+        }
+        printf("        %*s所有分割点均无效\n", depth*2, "");
+    }
+
+    // 完全失败
+    return Path{};
+}
+
+// ============================================================================
+// 辅助: RRT*规划段 (含自动分割)
 // ============================================================================
 SegmentResult executeRRTStar(const char* name,
     const JointConfig& start, const JointConfig& target,
     RobotModel& robot, CollisionCheckerSO& checker,
     PathPlannerSO& planner, TimeParameterizer& param,
-    FILE* csv, int ti, int si, FILE* traj)
+    FILE* csv, int ti, int si, FILE* traj,
+    const std::vector<TCPPlannerConfig::TCPExclusionBox>& exclusionBoxes = {})
 {
     SegmentResult r; r.name = name;
     auto tS = std::chrono::high_resolution_clock::now();
-    bool direct = checker.isPathCollisionFree(start, target, 0.03);
-    Path path;
-    if (direct) {
+
+    double totalPlanMs = 0, totalOptMs = 0;
+    int totalIter = 0, totalNodes = 0;
+
+    Path path = planWithSplitting(start, target, checker, planner, exclusionBoxes,
+                                  0, 2, totalPlanMs, totalOptMs, totalIter, totalNodes);
+
+    r.planningTime_ms = totalPlanMs;
+    r.optimizationTime_ms = totalOptMs;
+    r.planIterations = totalIter;
+    r.planNodes = totalNodes;
+
+    if (path.empty()) {
+        printf("        ⚠️  分割规划完全失败, 使用直线回退\n");
         Waypoint w0(start); w0.pathParam=0; Waypoint w1(target); w1.pathParam=1;
         path.waypoints.push_back(w0); path.waypoints.push_back(w1);
-        r.planningTime_ms=0; r.optimizationTime_ms=0; r.planIterations=0; r.planNodes=2;
     } else {
-        auto pr = planner.plan(start, target);
-        auto pt = planner.getTimingReport();
-        r.planningTime_ms = pt.planningTotal_ms;
-        r.optimizationTime_ms = pt.optimizationTotal_ms;
-        r.planIterations = pt.planIterations; r.planNodes = pt.nodesExplored;
-        printf("        — RRT*: plan=%.1fms opt=%.1fms nodes=%d\n",
-               pt.planningTotal_ms, pt.optimizationTotal_ms, pt.nodesExplored);
-        if (pr.isSuccess() && !pr.optimizedPath.empty()) path = pr.optimizedPath;
-        else if (pr.isSuccess() && !pr.rawPath.empty()) path = pr.rawPath;
-        else { Waypoint w0(start); w0.pathParam=0; Waypoint w1(target); w1.pathParam=1;
-               path.waypoints.push_back(w0); path.waypoints.push_back(w1); }
+        printf("        ✅ 规划成功 (%zu航点, %.2frad)\n",
+               path.size(), path.totalLength());
     }
     r.pathWaypoints = (int)path.waypoints.size();
     r.pathLength_rad = path.totalLength();
@@ -253,6 +381,15 @@ SegmentResult executeRRTStar(const char* name,
             if (rp.selfCollision) r.collisionCount++;
             if (rp.envCollision) r.envCollisionCount++;
             if (rp.selfMinDist_mm < r.minSelfDist_mm) r.minSelfDist_mm = rp.selfMinDist_mm;
+            // TCP排除区后验证 (穿墙检测)
+            if (rp.hasTcpPose && !exclusionBoxes.empty()) {
+                for (const auto& box : exclusionBoxes) {
+                    if (box.contains(rp.tcpPose.X, rp.tcpPose.Y, rp.tcpPose.Z)) {
+                        r.tcpExclusionViolations++;
+                        break;
+                    }
+                }
+            }
             if (csv) { auto q=p.config.toDegrees();
                 // FK2 v1.0.0 返回mm, 直接输出
                 fprintf(csv,"%d,%d,%d,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%d,%d,%.1f,%.1f,%.1f\n",
@@ -296,16 +433,50 @@ int main() {
     printf("  碰撞检测: ✅ libHRCInterface.so (%.2f ms)\n", initMs);
 
     TCPPlannerConfig planConfig;
-    planConfig.maxIterations = 30000; planConfig.maxPlanningTime = 15.0;
-    planConfig.stepSize = 0.12; planConfig.goalBias = 0.15;
-    planConfig.shortcutIterations = 100;
+    planConfig.maxIterations = 80000; planConfig.maxPlanningTime = 20.0;
+    planConfig.stepSize = 0.25; planConfig.goalBias = 0.20;
+    planConfig.shortcutIterations = 200;
     planConfig.splineResolution = 50; planConfig.collisionResolution = 0.02;
     planConfig.rewireRadius = 0.4;
     // 码垛场景: TCP必须保持水平 (吸盘朝下, 仅允许Z轴旋转)
     planConfig.constrainTcpHorizontal = true;
+
+    // TCP工作空间排除区 (AABB盒子) — 阻止TCP穿过框架三面封闭墙
+    // 框架位置: CY=700, HW=600, NY=375, FY=1025, ZB=-800, ZT=1200 (mm)
+    // 仅在框架空间范围内约束, 不影响框架外自由运动
+    {
+        double _fcy = scene::frameCY();
+        double _fHW = scene::FRM_W/2;
+        double _fNY = _fcy - scene::FRM_D/2;
+        double _fFY = _fcy + scene::FRM_D/2;
+        double _fZB = -scene::baseZ;
+        double _fZT = scene::FRM_H - scene::baseZ;
+        using Box = TCPPlannerConfig::TCPExclusionBox;
+        planConfig.tcpExclusionBoxes = {
+            // 后墙: Y > fFY, X ∈ frame, Z ∈ frame → 拒绝
+            Box{-_fHW, _fHW, _fFY, 1e6, _fZB, _fZT},
+            // 左墙: X < -fHW, Y ∈ frame, Z ∈ frame → 拒绝
+            Box{-1e6, -_fHW, _fNY, _fFY, _fZB, _fZT},
+            // 右墙: X > fHW, Y ∈ frame, Z ∈ frame → 拒绝
+            Box{_fHW, 1e6, _fNY, _fFY, _fZB, _fZT},
+        };
+        printf("  排除区: 后墙(Y>%.0f,|X|<%.0f,Z∈[%.0f,%.0f])"
+               " 左墙(X<-%.0f) 右墙(X>%.0f) (mm)\n",
+               _fFY, _fHW, _fZB, _fZT, _fHW, _fHW);
+    }
+
     PathPlannerSO planner(robot, checker, planConfig);
     printf("  路径规划: %s Informed RRT*\n",
            planConfig.constrainTcpHorizontal ? "TCP-Horizontal" : "Free-TCP");
+
+    // 无TCP水平约束的规划器 — 用于不搬运箱子的回程段
+    // (回程不携带箱子, 无需保持TCP水平, 接受率~100% → 更少迭代)
+    TCPPlannerConfig freeConfig = planConfig;
+    freeConfig.constrainTcpHorizontal = false;
+    freeConfig.maxIterations = 30000;
+    freeConfig.maxPlanningTime = 10.0;
+    PathPlannerSO plannerFree(robot, checker, freeConfig);
+    printf("  回程规划: Free-TCP Informed RRT* (30K iter, 10s, 无箱子段)\n");
 
     auto tpConfig = TimeParameterizationConfig::fromRobotParams(robot.getParams());
     tpConfig.profileType = VelocityProfileType::SCurve;
@@ -364,37 +535,50 @@ int main() {
         printf("    envId=21 右侧顶梁: %s\n", ok1?"✅":"❌");
     }
 
-    // ---- 框架面板碰撞 — 3个 Lozenge OBB (后/左/右, 前面开放) ----
-    // Lozenge = 圆角长方体, 替代原12根横杆胶囊: 无缝覆盖整面, 碰撞更精确
-    printf("\n  === 框架面板 (envId 5, 9, 25 — Lozenge OBB) ===\n");
+    // ---- 框架面板碰撞 — 12根胶囊体 (后/左/右各4根, 前面开放) ----
+    // 注: Lozenge OBB 测试不通过 (SO库registrations返回✅但碰撞检测无效),
+    //      改用4层横杆胶囊体, 每面4根, radius=150mm, 间距500mm, 有效覆盖全壁面
+    printf("\n  === 框架面板 (envId 5-8,22-25,26-29 — 胶囊体) ===\n");
     {
-        const double wallThick = 60.0;    // 面板厚度 (mm)
-        const double wallRadius = 50.0;   // 圆角半径 (mm), 与立柱碰撞半径一致
-        const double centerZ = (fZB + fZT) / 2.0;  // 面板Z中心
+        const double wallR = 150.0;    // 横杆半径 (mm)
+        const int nLevels = 4;
+        const double zSpan = fZT - fZB;  // 2000mm
+        double zLevels[4];
+        for (int i = 0; i < nLevels; i++)
+            zLevels[i] = fZB + zSpan * (2*i + 1) / (2*nLevels);  // fZB+250, +750, +1250, +1750
 
-        // 后面 (Y=fFY): XZ平面, 面板沿X方向×Z方向
-        double r2l_back[6] = {0, 0, 0, 0, fFY, centerZ};  // [deg, mm]
-        bool ok = checker.addEnvObstacleLozenge(5, r2l_back,
-            Eigen::Vector3d::Zero(), scene::FRM_W, wallThick, scene::FRM_H, wallRadius);
-        printf("    后面 envId=5 Lozenge (%.0f×%.0f×%.0f mm, r=%.0f): %s\n",
-               scene::FRM_W, wallThick, scene::FRM_H, wallRadius, ok?"✅":"❌");
+        // 后面 (Y=fFY): 4根沿X方向 (envId 5-8)
+        printf("    后面:\n");
+        int backIds[] = {5, 6, 7, 8};
+        for (int i = 0; i < nLevels; i++) {
+            bool ok = checker.addEnvObstacleCapsule(backIds[i],
+                Eigen::Vector3d(-fHW, fFY, zLevels[i]),
+                Eigen::Vector3d( fHW, fFY, zLevels[i]), wallR);
+            printf("      envId=%d Z=%.0f r=%.0f: %s\n", backIds[i], zLevels[i], wallR, ok?"✅":"❌");
+        }
 
-        // 左面 (X=-fHW): YZ平面, 面板沿Y方向×Z方向
-        double r2l_left[6] = {0, 0, 0, -fHW, fcy, centerZ};
-        ok = checker.addEnvObstacleLozenge(9, r2l_left,
-            Eigen::Vector3d::Zero(), wallThick, scene::FRM_D, scene::FRM_H, wallRadius);
-        printf("    左面 envId=9 Lozenge (%.0f×%.0f×%.0f mm, r=%.0f): %s\n",
-               wallThick, scene::FRM_D, scene::FRM_H, wallRadius, ok?"✅":"❌");
+        // 左面 (X=-fHW): 4根沿Y方向 (envId 22-25)
+        printf("    左面:\n");
+        int leftIds[] = {22, 23, 24, 25};
+        for (int i = 0; i < nLevels; i++) {
+            bool ok = checker.addEnvObstacleCapsule(leftIds[i],
+                Eigen::Vector3d(-fHW, fNY, zLevels[i]),
+                Eigen::Vector3d(-fHW, fFY, zLevels[i]), wallR);
+            printf("      envId=%d Z=%.0f r=%.0f: %s\n", leftIds[i], zLevels[i], wallR, ok?"✅":"❌");
+        }
 
-        // 右面 (X=fHW): YZ平面, 面板沿Y方向×Z方向
-        double r2l_right[6] = {0, 0, 0, fHW, fcy, centerZ};
-        ok = checker.addEnvObstacleLozenge(25, r2l_right,
-            Eigen::Vector3d::Zero(), wallThick, scene::FRM_D, scene::FRM_H, wallRadius);
-        printf("    右面 envId=25 Lozenge (%.0f×%.0f×%.0f mm, r=%.0f): %s\n",
-               wallThick, scene::FRM_D, scene::FRM_H, wallRadius, ok?"✅":"❌");
+        // 右面 (X=fHW): 4根沿Y方向 (envId 26-29)
+        printf("    右面:\n");
+        int rightIds[] = {26, 27, 28, 29};
+        for (int i = 0; i < nLevels; i++) {
+            bool ok = checker.addEnvObstacleCapsule(rightIds[i],
+                Eigen::Vector3d(fHW, fNY, zLevels[i]),
+                Eigen::Vector3d(fHW, fFY, zLevels[i]), wallR);
+            printf("      envId=%d Z=%.0f r=%.0f: %s\n", rightIds[i], zLevels[i], wallR, ok?"✅":"❌");
+        }
 
-        printf("    面板总计: 3个 Lozenge OBB (厚%.0fmm + r=%.0fmm, 有效厚度%.0fmm)\n",
-               wallThick, wallRadius, wallThick + 2*wallRadius);
+        printf("    面板总计: 12根胶囊体 (r=%.0fmm, 4层, 间距%.0fmm, 覆盖全壁面)\n",
+               wallR, zSpan/nLevels);
     }
 
     printf("\n  === 电箱 (envId 10-13) ===\n");
@@ -426,8 +610,8 @@ int main() {
     }
 
     const double boxToolR = 225.0, boxEnvR = 250.0;
-    printf("\n  环境障碍: 电箱(4) + 传送带(3) + 框架立柱(4) + 框架顶梁(2) + 框架面板(12) + 已放箱子(动态)\n");
-    printf("  面板封锁: 后面+左面+右面 (前面开放, 机械臂入口)\n\n");
+    printf("\n  环境障碍: 电箱(4) + 传送带(3) + 框架立柱(4) + 框架顶梁(2) + 框架面板横杆(12) + 已放箱子(动态)\n");
+    printf("  面板封锁: 后面+左面+右面各4根横杆 (前面开放, 机械臂入口)\n\n");
 
     // ---- 码垛布局 + IK求解 ----
     printf("━━━━━━ 阶段3: 单箱布局 + IK求解 ━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
@@ -579,25 +763,65 @@ int main() {
     printf("  目标: %s TCP=(%.0f,%.0f,%.0f)mm\n\n", bt.label.c_str(),
            bt.pos_mm.x(), bt.pos_mm.y(), bt.pos_mm.z());
 
-    // 6段运动: HOME→取料→搬运→放料→HOME
+    // 中转点: 手臂抬起 (J2=-90°, J3=0° = HOME臂型), TCP在~2272mm高处
+    // 出发中转: J1匹配目标方位, J2..J6全部=HOME
+    //   HOME→TRANSIT_PICK: 仅J1旋转 (TCP在高位, 直线安全)
+    //   TRANSIT_PICK→PickApproach: J2..J6变化 (实测直线通过)
+    // 返回中转: J2/J3=HOME(臂抬起), J1/J4/J5/J6匹配PlaceApproach(腕部不变)
+    //   PlaceApproach→TRANSIT_HOME: 仅J2/J3变化 (~0.6rad, 臂上升)
+    //   TRANSIT_HOME→HOME: J1/J4/J5/J6变化, 但臂朝上 (TCP~2272mm, 直线安全)
+    auto TRANSIT_PICK = [&HOME](const JointConfig& target) {
+        JointConfig t = HOME;
+        t.q[0] = target.q[0];  // J1匹配目标方位角
+        return t;
+    }(PICK_APPROACH);
+
+    auto TRANSIT_HOME = [](const JointConfig& source) {
+        JointConfig t;
+        t.q[0] = source.q[0];  // J1 保持 (方位不变)
+        t.q[1] = -90.0 * M_PI / 180.0;  // J2 = HOME (臂抬起)
+        t.q[2] = 0.0;                    // J3 = HOME (臂抬起)
+        t.q[3] = source.q[3];  // J4 保持 (腕部不变)
+        t.q[4] = source.q[4];  // J5 保持 (腕部不变)
+        t.q[5] = source.q[5];  // J6 保持 (腕部不变)
+        return t;
+    }(pc.approach);
+
+    printf("  中转点策略:\n");
+    printf("    TRANSIT_PICK: J1=%.1f° (J2..J6=HOME) — 出发方位\n", TRANSIT_PICK.q[0]*180/M_PI);
+    printf("    TRANSIT_HOME: J1=%.1f° J2=-90° J3=0° J4/J5/J6=(%.1f/%.1f/%.1f)° — 臂抬起+腕不变\n",
+           TRANSIT_HOME.q[0]*180/M_PI,
+           TRANSIT_HOME.q[3]*180/M_PI, TRANSIT_HOME.q[4]*180/M_PI, TRANSIT_HOME.q[5]*180/M_PI);
+    printf("    PlaceApproach→TRANSIT: 仅J2/J3变化=%.2frad\n",
+           pc.approach.distanceTo(TRANSIT_HOME));
+    printf("    TRANSIT→HOME: J1/J4/J5/J6变化=%.2frad (臂朝上,TCP高位)\n\n",
+           TRANSIT_HOME.distanceTo(HOME));
+
+    // 9段运动: HOME→中转→取料→搬运→放料→中转→HOME
     struct MotionSeg {
         const char* name;
         JointConfig start, target;
         bool useRRT;
         int toolAction;  // 0=无, 1=启用工具球, 2=禁用工具球+添加放置障碍
+        bool freeTcp;    // true=使用Free-TCP规划器 (不搬运箱子的段)
     };
     MotionSeg motions[] = {
-        {"HOME→取料接近",     HOME,            PICK_APPROACH,  true,  0},
-        {"取料接近→取料",     PICK_APPROACH,   PICK_POS,       false, 0},
-        {"取料→取料抬升",     PICK_POS,        PICK_APPROACH,  false, 1},  // 拾取: 启用工具球
-        {"取料抬升→放料接近", PICK_APPROACH,   pc.approach,    true,  0},  // ★关键段: 搬运过框架面板
-        {"放料接近→放料",     pc.approach,     pc.place,       false, 2},  // 放置: 禁用工具球
-        {"放料→HOME",         pc.place,        HOME,           true,  0},
+        {"HOME→中转(取)",     HOME,            TRANSIT_PICK,   true,  0, true},   // 出发: 无箱子
+        {"中转→取料接近",     TRANSIT_PICK,    PICK_APPROACH,  true,  0, true},   // 出发: 无箱子
+        {"取料接近→取料",     PICK_APPROACH,   PICK_POS,       false, 0, false},
+        {"取料→取料抬升",     PICK_POS,        PICK_APPROACH,  false, 1, false},  // 拾取: 启用工具球
+        {"取料抬升→放料接近", PICK_APPROACH,   pc.approach,    true,  0, false},  // ★搬运箱子: TCP-Horizontal
+        {"放料接近→放料",     pc.approach,     pc.place,       false, 0, false},  // 搬运箱子
+        {"放料→放料抬升",     pc.place,        pc.approach,    false, 2, false},  // 放置: 禁用工具球+添加放置障碍
+        {"放料抬升→中转(回)", pc.approach,     TRANSIT_HOME,   true,  0, true},   // 回程: 无箱子, 从框架内上升 — 不用排除区
+        {"中转→HOME",         TRANSIT_HOME,    HOME,           true,  0, true},   // 回程: 无箱子, 高位移动 — 不用排除区
     };
-    const int NUM_SEGS = 6;
+    const int NUM_SEGS = 9;
 
     for (int s = 0; s < NUM_SEGS; s++) {
         auto& m = motions[s];
+        double segDist = m.start.distanceTo(m.target);
+        printf("\n  --- seg %d: %s (dist=%.2f rad, %.1f°) ---\n", s, m.name, segDist, segDist*180/M_PI);
 
         // 动作前: 启用/禁用工具球
         if (m.toolAction == 1) {
@@ -606,16 +830,24 @@ int main() {
         }
 
         SegmentResult seg;
-        if (m.useRRT)
+        if (m.useRRT) {
+            // 选择规划器: 搬运箱子时用TCP-Horizontal, 无箱子时用Free-TCP
+            auto& activePlanner = m.freeTcp ? plannerFree : planner;
+            // 回程(freeTcp)从框架内出发 → 不需要排除区 (TCP在框架内合法移动)
+            // 搬运段 → 使用排除区 (防止TCP从外部穿过墙壁)
+            static const std::vector<TCPPlannerConfig::TCPExclusionBox> emptyBoxes;
+            auto& activeExclBoxes = m.freeTcp ? emptyBoxes : planConfig.tcpExclusionBoxes;
             seg = executeRRTStar(m.name, m.start, m.target,
-                                 robot, checker, planner, parameterizer, fpCsv, 1, s, fpTraj);
-        else
+                                 robot, checker, activePlanner, parameterizer, fpCsv, 1, s, fpTraj,
+                                 activeExclBoxes);
+        } else
             seg = executeP2P(m.name, m.start, m.target,
                              robot, checker, parameterizer, fpCsv, 1, s, fpTraj);
 
-        printf("  [%d] %-24s %s %.3fs plan:%.1fms param:%.1fms dist:%.0fmm env:%d\n",
+        printf("  [%d] %-24s %s %.3fs plan:%.1fms param:%.1fms dist:%.0fmm env:%d wall:%d\n",
                s, seg.name.c_str(), seg.success?"✅":"❌", seg.totalTime_s,
-               seg.planningTime_ms, seg.paramTime_ms, seg.minSelfDist_mm, seg.envCollisionCount);
+               seg.planningTime_ms, seg.paramTime_ms, seg.minSelfDist_mm, seg.envCollisionCount,
+               seg.tcpExclusionViolations);
 
         // 动作后: 禁用工具球 + 添加已放置箱子
         if (m.toolAction == 2) {
@@ -665,8 +897,8 @@ int main() {
         fprintf(fpSum,"self_collisions: %d\nenv_collisions: %d\nmin_dist_mm: %.2f\n",
                 totalCollisions,totalEnvCollisions,globalMinDist_mm);
         fprintf(fpSum,"order: single_box_conveyor_to_frame\n");
-        fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+3_wallLozenge+1_placed\n");
-        fprintf(fpSum,"wall_panels: back+left+right_lozenge_r50mm\n");
+        fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+12_wallCapsule+1_placed\n");
+        fprintf(fpSum,"wall_panels: back+left+right_4capsule_r150mm\n");
         fprintf(fpSum,"tool_collision: ball_r%.0fmm\nframe_gap_mm: %.0f\nframe_cy_mm: %.0f\n",
                 boxToolR,scene::FRAME_GAP,fcy);
 

@@ -35,7 +35,7 @@ function testS50_Palletizing_v15()
 %
 %  v15.1 修复清单:
 %    1. SO库环境碰撞注册: 框架4柱+2顶梁, 电箱4边, 传送带3面
-%    2. 动画循环工具碰撞球管理: seg2启用/seg6移除 + 已放置箱子注册
+%    2. 动画循环工具碰撞球管理: seg3启用/seg6移除 + 已放置箱子注册 (9-seg layout)
 %    3. TCP姿态分析使用FK2 A,B,C (ZYX Euler), 消除urdfFK混用 (#4指导规则)
 %    4. 碰撞包络半径匹配CollisionGeometry.hpp (160/140/120/100mm)
 %    5. drawFrame_v11渲染: 近端底边+远端底顶+左右顶梁 (匹配实物框架)
@@ -206,37 +206,36 @@ ENV_COLL.frameTopBars = [  % [x1,y1,z1, x2,y2,z2, r]
     -frmHW, frmNY, frmZT, -frmHW, frmFY, frmZT, frmR;   % 左侧顶梁 (Y平行)
      frmHW, frmNY, frmZT,  frmHW, frmFY, frmZT, frmR;   % 右侧顶梁 (Y平行)
 ];
-% 框架面板碰撞 — 3个 Lozenge OBB (替代12条横杆胶囊)
-% Lozenge = 圆角长方体, 无缝覆盖整面 (后/左/右), 前面(Y=frmNY)开放
-% 参数: ref2local=[rx,ry,rz(deg), tx,ty,tz(m)], offset(m), dims=[xLen,yLen,zLen](m), radius(m)
-wallThick  = 0.060;  % 面板厚度 60mm
-wallRadius_m = 0.050;  % 圆角半径 50mm
-wallCenterZ  = (frmZB + frmZT) / 2;  % 面板Z中心 (m, 基坐标系)
-ENV_COLL.wallLozenge = struct();
-% 后面 (Y=frmFY): XZ平面
-ENV_COLL.wallLozenge(1).name = '后面';
-ENV_COLL.wallLozenge(1).envId = 5;
-ENV_COLL.wallLozenge(1).ref2local = [0, 0, 0, 0, frmFY, wallCenterZ];   % [deg, m]
-ENV_COLL.wallLozenge(1).offset = [0, 0, 0];
-ENV_COLL.wallLozenge(1).dims = [frame.widthX, wallThick, frame.height];  % [m]
-ENV_COLL.wallLozenge(1).radius = wallRadius_m;
-ENV_COLL.wallLozenge(1).center = [0, frmFY, wallCenterZ];  % 渲染用中心 (m)
-% 左面 (X=-frmHW): YZ平面
-ENV_COLL.wallLozenge(2).name = '左面';
-ENV_COLL.wallLozenge(2).envId = 9;
-ENV_COLL.wallLozenge(2).ref2local = [0, 0, 0, -frmHW, frmCY, wallCenterZ];
-ENV_COLL.wallLozenge(2).offset = [0, 0, 0];
-ENV_COLL.wallLozenge(2).dims = [wallThick, frame.depthY, frame.height];
-ENV_COLL.wallLozenge(2).radius = wallRadius_m;
-ENV_COLL.wallLozenge(2).center = [-frmHW, frmCY, wallCenterZ];
-% 右面 (X=frmHW): YZ平面
-ENV_COLL.wallLozenge(3).name = '右面';
-ENV_COLL.wallLozenge(3).envId = 25;
-ENV_COLL.wallLozenge(3).ref2local = [0, 0, 0, frmHW, frmCY, wallCenterZ];
-ENV_COLL.wallLozenge(3).offset = [0, 0, 0];
-ENV_COLL.wallLozenge(3).dims = [wallThick, frame.depthY, frame.height];
-ENV_COLL.wallLozenge(3).radius = wallRadius_m;
-ENV_COLL.wallLozenge(3).center = [frmHW, frmCY, wallCenterZ];
+% 框架面板碰撞 — 12根胶囊体横杆 (后/左/右各4层, r=150mm)
+% 注: Lozenge OBB测试不通过 (SO库碰撞检测无效), 改用4层横杆胶囊体
+wallR_m = 0.150;  % 横杆碰撞半径 150mm (m)
+nWallLevels = 4;
+wallZSpan = frmZT - frmZB;  % 框架高度 (m)
+wallZLevels = zeros(1, nWallLevels);
+for wli = 1:nWallLevels
+    wallZLevels(wli) = frmZB + wallZSpan * (2*wli - 1) / (2*nWallLevels);
+end
+% wallCapsules: [x1,y1,z1, x2,y2,z2, r] 每行一根 (m, 基坐标系)
+% 后面 (envId 5-8): 沿X方向
+% 左面 (envId 22-25): 沿Y方向
+% 右面 (envId 26-29): 沿Y方向
+ENV_COLL.wallCapsules = zeros(12, 7);
+ENV_COLL.wallCapsuleIds = zeros(12, 1);
+backIds  = [5, 6, 7, 8];
+leftIds  = [22, 23, 24, 25];
+rightIds = [26, 27, 28, 29];
+for wli = 1:nWallLevels
+    zi = wallZLevels(wli);
+    % 后面:
+    ENV_COLL.wallCapsules(wli, :)     = [-frmHW, frmFY, zi, frmHW, frmFY, zi, wallR_m];
+    ENV_COLL.wallCapsuleIds(wli)       = backIds(wli);
+    % 左面:
+    ENV_COLL.wallCapsules(4+wli, :)   = [-frmHW, frmNY, zi, -frmHW, frmFY, zi, wallR_m];
+    ENV_COLL.wallCapsuleIds(4+wli)     = leftIds(wli);
+    % 右面:
+    ENV_COLL.wallCapsules(8+wli, :)   = [frmHW, frmNY, zi, frmHW, frmFY, zi, wallR_m];
+    ENV_COLL.wallCapsuleIds(8+wli)     = rightIds(wli);
+end
 % 电箱碰撞体 (4条边, 基坐标系)
 cabHW = cab.widthX/2; cabHD = cab.depthY/2;
 cabZB = frmZB; cabZT = -0.08;  % 电箱顶略低于机器人基座
@@ -405,26 +404,25 @@ try
         fprintf('    传送带 envId=%d: %s\n', envId, soStat{(result==0)+1});
     end
     
-    % 框架面板 — 3个 Lozenge OBB (envId 5, 9, 25)
-    for fi = 1:length(ENV_COLL.wallLozenge)
-        wl = ENV_COLL.wallLozenge(fi);
-        r2l = wl.ref2local;
-        r2l_mm = [r2l(1:3), r2l(4:6)*1000];  % 角度保持deg, 位置m→mm
-        off_mm = wl.offset * 1000;
-        dims_mm = wl.dims * 1000;
-        r_mm = wl.radius * 1000;
-        envId = int64(wl.envId);
-        result = calllib('libHRCInterface', 'addEnvObstacleLozengeInterface', ...
-            envId, r2l_mm, off_mm, dims_mm(1), dims_mm(2), dims_mm(3), r_mm);
+    % 框架面板 — 12根胶囊体 (envId 5-8, 22-25, 26-29)
+    wallNames = {'后面','后面','后面','后面', '左面','左面','左面','左面', '右面','右面','右面','右面'};
+    for fi = 1:size(ENV_COLL.wallCapsules, 1)
+        wc = ENV_COLL.wallCapsules(fi, :);
+        eid = int64(ENV_COLL.wallCapsuleIds(fi));
+        p1_mm = wc(1:3) * 1000;
+        p2_mm = wc(4:6) * 1000;
+        r_mm = wc(7) * 1000;
+        result = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', ...
+            eid, p1_mm, p2_mm, r_mm);
         envRegOK = envRegOK + (result == 0);
-        fprintf('    %s面板 envId=%d Lozenge (%.0f×%.0f×%.0f mm, r=%.0f): %s\n', ...
-            wl.name, wl.envId, dims_mm(1), dims_mm(2), dims_mm(3), r_mm, soStat{(result==0)+1});
+        fprintf('    %s横杆 envId=%d Z=%.0f r=%.0f: %s\n', ...
+            wallNames{fi}, ENV_COLL.wallCapsuleIds(fi), wc(3)*1000, r_mm, soStat{(result==0)+1});
     end
     
     % 验证障碍物数量
     expectedTotal = size(ENV_COLL.frameColumns,1)+size(ENV_COLL.frameTopBars,1)+ ...
         size(ENV_COLL.cabinet,1)+size(ENV_COLL.conveyor,1)+ ...
-        length(ENV_COLL.wallLozenge);  % 3个 Lozenge 替代12根横杆
+        size(ENV_COLL.wallCapsules,1);  % 12根横杆胶囊体
     envCount = calllib('libHRCInterface', 'getEnvObstacleCountInterface');
     fprintf('    注册成功: %d/%d, SO报告障碍物: %d\n', envRegOK, expectedTotal, envCount);
     
@@ -671,7 +669,7 @@ if soLoaded
     tScan = tic;
     scanCount = 0;
     scanPrevTask = -1; scanPrevSeg = -1; scanToolActive = false;
-    scanLastTcp_mm = [0 0 0];  % 记录seg5末TCP位置作为placed box中心
+    scanLastTcp_mm = [0 0 0];  % 记录seg6始TCP位置作为placed box中心
     for ri = 1:SCAN_STRIDE:nPall
         q_deg = pall_raw(ri, 4:9);
         vel   = pall_raw(ri, 10:15);
@@ -682,13 +680,13 @@ if soLoaded
         if curTask ~= scanPrevTask || curSeg ~= scanPrevSeg
             tidx = find(pall_tasks == curTask, 1);
             if ~isempty(tidx), sbi = scanBoxForTask(tidx); else, sbi = 0; end
-            if curSeg == 2 && ~scanToolActive && sbi > 0 && sbi <= nBoxes
+            if curSeg == 3 && ~scanToolActive && sbi > 0 && sbi <= nBoxes
                 calllib('libHRCInterface', 'setCPToolCollisionBallShapeInterface', ...
                     int64(6), [0, 0, -box.hz/2*1000], 225.0);
                 scanToolActive = true;
             end
-            % v6.0: seg5=Place→HOME, 此时工具球应已移除
-            if curSeg == 5 && scanToolActive
+            % v6.0 9-seg: seg6=放料→放料抬升 (Place→PlaceApproach), 工具球移除+添加放置障碍
+            if curSeg == 6 && scanToolActive
                 calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(6));
                 scanToolActive = false;
                 % 使用上一步FK2 TCP位置(m→mm)作为placed box center
@@ -750,15 +748,15 @@ if soLoaded
     
     tcpAxisDot = so_pall_tcpAxis * TCP_DESIRED_AXIS;
     tcpOrientError_deg = acosd(max(-1, min(1, tcpAxisDot)));
-    % 分离搬运段(seg 2-4)和非搬运段的TCP朝向统计
+    % 分离搬运段(seg 3-5)和非搬运段的TCP朝向统计 (9-seg layout)
     pall_segs = pall_raw(:, 2);
-    carryMask = (pall_segs >= 2 & pall_segs <= 4);
+    carryMask = (pall_segs >= 3 & pall_segs <= 5);
     if any(carryMask)
-        fprintf('  TCP姿态偏差(搬运seg2-4): mean=%.1f°, max=%.1f° (共%d点)\n', ...
+        fprintf('  TCP姿态偏差(搬运seg3-5): mean=%.1f°, max=%.1f° (共%d点)\n', ...
             mean(tcpOrientError_deg(carryMask)), max(tcpOrientError_deg(carryMask)), sum(carryMask));
     end
     if any(~carryMask)
-        fprintf('  TCP姿态偏差(非搬运seg0,1,5): mean=%.1f°, max=%.1f° (共%d点)\n', ...
+        fprintf('  TCP姿态偏差(非搬运seg0-2,6-8): mean=%.1f°, max=%.1f° (共%d点)\n', ...
             mean(tcpOrientError_deg(~carryMask)), max(tcpOrientError_deg(~carryMask)), sum(~carryMask));
     end
     fprintf('  TCP姿态偏差(全部): mean=%.1f°, max=%.1f°\n', ...
@@ -1008,18 +1006,19 @@ for ci = 1:size(ENV_COLL.conveyor, 1)
     p2 = [cv(4), cv(5), cv(6)] + [baseX, baseY, baseZ];
     drawCylinder3D(ax3a, p1, p2, cv(7), [0.5 0.5 0.5], 0.12);
 end
-% 环境碰撞体: 框架墙面板 — Lozenge OBB (绿色半透明矩形面板)
-for fi = 1:length(ENV_COLL.wallLozenge)
-    wl = ENV_COLL.wallLozenge(fi);
-    center_w = wl.center + [baseX, baseY, baseZ];
-    drawOBBWall3D(ax3a, center_w, wl.dims, [0.3 0.8 0.3], 0.08);
+% 环境碰撞体: 框架墙面板 — 12根胶囊横杆 (绿色半透明)
+for fi = 1:size(ENV_COLL.wallCapsules, 1)
+    wc = ENV_COLL.wallCapsules(fi, :);
+    p1_w = wc(1:3) + [baseX, baseY, baseZ];
+    p2_w = wc(4:6) + [baseX, baseY, baseZ];
+    drawCylinder3D(ax3a, p1_w, p2_w, wc(7), [0.3 0.8 0.3], 0.08);
 end
 
 % 显示全部码垛位碰撞球 (蓝色半透明) — 使用C++实际TCP位置
 if ~isempty(profileData)
     % 从profile最后一步获取每个任务的放置TCP位置
     for ti = 1:nTasks
-        mask = profileData(:,1)==(ti-1) & profileData(:,2)==5; % task ti-1, seg 5 (place)
+        mask = profileData(:,1)==(ti-1) & profileData(:,2)==5; % task ti-1, seg 5 (PlaceApproach→Place, 末点=place位置)
         if any(mask)
             rows_ti = profileData(mask,:);
             tcp_mm = rows_ti(end, 14:16);
@@ -1169,11 +1168,12 @@ for vi = 1:min(4, length(keyPoses))
         p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
         drawCylinder3D(ax, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.08);
     end
-    % 环境碰撞体: 框架墙面板 — Lozenge OBB (绿色半透明)
-    for fi = 1:length(ENV_COLL.wallLozenge)
-        wl = ENV_COLL.wallLozenge(fi);
-        center_w = wl.center + [baseX, baseY, baseZ];
-        drawOBBWall3D(ax, center_w, wl.dims, [0.3 0.8 0.3], 0.06);
+    % 环境碰撞体: 框架墙面板 — 12根胶囊横杆 (绿色半透明)
+    for fi = 1:size(ENV_COLL.wallCapsules, 1)
+        wc = ENV_COLL.wallCapsules(fi, :);
+        p1_w = wc(1:3) + [baseX, baseY, baseZ];
+        p2_w = wc(4:6) + [baseX, baseY, baseZ];
+        drawCylinder3D(ax, p1_w, p2_w, wc(7), [0.3 0.8 0.3], 0.06);
     end
     
     q_rad = deg2rad(pall_keyQ(ti,:));
@@ -1403,11 +1403,12 @@ for eci = 1:size(ENV_COLL.conveyor, 1)
     p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
     drawCylinder3D(ax7a, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.06);
 end
-% 环境碰撞体: 框架墙面板 — Lozenge OBB (绿色半透明)
-for fi = 1:length(ENV_COLL.wallLozenge)
-    wl = ENV_COLL.wallLozenge(fi);
-    center_w = wl.center + [baseX, baseY, baseZ];
-    drawOBBWall3D(ax7a, center_w, wl.dims, [0.3 0.8 0.3], 0.06);
+% 环境碰撞体: 框架墙面板 — 12根胶囊横杆 (绿色半透明)
+for fi = 1:size(ENV_COLL.wallCapsules, 1)
+    wc = ENV_COLL.wallCapsules(fi, :);
+    p1_w = wc(1:3) + [baseX, baseY, baseZ];
+    p2_w = wc(4:6) + [baseX, baseY, baseZ];
+    drawCylinder3D(ax7a, p1_w, p2_w, wc(7), [0.3 0.8 0.3], 0.06);
 end
 
 xlabel(ax7a,'X','FontSize',10,'FontName',CJK_FONT);
@@ -1492,11 +1493,12 @@ for eci = 1:size(ENV_COLL.conveyor, 1)
     p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
     drawCylinder3D(ax3d, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.08);
 end
-% 环境碰撞体: 框架墙面板 — Lozenge OBB (绿色半透明, 低alpha避免遮蔽箱子)
-for fi = 1:length(ENV_COLL.wallLozenge)
-    wl = ENV_COLL.wallLozenge(fi);
-    center_w = wl.center + [baseX, baseY, baseZ];
-    drawOBBWall3D(ax3d, center_w, wl.dims, [0.3 0.8 0.3], 0.06);
+% 环境碰撞体: 框架墙面板 — 12根胶囊横杆 (绿色半透明)
+for fi = 1:size(ENV_COLL.wallCapsules, 1)
+    wc = ENV_COLL.wallCapsules(fi, :);
+    p1_w = wc(1:3) + [baseX, baseY, baseZ];
+    p2_w = wc(4:6) + [baseX, baseY, baseZ];
+    drawCylinder3D(ax3d, p1_w, p2_w, wc(7), [0.3 0.8 0.3], 0.06);
 end
 
 bz_center = convSurfZ + box.hz/2;
@@ -1561,18 +1563,18 @@ for ti = 1:nAnimTasks
         vel = rows(ri, 10:15);
         seg = rows(ri, 2);
         
-        % SO库工具碰撞体管理 (匹配C++ v6.0: seg=2启用/seg=5移除)
+        % SO库工具碰撞体管理 (匹配C++ v6.0 9-seg: seg=3启用/seg=6移除)
         if soLoaded && seg ~= prevSeg
-            % 进入seg 2: 启用工具碰撞球 (吸附箱子, toolIdx=6)
-            if seg == 2 && ~soToolActive && bi <= nBoxes
+            % 进入seg 3: 启用工具碰撞球 (吸附箱子, toolIdx=6)
+            if seg == 3 && ~soToolActive && bi <= nBoxes
                 toolOffset_mm = [0, 0, -box.hz/2*1000];  % 箱子中心在TCP下方
                 calllib('libHRCInterface', 'setCPToolCollisionBallShapeInterface', ...
                     int64(6), toolOffset_mm, 225.0);  % r=225mm
                 soToolActive = true;
             end
-            % 进入seg 5: 移除工具碰撞球, 注册已放置箱子为环境障碍
-            % C++ v6.0: seg4=PlaceApproach→Place(工具OFF), seg5=Place→HOME
-            if seg == 5 && soToolActive && bi <= nBoxes
+            % 进入seg 6: 移除工具碰撞球, 注册已放置箱子为环境障碍
+            % C++ v6.0 9-seg: seg5=PlaceApproach→Place, seg6=Place→PlaceApproach(工具OFF)
+            if seg == 6 && soToolActive && bi <= nBoxes
                 calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(6));
                 soToolActive = false;
                 boxCenter_mm = placePos(bi,:) * 1000;  % m→mm
@@ -1594,7 +1596,7 @@ for ti = 1:nAnimTasks
             dist = rows(ri, 16);
         end
         
-        carrying = (seg >= 2 && seg <= 4) && (bi <= nBoxes);  % v6.0: seg2-4搬运, seg5=回HOME(无箱)
+        carrying = (seg >= 3 && seg <= 5) && (bi <= nBoxes);  % v6.0 9-seg: seg3-5搬运, seg6-8=回HOME(无箱)
         
         if ~isempty(prevRobotH) && any(isvalid(prevRobotH))
             delete(prevRobotH(isvalid(prevRobotH)));
@@ -1630,13 +1632,13 @@ for ti = 1:nAnimTasks
             if isvalid(hConvBoxes(ci2)), set(hConvBoxes(ci2),'Visible',vis); end
             if isvalid(hConvLabels(ci2)), set(hConvLabels(ci2),'Visible',vis); end
         end
-        if seg >= 2 && bi <= nBoxes
+        if seg >= 3 && bi <= nBoxes
             if isvalid(hConvBoxes(bi)), set(hConvBoxes(bi),'Visible','off'); end
             if isvalid(hConvLabels(bi)), set(hConvLabels(bi),'Visible','off'); end
         end
         
-        % 放置箱子 + 碰撞球 (v6.0: seg5=Place→HOME, 箱子已放置)
-        if seg >= 5 && bi <= nBoxes && ~placedFlag(bi)
+        % 放置箱子 + 碰撞球 (v6.0 9-seg: seg6=Place→PlaceApproach, 箱子已放置)
+        if seg >= 6 && bi <= nBoxes && ~placedFlag(bi)
             placedFlag(bi) = true;
             hPlacedBoxes(bi) = drawBox_v11(ax3d, placePos(bi,:), box);
             hPlacedLabels(bi) = text(ax3d, placePos(bi,1),placePos(bi,2),...
@@ -1759,9 +1761,9 @@ scores = [min(so_pall_dist)/700*100, ...
           95, ...  % S-Curve质量
           100];
 if ~isempty(tcpOrientError_deg)
-    % 仅用搬运段(seg2-4)的TCP朝向偏差评分
+    % 仅用搬运段(seg3-5)的TCP朝向偏差评分 (9-seg layout)
     pall_segs_score = pall_raw(:, 2);
-    carryMask_score = (pall_segs_score >= 2 & pall_segs_score <= 4);
+    carryMask_score = (pall_segs_score >= 3 & pall_segs_score <= 5);
     if any(carryMask_score)
         scores(end) = 100 - mean(tcpOrientError_deg(carryMask_score))/1.8;
     else
@@ -1874,7 +1876,7 @@ sysInfo = {
 };
 if ~isempty(tcpOrientError_deg)
     pall_segs_info = pall_raw(:, 2);
-    carryM = (pall_segs_info >= 2 & pall_segs_info <= 4);
+    carryM = (pall_segs_info >= 3 & pall_segs_info <= 5);
     if any(carryM)
         sysInfo{end+1} = sprintf('TCP姿态(搬运): mean=%.1f° max=%.1f°', ...
             mean(tcpOrientError_deg(carryM)), max(tcpOrientError_deg(carryM)));
@@ -2397,6 +2399,10 @@ function saveFig(fig, outputDir, name)
     fn = fullfile(outputDir, [name '.png']);
     print(fig, fn, '-dpng', '-r150');
     fprintf('  Saved: %s\n', fn);
+    % 保存 .fig 文件 (交互式3D查看)
+    fnFig = fullfile(outputDir, [name '.fig']);
+    savefig(fig, fnFig, 'compact');
+    fprintf('  Saved: %s\n', fnFig);
 end
 
 function R=axang2r_local(ax)
@@ -2425,9 +2431,8 @@ function drawFrame_v11(ax,f,cylN)
     % 4根立柱
     for i=1:4, drawTube_v11(ax,c(i,1),c(i,2),0,c(i,1),c(i,2),h,r,f.color,cylN); end
     rb = r*0.8;  % 横梁半径
-    % 近端面 (Y-neg): 底边 + 顶边 (开放入口, 无中间栏杆)
+    % 近端面 (Y-neg): 仅底边 (开放入口, 无顶边/中间栏杆, 便于机器人进出)
     drawTube_v11(ax,c(1,1),c(1,2),0.05,c(2,1),c(2,2),0.05,rb,f.color,cylN);
-    drawTube_v11(ax,c(1,1),c(1,2),h-0.05,c(2,1),c(2,2),h-0.05,rb,f.color,cylN);
     % 远端面 (Y-pos): 底边 + 顶边
     drawTube_v11(ax,c(3,1),c(3,2),0.05,c(4,1),c(4,2),0.05,rb,f.color,cylN);
     drawTube_v11(ax,c(3,1),c(3,2),h-0.05,c(4,1),c(4,2),h-0.05,rb,f.color,cylN);
@@ -2444,7 +2449,7 @@ function drawPallet_v11(ax,pal,frm,fontName)
     w=pal.widthX;d=pal.depthY;h=pal.heightZ;
     v=[x y 0;x+w y 0;x+w y+d 0;x y+d 0;x y h;x+w y h;x+w y+d h;x y+d h];
     patch(ax,'Vertices',v,'Faces',[1 2 3 4;5 6 7 8;1 2 6 5;2 3 7 6;3 4 8 7;4 1 5 8],...
-          'FaceColor',pal.color,'EdgeColor',[.15 .30 .60],'FaceAlpha',.90,'LineWidth',1.2);
+          'FaceColor',pal.color,'EdgeColor',[.15 .30 .60],'FaceAlpha',.45,'LineWidth',1.2);
     text(ax,frm.cx,frm.cy,h+0.03,sprintf('Pallet %dcm',round(h*100)),...
          'FontSize',12,'HorizontalAlignment','center','Color',[.05 .15 .45],...
          'FontWeight','bold','FontName',fontName);

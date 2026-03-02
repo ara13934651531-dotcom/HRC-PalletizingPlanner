@@ -209,6 +209,20 @@ struct TCPPlannerConfig : public PlannerConfig {
 
     // 最大TCP位置偏移容忍 (mm) — 超过此范围的采样直接拒绝
     double maxTcpDeviation_mm = 500.0;
+
+    // ═══ TCP工作空间排除区 (AABB盒子) ═══
+    // 用于阻止TCP进入框架墙面等禁区 (弥补SO库无link-env碰撞查询)
+    // TCP位于任一盒子内部即被拒绝
+    // 盒子定义: {minX, maxX, minY, maxY, minZ, maxZ} (mm)
+    //   例: 后墙 → {-600, 600, 1025, 1e6, -800, 1200}
+    struct TCPExclusionBox {
+        double minX, maxX, minY, maxY, minZ, maxZ;
+        bool contains(double x, double y, double z) const {
+            return x >= minX && x <= maxX && y >= minY && y <= maxY
+                && z >= minZ && z <= maxZ;
+        }
+    };
+    std::vector<TCPExclusionBox> tcpExclusionBoxes;
 };
 
 // ============================================================================
@@ -511,7 +525,7 @@ private:
             if (checkHorizontal || useTcpCost) {
                 qNewTcpValid = checker_.forwardKinematics(qNew, qNewTcp);
                 timing_.fkCalls++;
-                if (!qNewTcpValid) continue;  // FK失败, 跳过
+                if (!qNewTcpValid) continue;
                 
                 // TCP水平约束检查: TCP Z轴必须接近朝下
                 if (checkHorizontal) {
@@ -528,10 +542,13 @@ private:
                     double angleDev_deg = std::acos(std::clamp(std::abs(dotProd), 0.0, 1.0)) * 180.0 / M_PI;
                     timing_.tcpCostEval_ms += msNow(tOrientCheck);
                     
-                    if (angleDev_deg > config_.orientTolerance_deg) continue;  // 拒绝: TCP不水平
+                    if (angleDev_deg > config_.orientTolerance_deg) continue;
                 }
+                
+                // 注: TCP排除区检查仅在direct-path判定中使用 (executeRRTStar)
+                // RRT采样不做硬排除 — 单树RRT难以通过大关节距的窄通道
+                // RRT*自然倾向最短路径, 从而绕过后墙区域
             }
-            
             // TCP代价评估
             auto tTcp = std::chrono::high_resolution_clock::now();
             double jointDist = nodes_[nearestId].config.distanceTo(qNew);

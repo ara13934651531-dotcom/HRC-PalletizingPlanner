@@ -70,12 +70,11 @@ for ci = 1:size(configs,1)
         end
     end
     
-    % Get FK (使用FRESH的关节角副本, 避免被update()污染)
-    q_fk = configs{ci,1};  % 重新获取原始deg值
+    % Get FK
     tcpS = libstruct('MC_COORD_REF');
     tcpS.X=0; tcpS.Y=0; tcpS.Z=0; tcpS.A=0; tcpS.B=0; tcpS.C=0;
-    [~, tcpS] = calllib('libHRCInterface', 'forwardKinematics2', q_fk, tcpS);
-    fprintf('  forwardKinematics2 (v1.0.0: 位置返回mm):\n');
+    [~, ~, tcpS] = calllib('libHRCInterface', 'forwardKinematics2', q_deg, tcpS);
+    fprintf('  forwardKinematics2:\n');
     fprintf('    tcp = [%.4f, %.4f, %.4f] (X,Y,Z)\n', tcpS.X, tcpS.Y, tcpS.Z);
     fprintf('    orient = [%.1f, %.1f, %.1f] (A,B,C)\n', tcpS.A, tcpS.B, tcpS.C);
     
@@ -94,6 +93,6 @@ fprintf('If getUIInfo values are ~0.1-1.0: unit is likely M\n');
 fprintf('If FK values are ~0.1-1.0: FK unit is M (confirmed by C++)\n');
 fprintf('Base offset in MATLAB world: [0, 0, 0.8] m\n');
 
-try calllib('libHRCInterface','releaseACAreaConstrainInterface'); catch; end
+calllib('libHRCInterface','releaseACAreaConstrainInterface');
 unloadlibrary('libHRCInterface');
 fprintf('\n=== Done ===\n');

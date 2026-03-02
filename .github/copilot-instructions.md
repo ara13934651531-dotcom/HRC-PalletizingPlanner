@@ -158,17 +158,22 @@ CMake >= 3.14, C++17, 仅Linux x86_64。SO栈链接: `stdc++` -> `m` -> `pthread
 - 将刚放置的箱子添加为环境障碍 (球体近似)
 - 碰撞环境: 电箱 + 传送带 + 框架 + 已放置箱子 (含刚放置的)
 
-### 运动段定义 (segment)
+### 运动段定义 (segment) — v6.0 9段布局 (中转路点)
 
-| seg | 动作 | 阶段 | 工具碰撞 |
-|-----|------|------|----------|
-| 0 | HOME->PickApproach | 1 | 无 |
-| 1 | PickApproach->Pick | 1 | 无 |
-| 2 | Pick->PickApproach | 2 | 启用工具球 |
-| 3 | PickApproach->PlaceApproach | 2 | 启用工具球 |
-| 4 | PlaceApproach->Place | 2 | 启用工具球 |
-| 5 | Place->PlaceApproach | 3 | 移除工具球+添加已放置球 |
-| 6 | PlaceApproach->HOME | 3 | 无 |
+| seg | 动作 | 阶段 | 工具碰撞 | TCP约束 |
+|-----|------|------|----------|---------|
+| 0 | HOME->TRANSIT_PICK | 1 | 无 | Free-TCP |
+| 1 | TRANSIT_PICK->PickApproach | 1 | 无 | Free-TCP |
+| 2 | PickApproach->Pick | 1 | 无 | — |
+| 3 | Pick->PickApproach | 2 | 启用工具球 | — |
+| 4 | PickApproach->PlaceApproach | 2 | 启用工具球 | TCP-Horizontal |
+| 5 | PlaceApproach->Place | 2 | 启用工具球 | — |
+| 6 | Place->PlaceApproach | 3 | 移除工具球+添加已放置球 | — |
+| 7 | PlaceApproach->TRANSIT_HOME | 3 | 无 | Free-TCP |
+| 8 | TRANSIT_HOME->HOME | 3 | 无 | Free-TCP |
+
+**中转路点策略**: TRANSIT_PICK = HOME臂型(J2=-90°,J3=0°) + 目标J1; TRANSIT_HOME = 源J1/J4/J5/J6 + HOME J2/J3 (臂抬起,TCP~2272mm高位)。
+**双规划器**: TCP-Horizontal (搬运段, 80K iter) + Free-TCP (无箱子段, 30K iter)。
 
 ## 环境碰撞模型
 

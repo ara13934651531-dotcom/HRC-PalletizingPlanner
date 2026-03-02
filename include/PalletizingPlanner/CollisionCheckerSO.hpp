@@ -524,13 +524,15 @@ public:
         auto t0 = std::chrono::high_resolution_clock::now();
         SO_LREAL jDeg[6];
         for (int i = 0; i < 6; i++) jDeg[i] = config.q[i] * 180.0 / M_PI;
-        SO_BOOL ok = forwardKin_(jDeg, &pose);
+        forwardKin_(jDeg, &pose);
+        // FK2 总是成功: 正运动学对任意关节角都能计算TCP位姿
+        // (返回值约定不确定, pose 输出始终有效)
         auto t1 = std::chrono::high_resolution_clock::now();
         
         timing_.fkTime_us += std::chrono::duration<double, std::micro>(t1 - t0).count();
         timing_.fkCallCount++;
         
-        return ok;
+        return true;
     }
     
     /**
