@@ -34,7 +34,7 @@
 | HRC `.so` 接口 (update/FK/IK) | **deg** | **mm** |
 | **FK2 (`forwardKinematics2`) 输出** | — | **mm** (v1.0.0, 返回真实DH物理坐标) |
 | **FK2 TCP朝向输出 (A,B,C)** | **deg** | — |
-| **IK (`inverseKinematics`) 输入** | — | **m** (注意: 与FK2不同!) |
+| **IK (`inverseKinematics`) 输入** | — | **mm** (v1.0.0: 与FK2统一为mm) |
 | CollisionGeometry.hpp 碰撞几何 | — | **mm** |
 | `getUIInfoMationInterface` 输出 | — | **mm** |
 | `SceneConfig` / `OBBObstacle.lwh` | — | **m** |
@@ -44,7 +44,7 @@
 | MATLAB 世界坐标系 (3D渲染) | — | **m** |
 
 > **⚠️ v1.0.0 关键变更**: FK2 从返回 **m** 改为返回 **mm** (真实DH物理坐标)。
-> IK 仍然接受 **m** 输入。`update()` 会原地修改输入数组 (deg→rad)，必须复制数组。
+> IK 也改为接受 **mm** 输入 (v1.0.0 统一单位)。`update()` 会原地修改输入数组 (deg→rad)，必须复制数组。
 
 ## 数据流 Pipeline
 
@@ -391,7 +391,7 @@ robot.getParams();  // DH参数, 关节限位, 速度限制
 | `updateACAreaConstrainPackageInterface` | `joint[6], vel[6], acc[6]` | void | deg |
 | `checkCPSelfCollisionInterface` | `pair[2], *dist` | SO_INT(1=碰撞) | mm |
 | `forwardKinematics2` | `joint[6], *tcp` | void | **位置mm**, 朝向deg |
-| `inverseKinematics` | `*targetTcp, ref[6], *result` | SO_INT | **位置m** (注意与FK2不同!), deg |
+| `inverseKinematics` | `*targetTcp, ref[6], *result` | SO_INT | **位置mm** (v1.0.0: 与FK2统一为mm), deg |
 | `getUIInfoMationInterface` | `idx[7], type[7], data[63], radius[7]` | void | mm |
 | `setCPToolCollisionBallShapeInterface` | `toolIdx, offset[3], radius` | SO_INT | mm |
 | `setCPToolCollisonCapsuleShapeInterface` | `toolIdx, start[3], end[3], radius` | SO_INT | mm |

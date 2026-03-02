@@ -1,15 +1,15 @@
 /**
  * @file testS50PalletizingSO.cpp
- * @brief HR_S50-2000 码垛仿真 v5.0 — IK求解 + 正确布局 + 完整环境碰撞
+ * @brief HR_S50-2000 码垛仿真 v6.0 — 单箱搬运 + 框架面板碰撞
  *
- * v5.0 核心升级:
- *   1. 数值逆运动学(IK): 基于HRC FK的阻尼最小二乘法, 自动求解放料关节角
- *   2. 正确码垛布局: 箱子紧靠框架内侧, 里→外/左→右/下→上 顺序
- *   3. 完整环境碰撞: 框架立柱 + 电箱(基座) + 传送带支架 + 已放箱子
- *   4. IK验证取料位: 传送带拾取位也由IK求解
- *   5. STL精确可视化 + 碰撞体快速计算架构
+ * v6.0 核心变更:
+ *   1. 简化为单箱搬运: 传送带拾取 → 框架内放置 (1条清晰轨迹)
+ *   2. 框架三面面板碰撞: 后面/左面/右面各4根横杆 (r=150mm) 封锁
+ *   3. 前面(朝机器人)开放: 机械臂从前面进入框架
+ *   4. 箱子放置在框架中心偏前 (避开面板碰撞区)
+ *   5. 增强RRT*参数: 更多迭代/更长时间应对复杂约束
  *
- * @date 2026-02-24
+ * @date 2026-02-28
  * @copyright Copyright (c) 2026 Guangdong Huayan Robotics Co., Ltd.
  */
 
@@ -91,6 +91,72 @@ struct BoxTarget {
 using palletizing::IKResult;
 using palletizing::numericalIK;
 using palletizing::multiStartIK;
+
+// ============================================================================
+// SO库IK求解 (TCP保持水平: B=0, C=180° → Z轴朝下)
+// ============================================================================
+// NumericalIK 仅约束位置(3DOF)+关节投影, 极端配置下TCP朝向无法保证.
+// SO IK 直接指定6D目标位姿(含朝向), 精确保证TCP水平.
+//
+// 原理:
+//   FK2 Euler ZYX: R = Rz(A)·Ry(B)·Rx(C)
+//   TCP Z-axis 分量 = -cos(B)·cos(C)  →  B=0, C=180° → Z=(0,0,-1) ✓
+//   A角(yaw) 从种子FK获取, 保证臂膀方向一致
+//
+// 单位: target_mm(mm) → IK输入(m), FK验证(mm)
+IKResult soIKHorizontal(CollisionCheckerSO& checker,
+    const RobotModel& robot,
+    const Eigen::Vector3d& target_mm,
+    const std::vector<JointConfig>& seeds,
+    double tol_mm = 3.0)
+{
+    IKResult best;
+    best.posError_mm = 1e10;
+
+    for (const auto& seed : seeds) {
+        // 从种子FK获取自然A角(yaw), 保持臂膀方向
+        SO_COORD_REF seedTcp;
+        if (!checker.forwardKinematics(seed, seedTcp)) continue;
+
+        // IK目标: 位置(mm) + TCP水平朝向(B=0, C=180°)
+        // v1.0.0: FK2和IK统一使用mm
+        SO_COORD_REF ikPose;
+        ikPose.X = target_mm.x();
+        ikPose.Y = target_mm.y();
+        ikPose.Z = target_mm.z();
+        ikPose.A = seedTcp.A;   // 种子的自然yaw角
+        ikPose.B = 0.0;         // pitch = 0
+        ikPose.C = 180.0;       // roll = 180° → TCP Z-down
+
+        JointConfig result;
+        bool ikOk = checker.inverseKinematics(ikPose, seed, result);
+
+        // 关节限位检查 (SO IK可能返回超限角度)
+        if (ikOk && !robot.isWithinLimits(result)) ikOk = false;
+        if (!ikOk) continue;
+
+        // FK验证: 位置精度 + TCP Z-down偏差
+        SO_COORD_REF tcp;
+        if (!checker.forwardKinematics(result, tcp)) continue;
+
+        double err = std::sqrt(std::pow(tcp.X - target_mm.x(), 2) +
+                               std::pow(tcp.Y - target_mm.y(), 2) +
+                               std::pow(tcp.Z - target_mm.z(), 2));
+        double Br = tcp.B * M_PI / 180, Cr = tcp.C * M_PI / 180;
+        double zz = std::cos(Br) * std::cos(Cr);
+        double downDev = std::acos(std::clamp(-zz, -1.0, 1.0)) * 180.0 / M_PI;
+
+        if (err < tol_mm && downDev < 5.0 && err < best.posError_mm) {
+            best.config = result;
+            best.posError_mm = err;
+            best.converged = true;
+            best.iterations = 1;
+        }
+        if (best.converged && best.posError_mm < tol_mm * 0.5) break;
+    }
+
+    return best;
+}
 
 // ============================================================================
 // 辅助: P2P执行
@@ -214,8 +280,8 @@ SegmentResult executeRRTStar(const char* name,
 // ============================================================================
 int main() {
     printf("╔═══════════════════════════════════════════════════════════════════╗\n");
-    printf("║   HR_S50-2000 码垛仿真 v5.0 — IK求解 + 正确布局 + 完整环境碰撞   ║\n");
-    printf("║   数值IK + 里→外/左→右/下→上 + 电箱/传送带碰撞体               ║\n");
+    printf("║   HR_S50-2000 码垛仿真 v6.0 — 单箱搬运 + 框架面板碰撞           ║\n");
+    printf("║   传送带→框架 + 三面面板碰撞 + TCP水平约束                       ║\n");
     printf("╚═══════════════════════════════════════════════════════════════════╝\n\n");
 
     auto t_global = std::chrono::high_resolution_clock::now();
@@ -230,14 +296,16 @@ int main() {
     printf("  碰撞检测: ✅ libHRCInterface.so (%.2f ms)\n", initMs);
 
     TCPPlannerConfig planConfig;
-    planConfig.maxIterations = 5000; planConfig.maxPlanningTime = 2.0;
-    planConfig.stepSize = 0.15; planConfig.goalBias = 0.2;
-    planConfig.shortcutIterations = 60;
-    planConfig.splineResolution = 35; planConfig.collisionResolution = 0.03;
+    planConfig.maxIterations = 30000; planConfig.maxPlanningTime = 15.0;
+    planConfig.stepSize = 0.12; planConfig.goalBias = 0.15;
+    planConfig.shortcutIterations = 100;
+    planConfig.splineResolution = 50; planConfig.collisionResolution = 0.02;
+    planConfig.rewireRadius = 0.4;
     // 码垛场景: TCP必须保持水平 (吸盘朝下, 仅允许Z轴旋转)
     planConfig.constrainTcpHorizontal = true;
     PathPlannerSO planner(robot, checker, planConfig);
-    printf("  路径规划: Free-TCP Informed RRT* (纯关节空间代价)\n");
+    printf("  路径规划: %s Informed RRT*\n",
+           planConfig.constrainTcpHorizontal ? "TCP-Horizontal" : "Free-TCP");
 
     auto tpConfig = TimeParameterizationConfig::fromRobotParams(robot.getParams());
     tpConfig.profileType = VelocityProfileType::SCurve;
@@ -296,6 +364,49 @@ int main() {
         printf("    envId=21 右侧顶梁: %s\n", ok1?"✅":"❌");
     }
 
+    // ---- 框架面板碰撞 (3个封闭面, 各4根横杆, 前面开放) ----
+    // 后面(Y=fFY) + 左面(X=-fHW) + 右面(X=fHW) 各4根水平横杆
+    // 前面(Y=fNY, 朝机器人, -Y方向) 开放 — 机械臂从此进入框架
+    // r=150mm: 保证最细手臂连杆(r=100mm)无法穿过间隙
+    printf("\n  === 框架面板 (envId 5-9, 22-28) ===\n");
+    {
+        const double wallR = 150.0;  // 面板等效碰撞半径(mm)
+        // 4个高度层: 均匀覆盖 fZB..fZT (底=-800 → 顶=1200)
+        const double wallZ[4] = { fZB + 250, fZB + 750, fZB + 1250, fZB + 1750 };
+        // = { -550, -50, 450, 950 } in base frame
+
+        // 后面 (Y=fFY=1025): envId 5,6,7,8 — 水平横杆沿X方向
+        printf("    --- 后面 (Y=%.0f) ---\n", fFY);
+        for (int i = 0; i < 4; i++) {
+            int eid = 5 + i;
+            bool ok = checker.addEnvObstacleCapsule(eid,
+                Eigen::Vector3d(-fHW, fFY, wallZ[i]),
+                Eigen::Vector3d( fHW, fFY, wallZ[i]), wallR);
+            printf("      envId=%d Z=%.0f: %s\n", eid, wallZ[i], ok?"✅":"❌");
+        }
+
+        // 左面 (X=-fHW=-600): envId 9,22,23,24 — 水平横杆沿Y方向
+        printf("    --- 左面 (X=%.0f) ---\n", -fHW);
+        int leftIds[4] = {9, 22, 23, 24};
+        for (int i = 0; i < 4; i++) {
+            bool ok = checker.addEnvObstacleCapsule(leftIds[i],
+                Eigen::Vector3d(-fHW, fNY, wallZ[i]),
+                Eigen::Vector3d(-fHW, fFY, wallZ[i]), wallR);
+            printf("      envId=%d Z=%.0f: %s\n", leftIds[i], wallZ[i], ok?"✅":"❌");
+        }
+
+        // 右面 (X=fHW=600): envId 25,26,27,28 — 水平横杆沿Y方向
+        printf("    --- 右面 (X=%.0f) ---\n", fHW);
+        int rightIds[4] = {25, 26, 27, 28};
+        for (int i = 0; i < 4; i++) {
+            bool ok = checker.addEnvObstacleCapsule(rightIds[i],
+                Eigen::Vector3d(fHW, fNY, wallZ[i]),
+                Eigen::Vector3d(fHW, fFY, wallZ[i]), wallR);
+            printf("      envId=%d Z=%.0f: %s\n", rightIds[i], wallZ[i], ok?"✅":"❌");
+        }
+        printf("    面板总计: 12根横杆 (3面×4层, r=%.0fmm)\n", wallR);
+    }
+
     printf("\n  === 电箱 (envId 10-13) ===\n");
     double cHW=scene::CAB_W/2, cHD=scene::CAB_D/2, cZB=fZB, cZT=-80, cR=80;
     struct CO { int id; double x1,y1,x2,y2; };
@@ -325,57 +436,47 @@ int main() {
     }
 
     const double boxToolR = 225.0, boxEnvR = 250.0;
-    printf("\n  环境障碍: 电箱(4) + 传送带(3) + 框架立柱(4) + 框架顶梁(2) + 框架侧挡板(2) + 已放箱子(动态)\n\n");
+    printf("\n  环境障碍: 电箱(4) + 传送带(3) + 框架立柱(4) + 框架顶梁(2) + 框架面板(12) + 已放箱子(动态)\n");
+    printf("  面板封锁: 后面+左面+右面 (前面开放, 机械臂入口)\n\n");
 
     // ---- 码垛布局 + IK求解 ----
-    printf("━━━━━━ 阶段3: 码垛布局 + IK求解 ━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
+    printf("━━━━━━ 阶段3: 单箱布局 + IK求解 ━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
 
     double palSurf = scene::palletSurfBase();
-    // 箱子紧靠框架内侧: 物理管径 + 5mm间隙 + 半箱宽
-    double boxMargin = scene::FRM_TUBE_R + scene::BOX_WY/2 + 5;
-    double boxBackY  = fFY - boxMargin;
-    double boxFrontY = boxBackY - scene::BOX_WY - scene::BOX_GAP;
-    double boxLeftX  = -(scene::BOX_LX/2 + scene::BOX_GAP/2);
-    double boxRightX =  (scene::BOX_LX/2 + scene::BOX_GAP/2);
+    // 简化: 1个箱子放在框架中心偏前位置 (远离面板碰撞区)
+    // 面板r=150mm: 后面内界Y=1025-150=875, 左右内界X=±(600-150)=±450
+    // 工具球r=225mm: 安全区 X∈[-225,225], Y<650 (距后面 > 375mm = 150+225)
+    double boxPlaceX = 0;
+    double boxPlaceY = fcy - 100;  // 600mm — 框架中心(700)偏前100mm
+    double boxPlaceZ = palSurf + scene::BOX_HZ;  // 第一层顶: -300+250=-50
 
     printf("  框架CY=%.0f  托盘面Z(base)=%.0f\n", fcy, palSurf);
-    printf("  箱子Y: [%.0f, %.0f]  X: [%.0f, %.0f]\n\n", boxFrontY, boxBackY, boxLeftX, boxRightX);
+    printf("  箱子放置: (%.0f, %.0f, %.0f) mm — 框架中心偏前\n\n", boxPlaceX, boxPlaceY, boxPlaceZ);
 
-    // 码垛顺序: 里→外(BK→FR), 左→右(L→R), 下→上(L1→L3)
-    // 每个XY位置先堆满3层再移到下一个位置
-    constexpr int MAX_BOXES = 1;  // 调试: 1=验证, 3=演示, 12=完整码垛
+    constexpr int numPositions = 1;
     std::vector<BoxTarget> boxTargets;
-    const char* lN[] = {"L1","L2","L3"};
-    const char* cN[] = {"BK","FR"};
-    const char* rN[] = {"L","R"};
-
-    for (int col=0; col<2 && (int)boxTargets.size()<MAX_BOXES; col++) {
-        double y = (col==0) ? boxBackY : boxFrontY;
-        for (int row=0; row<2 && (int)boxTargets.size()<MAX_BOXES; row++) {
-            double x = (row==0) ? boxLeftX : boxRightX;
-            for (int layer=0; layer<3 && (int)boxTargets.size()<MAX_BOXES; layer++) {
-                double tcpZ = palSurf + (layer+1)*scene::BOX_HZ;
-                char lb[32]; snprintf(lb,32,"%s-%s-%s",lN[layer],cN[col],rN[row]);
-                BoxTarget bt; bt.label = lb;
-                bt.pos_mm = Eigen::Vector3d(x, y, tcpZ);
-                bt.approach_mm = Eigen::Vector3d(x, y, tcpZ + 150);
-                boxTargets.push_back(bt);
-            }
-        }
+    {
+        BoxTarget bt;
+        bt.label = "CENTER";
+        bt.pos_mm = Eigen::Vector3d(boxPlaceX, boxPlaceY, boxPlaceZ);
+        bt.approach_mm = Eigen::Vector3d(boxPlaceX, boxPlaceY, boxPlaceZ + 200);
+        boxTargets.push_back(bt);
     }
-    int numPositions = (int)boxTargets.size();
 
     printf("  %-10s  %8s %8s %8s\n","位置","X_mm","Y_mm","Z_mm");
     for (auto& b : boxTargets)
         printf("  %-10s  %8.1f %8.1f %8.1f\n", b.label.c_str(), b.pos_mm.x(), b.pos_mm.y(), b.pos_mm.z());
 
-    printf("\n  === IK求解 ===\n");
+    printf("\n  === IK求解 (放料位) ===\n");
+    // IK种子: J1≈-90° 指向+Y方向(框架), TCP保持水平
+    // 约束: q5=180+q2-q3 → B=0, q6=q1 → C=±180° → Z=(0,0,-1)
     std::vector<JointConfig> placeSeeds;
     double sA[][6] = {
-        {0,-65,25,0,40,0},{5,-60,30,0,30,5},{-5,-60,30,0,30,-5},
-        {0,-70,20,0,50,0},{0,-55,35,0,20,0},{10,-65,20,0,45,10},
-        {-10,-65,20,0,45,-10},{0,-75,15,0,60,0},{0,-60,25,10,35,0},
-        {15,-60,25,0,35,15},{-15,-60,25,0,35,-15},{0,-68,22,0,46,0},
+        {-90,-65,25,0,90,-90},{-90,-60,30,0,90,-90},{-90,-55,35,0,90,-90},
+        {-90,-50,40,0,90,-90},{-90,-70,20,0,90,-90},{-90,-75,15,0,90,-90},
+        {-80,-65,25,0,90,-80},{-100,-65,25,0,90,-100},
+        {-85,-60,30,0,90,-85},{-95,-60,30,0,90,-95},
+        {-90,-60,25,0,95,-90},{-90,-55,30,0,95,-90},
     };
     for (auto& s : sA) placeSeeds.push_back(JointConfig::fromDegrees({s[0],s[1],s[2],s[3],s[4],s[5]}));
 
@@ -386,10 +487,14 @@ int main() {
     int ikFail = 0;
     for (int i=0; i<numPositions; i++) {
         auto& bt = boxTargets[i];
-        auto ikP = multiStartIK(checker, robot, bt.pos_mm, placeSeeds, 3.0);
+        // 优先使用SO IK (精确6D位姿, 保证TCP水平)
+        // 回退到NumericalIK (仅位置+关节投影)
+        auto ikP = soIKHorizontal(checker, robot, bt.pos_mm, placeSeeds, 3.0);
+        if (!ikP.converged) ikP = multiStartIK(checker, robot, bt.pos_mm, placeSeeds, 3.0, true);
         std::vector<JointConfig> aSeeds = placeSeeds;
         if (ikP.converged) aSeeds.insert(aSeeds.begin(), ikP.config);
-        auto ikA = multiStartIK(checker, robot, bt.approach_mm, aSeeds, 3.0);
+        auto ikA = soIKHorizontal(checker, robot, bt.approach_mm, aSeeds, 3.0);
+        if (!ikA.converged) ikA = multiStartIK(checker, robot, bt.approach_mm, aSeeds, 3.0, true);
         PlaceConfig pc; pc.place=ikP.config; pc.approach=ikA.config;
         pc.pErr=ikP.posError_mm; pc.aErr=ikA.posError_mm;
         placeConfigs.push_back(pc);
@@ -403,131 +508,147 @@ int main() {
     double ikMs = std::chrono::duration<double,std::milli>(std::chrono::high_resolution_clock::now()-tIK).count();
     printf("\n  IK: %.1fms (%d/%d ok)\n", ikMs, numPositions-ikFail, numPositions);
 
-    // FK验证
+    // FK验证 (位置 + TCP朝向 + 实际Z轴偏差)
     printf("\n  === FK验证 ===\n");
     for (int i=0;i<numPositions;i++) {
         SO_COORD_REF tc; checker.forwardKinematics(placeConfigs[i].place, tc);
         auto& t=boxTargets[i].pos_mm;
         double e=std::sqrt(std::pow(tc.X-t.x(),2)+std::pow(tc.Y-t.y(),2)+std::pow(tc.Z-t.z(),2));
-        printf("    %-10s target=(%.0f,%.0f,%.0f) actual=(%.0f,%.0f,%.0f) err=%.1f%s\n",
-               boxTargets[i].label.c_str(), t.x(),t.y(),t.z(), tc.X,tc.Y,tc.Z,
-               e, e<5?"":"  ⚠️");
+        auto& pq = placeConfigs[i].place;
+        double tcpH_deg = (-pq.q[1]+pq.q[2]+pq.q[4])*180.0/M_PI;
+        // 实际FK2 Z轴偏差 (从Euler ABC计算)
+        double Br=tc.B*M_PI/180, Cr=tc.C*M_PI/180;
+        double zz = std::cos(Br)*std::cos(Cr);  // Z轴 Z分量
+        double downDev = std::acos(std::clamp(-zz,-1.0,1.0))*180.0/M_PI;
+        // 打印实际关节角 (用于调试约束)
+        printf("    %-10s q=[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]deg\n",
+               boxTargets[i].label.c_str(),
+               pq.q[0]*180/M_PI, pq.q[1]*180/M_PI, pq.q[2]*180/M_PI,
+               pq.q[3]*180/M_PI, pq.q[4]*180/M_PI, pq.q[5]*180/M_PI);
+        printf("    %-10s err=%.1fmm tcpH=%.1f° A=%.1f B=%.1f C=%.1f Z↓dev=%.1f°%s\n",
+               boxTargets[i].label.c_str(), e, tcpH_deg, tc.A, tc.B, tc.C, downDev,
+               (e<5 && downDev<5)?"":"  ⚠️");
     }
 
-    // 取料位IK
+    // 取料位IK (TCP保持水平: q5=180+q2-q3, q6=0)
     printf("\n  === 取料位IK ===\n");
     double pkX=scene::convCX(), pkY=scene::CONV_OFF_Y+500, pkZ=scene::convSurfBase()+scene::BOX_HZ;
     Eigen::Vector3d pickTgt(pkX,pkY,pkZ), pickApprTgt(pkX,pkY,pkZ+200);
     std::vector<JointConfig> pkSeeds;
-    double pS[][6] = {{-90,-50,40,0,10,-90},{-80,-50,40,0,10,-80},{-100,-50,40,0,10,-100},
-                      {-90,-55,35,0,20,-90},{-90,-45,45,0,0,-90},{-85,-60,30,0,30,-85}};
+    // 取料种子: J1≈-90° (指向传送带-Y), TCP水平(q5=180+q2-q3, q6=q1)
+    double pS[][6] = {{-90,-50,40,0,90,-90},{-80,-50,40,0,90,-80},{-100,-50,40,0,90,-100},
+                      {-90,-55,35,0,90,-90},{-90,-45,45,0,90,-90},{-85,-60,30,0,90,-85}};
     for (auto& s:pS) pkSeeds.push_back(JointConfig::fromDegrees({s[0],s[1],s[2],s[3],s[4],s[5]}));
 
-    auto ikPk = multiStartIK(checker, robot, pickTgt, pkSeeds, 3.0);
+    auto ikPk = soIKHorizontal(checker, robot, pickTgt, pkSeeds, 3.0);
+    if (!ikPk.converged) ikPk = multiStartIK(checker, robot, pickTgt, pkSeeds, 3.0, true);
     auto pkApSeeds = pkSeeds;
     if (ikPk.converged) pkApSeeds.insert(pkApSeeds.begin(), ikPk.config);
-    auto ikPkA = multiStartIK(checker, robot, pickApprTgt, pkApSeeds, 3.0);
+    auto ikPkA = soIKHorizontal(checker, robot, pickApprTgt, pkApSeeds, 3.0);
+    if (!ikPkA.converged) ikPkA = multiStartIK(checker, robot, pickApprTgt, pkApSeeds, 3.0, true);
 
     auto PICK_POS = ikPk.config;
     auto PICK_APPROACH = ikPkA.config;
-    printf("    取料: %s(%.1fmm)  接近: %s(%.1fmm)\n",
-           ikPk.converged?"✅":"❌",ikPk.posError_mm, ikPkA.converged?"✅":"❌",ikPkA.posError_mm);
+    {
+        SO_COORD_REF pkTcp, paTcp;
+        checker.forwardKinematics(PICK_POS, pkTcp);
+        checker.forwardKinematics(PICK_APPROACH, paTcp);
+        auto downDev = [](const SO_COORD_REF& tc) {
+            double Br=tc.B*M_PI/180, Cr=tc.C*M_PI/180;
+            double zz=std::cos(Br)*std::cos(Cr);
+            return std::acos(std::clamp(-zz,-1.0,1.0))*180.0/M_PI;
+        };
+        printf("    取料: q=[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]deg\n",
+               PICK_POS.q[0]*180/M_PI, PICK_POS.q[1]*180/M_PI, PICK_POS.q[2]*180/M_PI,
+               PICK_POS.q[3]*180/M_PI, PICK_POS.q[4]*180/M_PI, PICK_POS.q[5]*180/M_PI);
+        printf("    取料: %s(%.1fmm, B=%.1f C=%.1f Z↓dev=%.1f°)\n",
+               ikPk.converged?"✅":"❌",ikPk.posError_mm, pkTcp.B, pkTcp.C, downDev(pkTcp));
+        printf("    接近: %s(%.1fmm, B=%.1f C=%.1f Z↓dev=%.1f°)\n",
+               ikPkA.converged?"✅":"❌",ikPkA.posError_mm, paTcp.B, paTcp.C, downDev(paTcp));
+    }
 
     auto HOME = JointConfig::fromDegrees({0,-90,0,0,90,0});
-    auto SAFE_TRANSIT = JointConfig::fromDegrees({0,-70,40,0,30,0});
 
-    // ---- 码垛执行 ----
-    printf("\n━━━━━━ 阶段4: 码垛仿真 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
+    // ---- 单箱搬运执行 ----
+    printf("\n━━━━━━ 阶段4: 单箱搬运 (传送带→框架) ━━━━━━━━━━━━━━━━━━━━\n\n");
 
     FILE* fpCsv = fopen("data/so_palletizing_profile.csv","w");
     if(fpCsv) fprintf(fpCsv,"task,segment,step,time_s,q1,q2,q3,q4,q5,q6,"
                       "selfDist_mm,selfCollision,envCollision,tcpX_mm,tcpY_mm,tcpZ_mm\n");
     FILE* fpTraj = fopen("data/so_palletizing_trajectory.txt","w");
-    if(fpTraj) { fprintf(fpTraj,"# HR_S50-2000 码垛v5.0\n");
+    if(fpTraj) { fprintf(fpTraj,"# HR_S50-2000 码垛v6.0 — 单箱搬运\n");
                  fprintf(fpTraj,"# task seg time q1..q6 v1..v6 dist tcpX tcpY tcpZ\n"); }
 
-    std::vector<TaskResult> taskResults;
     double totalMotionTime=0; int totalCollisions=0, totalEnvCollisions=0;
     double globalMinDist_mm=1e10; int totalSegments=0;
     double grandTotalPlanMs=0, grandTotalParamMs=0, grandTotalCollMs=0;
 
-    printf("  ── HOME→安全 ──\n");
-    { auto s=executeP2P("HOME→安全",HOME,SAFE_TRANSIT,robot,checker,parameterizer,fpCsv,0,0,fpTraj);
-      printf("    %s %.3fs dist:%.0fmm\n",s.name.c_str(),s.totalTime_s,s.minSelfDist_mm);
-      totalMotionTime+=s.totalTime_s; if(s.minSelfDist_mm<globalMinDist_mm)globalMinDist_mm=s.minSelfDist_mm;
-      grandTotalParamMs+=s.paramTime_ms; grandTotalCollMs+=s.collCheckTime_ms; totalSegments++; }
+    auto& bt = boxTargets[0];
+    auto& pc = placeConfigs[0];
 
-    auto currentPos = SAFE_TRANSIT;
-    std::vector<int> order; for(int i=0;i<numPositions;i++) order.push_back(i);
+    printf("  目标: %s TCP=(%.0f,%.0f,%.0f)mm\n\n", bt.label.c_str(),
+           bt.pos_mm.x(), bt.pos_mm.y(), bt.pos_mm.z());
 
-    for (int t=0; t<(int)order.size(); t++) {
-        int pi = order[t];
-        auto& bt = boxTargets[pi];
-        auto& pc = placeConfigs[pi];
-        TaskResult tr; tr.taskIndex = t+1;
-        char d[128]; snprintf(d,128,"T%d→%s",t+1,bt.label.c_str()); tr.description=d;
+    // 6段运动: HOME→取料→搬运→放料→HOME
+    struct MotionSeg {
+        const char* name;
+        JointConfig start, target;
+        bool useRRT;
+        int toolAction;  // 0=无, 1=启用工具球, 2=禁用工具球+添加放置障碍
+    };
+    MotionSeg motions[] = {
+        {"HOME→取料接近",     HOME,            PICK_APPROACH,  true,  0},
+        {"取料接近→取料",     PICK_APPROACH,   PICK_POS,       false, 0},
+        {"取料→取料抬升",     PICK_POS,        PICK_APPROACH,  false, 1},  // 拾取: 启用工具球
+        {"取料抬升→放料接近", PICK_APPROACH,   pc.approach,    true,  0},  // ★关键段: 搬运过框架面板
+        {"放料接近→放料",     pc.approach,     pc.place,       false, 2},  // 放置: 禁用工具球
+        {"放料→HOME",         pc.place,        HOME,           true,  0},
+    };
+    const int NUM_SEGS = 6;
 
-        printf("\n  ── 任务%d/%d: %s TCP=(%.0f,%.0f,%.0f) ──\n",
-               t+1,numPositions,bt.label.c_str(),bt.pos_mm.x(),bt.pos_mm.y(),bt.pos_mm.z());
+    for (int s = 0; s < NUM_SEGS; s++) {
+        auto& m = motions[s];
 
-        struct M{const char*n;JointConfig s,t;bool rrt;};
-        M motions[]={
-            {"安全→取料接近",currentPos,PICK_APPROACH,true},
-            {"取料接近→取料",PICK_APPROACH,PICK_POS,false},
-            {"取料→取料抬升",PICK_POS,PICK_APPROACH,false},
-            {"取料抬升→安全",PICK_APPROACH,SAFE_TRANSIT,true},
-            {"安全→放料接近",SAFE_TRANSIT,pc.approach,true},
-            {"放料接近→放料",pc.approach,pc.place,false},
-            {"放料→放料抬升",pc.place,pc.approach,false},
-        };
-
-        for (int s=0;s<7;s++) {
-            if (s==2) { checker.setToolBall(6,Eigen::Vector3d(0,0,-125),boxToolR);
-                        printf("    📦 工具球ON\n"); }
-
-            SegmentResult seg;
-            if (motions[s].rrt)
-                seg=executeRRTStar(motions[s].n,motions[s].s,motions[s].t,robot,checker,planner,parameterizer,fpCsv,t+1,s,fpTraj);
-            else
-                seg=executeP2P(motions[s].n,motions[s].s,motions[s].t,robot,checker,parameterizer,fpCsv,t+1,s,fpTraj);
-
-            printf("    %-20s %s %.3fs plan:%.1fms param:%.1fms dist:%.0fmm env:%d\n",
-                   seg.name.c_str(),seg.success?"✅":"❌",seg.totalTime_s,
-                   seg.planningTime_ms,seg.paramTime_ms,seg.minSelfDist_mm,seg.envCollisionCount);
-
-            if (s==5) {
-                checker.removeTool(6); printf("    📦 工具球OFF\n");
-                SO_COORD_REF tc; checker.forwardKinematics(pc.place,tc);
-                // FK2 v1.0.0 返回mm, 直接使用
-                double tx=tc.X, ty=tc.Y, tz=tc.Z;
-                int eid=46+t;
-                bool ok=checker.addEnvObstacleBall(eid,Eigen::Vector3d(tx,ty,tz-scene::BOX_HZ/2),boxEnvR);
-                printf("    📦 放置→envId=%d (%.0f,%.0f,%.0f) r=%.0f: %s\n",eid,tx,ty,tz-scene::BOX_HZ/2,boxEnvR,ok?"✅":"❌");
-            }
-
-            tr.segments.push_back(seg);
-            tr.totalTime_s+=seg.totalTime_s; tr.totalCollisions+=seg.collisionCount;
-            tr.totalEnvCollisions+=seg.envCollisionCount;
-            if(seg.minSelfDist_mm<tr.minSelfDist_mm)tr.minSelfDist_mm=seg.minSelfDist_mm;
-            tr.totalPlanningMs+=seg.planningTime_ms+seg.optimizationTime_ms;
-            tr.totalParamMs+=seg.paramTime_ms; tr.totalCollCheckMs+=seg.collCheckTime_ms;
-            totalMotionTime+=seg.totalTime_s; totalCollisions+=seg.collisionCount;
-            totalEnvCollisions+=seg.envCollisionCount;
-            if(seg.minSelfDist_mm<globalMinDist_mm)globalMinDist_mm=seg.minSelfDist_mm;
-            grandTotalPlanMs+=seg.planningTime_ms+seg.optimizationTime_ms;
-            grandTotalParamMs+=seg.paramTime_ms; grandTotalCollMs+=seg.collCheckTime_ms;
-            totalSegments++;
+        // 动作前: 启用/禁用工具球
+        if (m.toolAction == 1) {
+            checker.setToolBall(6, Eigen::Vector3d(0, 0, -125), boxToolR);
+            printf("  📦 工具球ON (r=%.0fmm, 搬运箱子)\n", boxToolR);
         }
-        currentPos = pc.approach;
-        taskResults.push_back(tr);
-    }
 
-    printf("\n  ── 返回HOME ──\n");
-    { auto s=executeRRTStar("返回HOME",currentPos,HOME,robot,checker,planner,parameterizer,fpCsv,numPositions+1,0,fpTraj);
-      printf("    %s %.3fs plan:%.1fms dist:%.0fmm\n",s.name.c_str(),s.totalTime_s,s.planningTime_ms,s.minSelfDist_mm);
-      totalMotionTime+=s.totalTime_s; if(s.minSelfDist_mm<globalMinDist_mm)globalMinDist_mm=s.minSelfDist_mm;
-      grandTotalPlanMs+=s.planningTime_ms+s.optimizationTime_ms;
-      grandTotalParamMs+=s.paramTime_ms; grandTotalCollMs+=s.collCheckTime_ms; totalSegments++; }
+        SegmentResult seg;
+        if (m.useRRT)
+            seg = executeRRTStar(m.name, m.start, m.target,
+                                 robot, checker, planner, parameterizer, fpCsv, 1, s, fpTraj);
+        else
+            seg = executeP2P(m.name, m.start, m.target,
+                             robot, checker, parameterizer, fpCsv, 1, s, fpTraj);
+
+        printf("  [%d] %-24s %s %.3fs plan:%.1fms param:%.1fms dist:%.0fmm env:%d\n",
+               s, seg.name.c_str(), seg.success?"✅":"❌", seg.totalTime_s,
+               seg.planningTime_ms, seg.paramTime_ms, seg.minSelfDist_mm, seg.envCollisionCount);
+
+        // 动作后: 禁用工具球 + 添加已放置箱子
+        if (m.toolAction == 2) {
+            checker.removeTool(6);
+            printf("  📦 工具球OFF\n");
+            SO_COORD_REF tc; checker.forwardKinematics(pc.place, tc);
+            int eid = 46;
+            bool ok = checker.addEnvObstacleBall(eid,
+                Eigen::Vector3d(tc.X, tc.Y, tc.Z - scene::BOX_HZ/2), boxEnvR);
+            printf("  📦 放置→envId=%d (%.0f,%.0f,%.0f) r=%.0f: %s\n",
+                   eid, tc.X, tc.Y, tc.Z - scene::BOX_HZ/2, boxEnvR, ok?"✅":"❌");
+        }
+
+        // 统计累积
+        totalMotionTime += seg.totalTime_s;
+        totalCollisions += seg.collisionCount;
+        totalEnvCollisions += seg.envCollisionCount;
+        if (seg.minSelfDist_mm < globalMinDist_mm) globalMinDist_mm = seg.minSelfDist_mm;
+        grandTotalPlanMs += seg.planningTime_ms + seg.optimizationTime_ms;
+        grandTotalParamMs += seg.paramTime_ms;
+        grandTotalCollMs += seg.collCheckTime_ms;
+        totalSegments++;
+    }
 
     if(fpCsv) fclose(fpCsv);
     if(fpTraj) fclose(fpTraj);
@@ -536,7 +657,7 @@ int main() {
     double totalElapsed = std::chrono::duration<double>(std::chrono::high_resolution_clock::now()-t_global).count();
 
     printf("\n━━━━━━ 阶段5: 统计 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
-    printf("  码垛位: %d  运动段: %d  总运动: %.3fs\n", numPositions, totalSegments, totalMotionTime);
+    printf("  箱子: 1  运动段: %d  总运动: %.3fs\n", totalSegments, totalMotionTime);
     printf("  自碰撞: %d  环境碰撞: %d\n", totalCollisions, totalEnvCollisions);
     printf("  最小距离: %.1fmm\n", globalMinDist_mm);
     printf("  IK: %.1fms  规划: %.1fms  参数化: %.1fms  碰撞检测: %.1fms\n",
@@ -549,30 +670,30 @@ int main() {
     // 写摘要
     FILE* fpSum = fopen("data/so_palletizing_summary.txt","w");
     if (fpSum) {
-        fprintf(fpSum,"# HR_S50-2000 码垛v5.0\n\nversion: 5.0\n");
-        fprintf(fpSum,"positions: %d\nsegments: %d\ntotal_motion_s: %.4f\n",numPositions,totalSegments,totalMotionTime);
+        fprintf(fpSum,"# HR_S50-2000 码垛v6.0 — 单箱搬运\n\nversion: 6.0\n");
+        fprintf(fpSum,"positions: 1\nsegments: %d\ntotal_motion_s: %.4f\n",totalSegments,totalMotionTime);
         fprintf(fpSum,"self_collisions: %d\nenv_collisions: %d\nmin_dist_mm: %.2f\n",
                 totalCollisions,totalEnvCollisions,globalMinDist_mm);
-        fprintf(fpSum,"order: FIFO_in2out_left2right_bottom2top_columnwise\n");
-        fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+%d_placed\n",(int)taskResults.size());
+        fprintf(fpSum,"order: single_box_conveyor_to_frame\n");
+        fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+12_wallpanel+1_placed\n");
+        fprintf(fpSum,"wall_panels: back(4)+left(4)+right(4)_r150mm\n");
         fprintf(fpSum,"tool_collision: ball_r%.0fmm\nframe_gap_mm: %.0f\nframe_cy_mm: %.0f\n",
                 boxToolR,scene::FRAME_GAP,fcy);
 
         fprintf(fpSum,"\n# Box TCP (base frame, mm):\n");
-        for (int i=0;i<numPositions;i++) {
-            SO_COORD_REF tc; checker.forwardKinematics(placeConfigs[i].place,tc);
-            // FK2 v1.0.0 返回mm, 直接输出
-            fprintf(fpSum,"box_%d_tcp_mm: %.1f %.1f %.1f\n",i,tc.X,tc.Y,tc.Z);
+        {
+            SO_COORD_REF tc; checker.forwardKinematics(placeConfigs[0].place,tc);
+            fprintf(fpSum,"box_0_tcp_mm: %.1f %.1f %.1f\n",tc.X,tc.Y,tc.Z);
         }
         fprintf(fpSum,"\n# IK place (deg):\n");
-        for (int i=0;i<numPositions;i++) {
-            auto q=placeConfigs[i].place.toDegrees();
-            fprintf(fpSum,"ik_place_%d: %.2f %.2f %.2f %.2f %.2f %.2f\n",i,q[0],q[1],q[2],q[3],q[4],q[5]);
+        {
+            auto q=placeConfigs[0].place.toDegrees();
+            fprintf(fpSum,"ik_place_0: %.2f %.2f %.2f %.2f %.2f %.2f\n",q[0],q[1],q[2],q[3],q[4],q[5]);
         }
         fprintf(fpSum,"\n# IK approach (deg):\n");
-        for (int i=0;i<numPositions;i++) {
-            auto q=placeConfigs[i].approach.toDegrees();
-            fprintf(fpSum,"ik_appr_%d: %.2f %.2f %.2f %.2f %.2f %.2f\n",i,q[0],q[1],q[2],q[3],q[4],q[5]);
+        {
+            auto q=placeConfigs[0].approach.toDegrees();
+            fprintf(fpSum,"ik_appr_0: %.2f %.2f %.2f %.2f %.2f %.2f\n",q[0],q[1],q[2],q[3],q[4],q[5]);
         }
         {auto q=PICK_POS.toDegrees(); auto a=PICK_APPROACH.toDegrees();
          fprintf(fpSum,"\n# Pick (deg):\nik_pick: %.2f %.2f %.2f %.2f %.2f %.2f\nik_pick_appr: %.2f %.2f %.2f %.2f %.2f %.2f\n",
@@ -588,7 +709,7 @@ int main() {
     }
 
     printf("\n══════════════════════════════════════════════════════════════════\n");
-    printf("  HR_S50-2000 码垛仿真 v5.0 完成\n");
+    printf("  HR_S50-2000 码垛仿真 v6.0 — 单箱搬运完成\n");
     printf("══════════════════════════════════════════════════════════════════\n");
     return 0;
 }

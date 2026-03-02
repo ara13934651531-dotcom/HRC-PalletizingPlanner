@@ -49,12 +49,16 @@ struct IKResult {
  * @param tol_mm 收敛容差 (mm)
  * @param maxIter 最大迭代次数
  * @param lambda DLS阻尼系数
+ * @param constrainHorizontal 是否约束TCP保持水平朝下
+ *   true: 每次迭代后投影 q5 = π + q2 - q3 (rad), 使TCP Z轴≈(0,0,-1)
+ *   对应码垛场景: 吸盘必须水平, 否则箱子脱落
  * @return IK求解结果
  */
 inline IKResult numericalIK(CollisionCheckerSO& checker,
     const RobotModel& robot,
     const Eigen::Vector3d& target_mm, const JointConfig& seed,
-    double tol_mm = 2.0, int maxIter = 500, double lambda = 5.0)
+    double tol_mm = 2.0, int maxIter = 500, double lambda = 5.0,
+    bool constrainHorizontal = false)
 {
     IKResult result;
     JointConfig q = seed;
@@ -63,6 +67,20 @@ inline IKResult numericalIK(CollisionCheckerSO& checker,
     // 关节限位从 RobotModel 获取 (来源: RobotDHParams, 单位: rad)
     const auto& jMin = robot.getJointMin();
     const auto& jMax = robot.getJointMax();
+
+    // TCP水平约束初始投影: 确保起始配置满足约束
+    // 完整约束集 (经 FK2 全配置扫描验证, Zdev=0°):
+    //   q4 = 0          → FK2 Euler B = 0 (pitch=0, 当q1≈-90°时 B=q4)
+    //   q5 = π + q2 - q3 → 结构性保证 B=0
+    //   q6 = q1         → FK2 Euler C = ±180° → TCP Z=(0,0,-1)
+    // 约束后只留 J1,J2,J3 自由 (3DOF 对应 3 位置方程)
+    if (constrainHorizontal) {
+        q.q[3] = 0.0;  // q4 = 0 → FK2 Euler B=0
+        q.q[4] = M_PI + q.q[1] - q.q[2];  // q5 = π + q2 - q3
+        q.q[4] = std::clamp(q.q[4], jMin[4], jMax[4]);
+        q.q[5] = q.q[0];  // q6 = q1 → C=±180°
+        q.q[5] = std::clamp(q.q[5], jMin[5], jMax[5]);
+    }
 
     for (int iter = 0; iter < maxIter; iter++) {
         result.iterations = iter + 1;
@@ -111,6 +129,15 @@ inline IKResult numericalIK(CollisionCheckerSO& checker,
         for (int j = 0; j < 6; j++) {
             q.q[j] = std::clamp(q.q[j] + dq(j), jMin[j], jMax[j]);
         }
+
+        // TCP水平约束投影: 每步迭代后强制 q4=0, q5=π+q2-q3, q6=q1
+        if (constrainHorizontal) {
+            q.q[3] = 0.0;  // q4 = 0 → B=0
+            q.q[4] = M_PI + q.q[1] - q.q[2];
+            q.q[4] = std::clamp(q.q[4], jMin[4], jMax[4]);
+            q.q[5] = q.q[0];  // q6 = q1 → C=±180°
+            q.q[5] = std::clamp(q.q[5], jMin[5], jMax[5]);
+        }
     }
 
     result.config = q;
@@ -128,19 +155,20 @@ inline IKResult numericalIK(CollisionCheckerSO& checker,
  * @param target_mm 目标TCP位置 (mm)
  * @param seeds 种子配置列表
  * @param tol_mm 收敛容差 (mm)
+ * @param constrainHorizontal 是否约束TCP保持水平朝下
  * @return 最佳IK结果
  */
 inline IKResult multiStartIK(CollisionCheckerSO& checker,
     const RobotModel& robot,
     const Eigen::Vector3d& target_mm, const std::vector<JointConfig>& seeds,
-    double tol_mm = 2.0)
+    double tol_mm = 2.0, bool constrainHorizontal = false)
 {
     IKResult best;
     best.posError_mm = 1e10;
 
     // 第一轮: 标准参数
     for (const auto& seed : seeds) {
-        auto r = numericalIK(checker, robot, target_mm, seed, tol_mm);
+        auto r = numericalIK(checker, robot, target_mm, seed, tol_mm, 500, 5.0, constrainHorizontal);
         if (r.converged && r.posError_mm < best.posError_mm) best = r;
         if (best.converged && best.posError_mm < tol_mm * 0.5) break;
     }
@@ -148,7 +176,7 @@ inline IKResult multiStartIK(CollisionCheckerSO& checker,
     // 第二轮: 更激进参数 (更多迭代, 更小阻尼)
     if (!best.converged) {
         for (const auto& seed : seeds) {
-            auto r = numericalIK(checker, robot, target_mm, seed, tol_mm, 1000, 2.0);
+            auto r = numericalIK(checker, robot, target_mm, seed, tol_mm, 1000, 2.0, constrainHorizontal);
             if (r.posError_mm < best.posError_mm) best = r;
             if (r.converged) break;
         }

@@ -535,8 +535,8 @@ public:
     
     /**
      * @brief 逆运动学 (使用.so内置)
-     * @param pose 目标TCP位姿 (位置: m, 姿态: deg)
-     *             注意: IK输入位置单位为m, 与FK2输出的mm不同!
+     * @param pose 目标TCP位姿 (位置: mm, 姿态: deg)
+     *             v1.0.0: IK输入位置也为mm (与FK2统一)
      * @param refConfig 参考关节配置 (rad)
      * @param[out] result 输出关节配置 (rad)
      * @return 成功/失败
