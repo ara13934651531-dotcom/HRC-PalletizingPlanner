@@ -127,7 +127,7 @@ ENV_COLL.cabR_m = 0.080;   % 电箱碰撞胶囊半径
 ENV_COLL.convR_m = 0.080;  % 传送带碰撞胶囊半径
 
 % --- 渲染参数 ---
-CYL_N = 6;
+CYL_N = 12;
 VIEW_AZ = 135; VIEW_EL = 25;
 MESH_REDUCE_RATIO = 0.3;
 
@@ -964,44 +964,44 @@ hold(ax3a,'on');
 % FK2骨架渲染 (与场景坐标系一致, 不使用URDF FK — 坐标系不同)
 renderCapsuleRobotHandles(ax3a, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
 
-% 绘制环境碰撞体: 框架柱胶囊 (红色半透明)
+% 绘制环境碰撞体: 框架柱 (红色半透明, 无端盖球)
 for ci = 1:size(ENV_COLL.frameColumns, 1)
     fc = ENV_COLL.frameColumns(ci,:);
-    p1 = [fc(1), fc(2), fc(3)] + [baseX, baseY, baseZ];  % 转换到世界坐标系
+    p1 = [fc(1), fc(2), fc(3)] + [baseX, baseY, baseZ];
     p2 = [fc(1), fc(2), fc(4)] + [baseX, baseY, baseZ];
-    drawCapsule3D(ax3a, p1, p2, fc(5), [0.9 0.2 0.2], 0.20);
+    drawCylinder3D(ax3a, p1, p2, fc(5), [0.9 0.2 0.2], 0.25);
 end
-% 框架顶梁 (黄色半透明)
+% 框架顶梁 (黄色半透明, 无端盖球)
 for ci = 1:size(ENV_COLL.frameTopBars, 1)
     tb = ENV_COLL.frameTopBars(ci,:);
     p1 = [tb(1), tb(2), tb(3)] + [baseX, baseY, baseZ];
     p2 = [tb(4), tb(5), tb(6)] + [baseX, baseY, baseZ];
-    drawCapsule3D(ax3a, p1, p2, tb(7), [0.9 0.7 0.1], 0.18);
+    drawCylinder3D(ax3a, p1, p2, tb(7), [0.9 0.7 0.1], 0.22);
 end
 
-% 绘制环境碰撞体: 电气柜胶囊 (橙色半透明)
+% 绘制环境碰撞体: 电气柜 (橙色半透明, 无端盖球)
 for ci = 1:size(ENV_COLL.cabinet, 1)
     cc = ENV_COLL.cabinet(ci,:);
     p1 = [cc(1), cc(2), cc(3)] + [baseX, baseY, baseZ];
     p2 = [cc(4), cc(5), cc(6)] + [baseX, baseY, baseZ];
-    drawCapsule3D(ax3a, p1, p2, cc(7), [0.8 0.6 0.2], 0.15);
+    drawCylinder3D(ax3a, p1, p2, cc(7), [0.8 0.6 0.2], 0.18);
 end
 
-% 绘制环境碰撞体: 传送带胶囊 (灰色半透明)
+% 绘制环境碰撞体: 传送带 (灰色半透明, 无端盖球)
 for ci = 1:size(ENV_COLL.conveyor, 1)
     cv = ENV_COLL.conveyor(ci,:);
     p1 = [cv(1), cv(2), cv(3)] + [baseX, baseY, baseZ];
     p2 = [cv(4), cv(5), cv(6)] + [baseX, baseY, baseZ];
-    drawCapsule3D(ax3a, p1, p2, cv(7), [0.5 0.5 0.5], 0.12);
+    drawCylinder3D(ax3a, p1, p2, cv(7), [0.5 0.5 0.5], 0.15);
 end
-% 环境碰撞体: 框架墙面板 (绿色半透明)
+% 环境碰撞体: 框架墙面板 (绿色半透明, 无端盖球)
 wallTypes_3 = {ENV_COLL.wallBack, ENV_COLL.wallLeft, ENV_COLL.wallRight};
 for fi = 1:3
     wd = wallTypes_3{fi};
     for wi = 1:size(wd,1)
         p1 = [wd(wi,1), wd(wi,2), wd(wi,3)] + [baseX, baseY, baseZ];
         p2 = [wd(wi,4), wd(wi,5), wd(wi,6)] + [baseX, baseY, baseZ];
-        drawCapsule3D(ax3a, p1, p2, wd(wi,7), [0.3 0.8 0.3], 0.15);
+        drawCylinder3D(ax3a, p1, p2, wd(wi,7), [0.3 0.8 0.3], 0.18);
     end
 end
 
@@ -1134,39 +1134,39 @@ for vi = 1:min(4, length(keyPoses))
         drawBox_v11(ax, placePos(ci,:), box);
     end
     
-    % 环境碰撞体叠加 (半透明)
+    % 环境碰撞体叠加 (半透明, 无端盖球)
     for eci = 1:size(ENV_COLL.frameColumns, 1)
         fc = ENV_COLL.frameColumns(eci,:);
         p1_w = [fc(1)+baseX, fc(2)+baseY, fc(3)+baseZ];
         p2_w = [fc(1)+baseX, fc(2)+baseY, fc(4)+baseZ];
-        drawCapsule3D(ax, p1_w, p2_w, fc(5), [0.9 0.15 0.15], 0.12);
+        drawCylinder3D(ax, p1_w, p2_w, fc(5), [0.9 0.15 0.15], 0.15);
     end
     for eci = 1:size(ENV_COLL.frameTopBars, 1)
         tb = ENV_COLL.frameTopBars(eci,:);
         p1_w = [tb(1)+baseX, tb(2)+baseY, tb(3)+baseZ];
         p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
-        drawCapsule3D(ax, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.10);
+        drawCylinder3D(ax, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.12);
     end
     for eci = 1:size(ENV_COLL.cabinet, 1)
         cc = ENV_COLL.cabinet(eci,:);
         p1_w = [cc(1)+baseX, cc(2)+baseY, cc(3)+baseZ];
         p2_w = [cc(4)+baseX, cc(5)+baseY, cc(6)+baseZ];
-        drawCapsule3D(ax, p1_w, p2_w, cc(7), [0.8 0.6 0.2], 0.10);
+        drawCylinder3D(ax, p1_w, p2_w, cc(7), [0.8 0.6 0.2], 0.12);
     end
     for eci = 1:size(ENV_COLL.conveyor, 1)
         cv = ENV_COLL.conveyor(eci,:);
         p1_w = [cv(1)+baseX, cv(2)+baseY, cv(3)+baseZ];
         p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
-        drawCapsule3D(ax, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.08);
+        drawCylinder3D(ax, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.10);
     end
-    % 环境碰撞体: 框架墙面板 (绿色半透明)
+    % 环境碰撞体: 框架墙面板 (绿色半透明, 无端盖球)
     wallTypes_4 = {ENV_COLL.wallBack, ENV_COLL.wallLeft, ENV_COLL.wallRight};
     for fi = 1:3
         wd = wallTypes_4{fi};
         for wi = 1:size(wd,1)
             p1_w = [wd(wi,1)+baseX, wd(wi,2)+baseY, wd(wi,3)+baseZ];
             p2_w = [wd(wi,4)+baseX, wd(wi,5)+baseY, wd(wi,6)+baseZ];
-            drawCapsule3D(ax, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.12);
+            drawCylinder3D(ax, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.15);
         end
     end
     
@@ -1372,39 +1372,39 @@ q_home = deg2rad([0,-90,0,0,90,0]);
     % FK2骨架渲染 (与场景坐标系一致)
     renderCapsuleRobotHandles(ax7a, [0,-90,0,0,90,0], [baseX,baseY,baseZ], JOINTS);
 
-% 环境碰撞体
+% 环境碰撞体 (无端盖球)
 for eci = 1:size(ENV_COLL.frameColumns, 1)
     fc = ENV_COLL.frameColumns(eci,:);
     p1_w = [fc(1)+baseX, fc(2)+baseY, fc(3)+baseZ];
     p2_w = [fc(1)+baseX, fc(2)+baseY, fc(4)+baseZ];
-    drawCapsule3D(ax7a, p1_w, p2_w, fc(5), [0.9 0.15 0.15], 0.10);
+    drawCylinder3D(ax7a, p1_w, p2_w, fc(5), [0.9 0.15 0.15], 0.12);
 end
 for eci = 1:size(ENV_COLL.frameTopBars, 1)
     tb = ENV_COLL.frameTopBars(eci,:);
     p1_w = [tb(1)+baseX, tb(2)+baseY, tb(3)+baseZ];
     p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
-    drawCapsule3D(ax7a, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.08);
+    drawCylinder3D(ax7a, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.10);
 end
 for eci = 1:size(ENV_COLL.cabinet, 1)
     cc = ENV_COLL.cabinet(eci,:);
     p1_w = [cc(1)+baseX, cc(2)+baseY, cc(3)+baseZ];
     p2_w = [cc(4)+baseX, cc(5)+baseY, cc(6)+baseZ];
-    drawCapsule3D(ax7a, p1_w, p2_w, cc(7), [0.8 0.6 0.2], 0.08);
+    drawCylinder3D(ax7a, p1_w, p2_w, cc(7), [0.8 0.6 0.2], 0.10);
 end
 for eci = 1:size(ENV_COLL.conveyor, 1)
     cv = ENV_COLL.conveyor(eci,:);
     p1_w = [cv(1)+baseX, cv(2)+baseY, cv(3)+baseZ];
     p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
-    drawCapsule3D(ax7a, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.06);
+    drawCylinder3D(ax7a, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.08);
 end
-% 环境碰撞体: 框架墙面板 (绿色半透明)
+% 环境碰撞体: 框架墙面板 (绿色半透明, 无端盖球)
 wallTypes_7 = {ENV_COLL.wallBack, ENV_COLL.wallLeft, ENV_COLL.wallRight};
 for fi = 1:3
     wd = wallTypes_7{fi};
     for wi = 1:size(wd,1)
         p1_w = [wd(wi,1)+baseX, wd(wi,2)+baseY, wd(wi,3)+baseZ];
         p2_w = [wd(wi,4)+baseX, wd(wi,5)+baseY, wd(wi,6)+baseZ];
-        drawCapsule3D(ax7a, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.10);
+        drawCylinder3D(ax7a, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.12);
     end
 end
 
@@ -1462,42 +1462,42 @@ drawFrame_v11(ax3d, frame, CYL_N);
 drawPallet_v11(ax3d, pallet, frame, CJK_FONT);
 drawConveyor_v15(ax3d, conv, CYL_N);
 
-% 环境碰撞体: 框架柱 (红色半透明, 始终显示)
+% 环境碰撞体: 框架柱 (红色半透明, 无端盖球)
 for eci = 1:size(ENV_COLL.frameColumns, 1)
     fc = ENV_COLL.frameColumns(eci,:);
     p1_w = [fc(1)+baseX, fc(2)+baseY, fc(3)+baseZ];
     p2_w = [fc(1)+baseX, fc(2)+baseY, fc(4)+baseZ];
-    drawCapsule3D(ax3d, p1_w, p2_w, fc(5), [0.9 0.15 0.15], 0.10);
+    drawCylinder3D(ax3d, p1_w, p2_w, fc(5), [0.9 0.15 0.15], 0.15);
 end
-% 环境碰撞体: 框架顶梁 (黄色半透明)
+% 环境碰撞体: 框架顶梁 (黄色半透明, 无端盖球)
 for eci = 1:size(ENV_COLL.frameTopBars, 1)
     tb = ENV_COLL.frameTopBars(eci,:);
     p1_w = [tb(1)+baseX, tb(2)+baseY, tb(3)+baseZ];
     p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
-    drawCapsule3D(ax3d, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.10);
+    drawCylinder3D(ax3d, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.15);
 end
-% 环境碰撞体: 电气柜 (橙色半透明)
+% 环境碰撞体: 电气柜 (橙色半透明, 无端盖球)
 for eci = 1:size(ENV_COLL.cabinet, 1)
     cc = ENV_COLL.cabinet(eci,:);
     p1_w = [cc(1)+baseX, cc(2)+baseY, cc(3)+baseZ];
     p2_w = [cc(4)+baseX, cc(5)+baseY, cc(6)+baseZ];
-    drawCapsule3D(ax3d, p1_w, p2_w, cc(7), [0.8 0.6 0.2], 0.08);
+    drawCylinder3D(ax3d, p1_w, p2_w, cc(7), [0.8 0.6 0.2], 0.12);
 end
-% 环境碰撞体: 传送带 (灰色半透明)
+% 环境碰撞体: 传送带 (灰色半透明, 无端盖球)
 for eci = 1:size(ENV_COLL.conveyor, 1)
     cv = ENV_COLL.conveyor(eci,:);
     p1_w = [cv(1)+baseX, cv(2)+baseY, cv(3)+baseZ];
     p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
-    drawCapsule3D(ax3d, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.06);
+    drawCylinder3D(ax3d, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.10);
 end
-% 环境碰撞体: 框架墙面板 (绿色半透明)
+% 环境碰撞体: 框架墙面板 (绿色半透明, 无端盖球)
 wallTypes_8 = {ENV_COLL.wallBack, ENV_COLL.wallLeft, ENV_COLL.wallRight};
 for fi = 1:3
     wd = wallTypes_8{fi};
     for wi = 1:size(wd,1)
         p1_w = [wd(wi,1)+baseX, wd(wi,2)+baseY, wd(wi,3)+baseZ];
         p2_w = [wd(wi,4)+baseX, wd(wi,5)+baseY, wd(wi,6)+baseZ];
-        drawCapsule3D(ax3d, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.10);
+        drawCylinder3D(ax3d, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.15);
     end
 end
 
@@ -1617,7 +1617,7 @@ for ti = 1:nAnimTasks
         hToolCollSphere = gobjects(0);
         
         if carrying
-            hCarryBox = drawBox_v11(ax3d, [tcp(1),tcp(2),tcp(3)-0.01], box);
+            hCarryBox = drawBox_v11(ax3d, [tcp(1),tcp(2),tcp(3)-box.hz/2], box);
             % 工具碰撞球 (半透明绿色)
             toolR = 0.225;  % 225mm → m
             [Xs,Ys,Zs] = sphere(10);
@@ -2215,6 +2215,26 @@ function drawCapsule3D(ax, p1, p2, r, col, alpha)
     surf(ax,Xs*r+p2(1),Ys*r+p2(2),Zs*r+p2(3),'FaceColor',col,'FaceAlpha',alpha,'EdgeColor','none');
 end
 
+function drawCylinder3D(ax, p1, p2, r, col, alpha)
+    % 绘制碰撞体圆柱 (无两端半球端盖, 避免端点处产生突兀球形)
+    v = p2-p1; L = norm(v);
+    if L < 1e-6, return; end
+    [X,Y,Z] = cylinder(r, 16);
+    Z = Z*L;
+    dd=[0;0;1]; td=v(:)/L;
+    cp = cross(dd,td);
+    if norm(cp) > 1e-6
+        RR=axang2r_local([cp'/norm(cp), acos(max(-1,min(1,dot(dd,td))))]);
+    else
+        RR=eye(3); if dot(dd,td)<0, RR(3,3)=-1; RR(1,1)=-1; end
+    end
+    for i=1:numel(X)
+        pt=RR*[X(i);Y(i);Z(i)]; X(i)=pt(1)+p1(1); Y(i)=pt(2)+p1(2); Z(i)=pt(3)+p1(3);
+    end
+    surf(ax,X,Y,Z,'FaceColor',col,'FaceAlpha',alpha,'EdgeColor','none',...
+        'FaceLighting','gouraud','AmbientStrength',0.4);
+end
+
 function drawInfoPanel_v15(ax, taskIdx, nTotal, q_deg, vel, tcp, dist, time_s, cjkFont, dColor, soActive, carrying, nPlaced, nBoxTotal, envColl)
     rectangle(ax,'Position',[0 0 1 1],'FaceColor',[0.97 0.97 0.99],...
         'EdgeColor',[0.5 0.5 0.7],'LineWidth',2,'Curvature',0.02);
@@ -2367,14 +2387,18 @@ function drawFrame_v11(ax,f,cylN)
     % 4根立柱
     for i=1:4, drawTube_v11(ax,c(i,1),c(i,2),0,c(i,1),c(i,2),h,r,f.color,cylN); end
     rb = r*0.8;  % 横梁半径
-    % 近端面 (Y-neg): 仅底边 (无顶边, 无中间栏杆)
+    % 近端面 (Y-neg): 底边 + 顶边 (开放入口, 无中间栏杆)
     drawTube_v11(ax,c(1,1),c(1,2),0.05,c(2,1),c(2,2),0.05,rb,f.color,cylN);
+    drawTube_v11(ax,c(1,1),c(1,2),h-0.05,c(2,1),c(2,2),h-0.05,rb,f.color,cylN);
     % 远端面 (Y-pos): 底边 + 顶边
     drawTube_v11(ax,c(3,1),c(3,2),0.05,c(4,1),c(4,2),0.05,rb,f.color,cylN);
     drawTube_v11(ax,c(3,1),c(3,2),h-0.05,c(4,1),c(4,2),h-0.05,rb,f.color,cylN);
     % 顶部: 2根侧梁 (平行于Y轴, 连接近端→远端)
     drawTube_v11(ax,c(1,1),c(1,2),h-0.05,c(4,1),c(4,2),h-0.05,rb,f.color,cylN);  % 左侧
     drawTube_v11(ax,c(2,1),c(2,2),h-0.05,c(3,1),c(3,2),h-0.05,rb,f.color,cylN);  % 右侧
+    % 底部: 2根侧梁 (平行于Y轴, 连接近端→远端底部)
+    drawTube_v11(ax,c(1,1),c(1,2),0.05,c(4,1),c(4,2),0.05,rb,f.color,cylN);  % 左侧底
+    drawTube_v11(ax,c(2,1),c(2,2),0.05,c(3,1),c(3,2),0.05,rb,f.color,cylN);  % 右侧底
 end
 
 function drawPallet_v11(ax,pal,frm,fontName)
