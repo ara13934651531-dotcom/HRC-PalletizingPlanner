@@ -1535,6 +1535,18 @@ hTcpStartEnd = gobjects(0);    % 任务起止点标记
 allGifFrames = {};
 boxForTask = min((1:nTasks)', nBoxes);
 
+% --- 关键帧.fig快照 (可在MATLAB中交互式3D查看) ---
+% 在重要姿态时保存完整3D场景.fig: HOME/取料/搬运/放料/返回
+keyframeSaved = struct();  % 已保存的关键帧标记
+keyframeSaved.home_start = false;
+keyframeSaved.pick = false;
+keyframeSaved.carry_mid = false;
+keyframeSaved.place = false;
+keyframeSaved.home_end = false;
+keyframeDir = fullfile(outputDir, 'keyframes_3d');
+if ~exist(keyframeDir, 'dir'), mkdir(keyframeDir); end
+fprintf('  关键帧.fig保存目录: %s\n', keyframeDir);
+
 % 动画任务限制 (调试用: 仅播放前N个任务)
 if cfg_animTaskLimit > 0
     nAnimTasks = min(cfg_animTaskLimit, nTasks);
@@ -1697,6 +1709,33 @@ for ti = 1:nAnimTasks
         
         drawnow limitrate;
         
+        % --- 关键帧.fig快照: 在重要姿态保存可交互3D场景 ---
+        if seg == 0 && ri == 1 && ~keyframeSaved.home_start
+            % HOME起始位
+            saveFigKeyframe(fig8, keyframeDir, sprintf('T%02d_0_home_start', ti), 'HOME起始');
+            keyframeSaved.home_start = true;
+        end
+        if seg == 2 && ~keyframeSaved.pick
+            % 取料位 (PickApproach→Pick, 首次进入seg2)
+            saveFigKeyframe(fig8, keyframeDir, sprintf('T%02d_1_pick', ti), '取料位');
+            keyframeSaved.pick = true;
+        end
+        if seg == 4 && ~keyframeSaved.carry_mid
+            % 搬运中段 (取料接近→放料接近, 取中间帧)
+            segMask = rows(:,2)==4;
+            segFrames = find(segMask);
+            midIdx = segFrames(round(end/2));
+            if ri >= midIdx
+                saveFigKeyframe(fig8, keyframeDir, sprintf('T%02d_2_carrying', ti), '搬运中');
+                keyframeSaved.carry_mid = true;
+            end
+        end
+        if seg == 6 && ~keyframeSaved.place
+            % 放料位 (Place→PlaceApproach, 箱子刚放下, 首次进入seg6)
+            saveFigKeyframe(fig8, keyframeDir, sprintf('T%02d_3_place', ti), '放料位');
+            keyframeSaved.place = true;
+        end
+        
         if isHeadless && mod(ri, GIF_SUBSAMPLE)==1
             allGifFrames{end+1} = getframe(fig8); %#ok<AGROW>
         end
@@ -1734,6 +1773,15 @@ for bi = 1:nBoxes
         fprintf('  补全放置箱子 #%d\n', bi);
     end
 end
+
+% 最终帧: HOME返回
+if ~keyframeSaved.home_end
+    saveFigKeyframe(fig8, keyframeDir, sprintf('T%02d_4_home_end', nAnimTasks), 'HOME返回');
+    keyframeSaved.home_end = true;
+end
+fprintf('  关键帧.fig: %d个已保存到 %s\n', ...
+    keyframeSaved.home_start+keyframeSaved.pick+keyframeSaved.carry_mid+keyframeSaved.place+keyframeSaved.home_end, ...
+    keyframeDir);
 
 saveFig(fig8, outputDir, '08_dynamic_replay_v15');
 if isHeadless && ~isempty(allGifFrames)
@@ -2425,6 +2473,15 @@ function saveFig(fig, outputDir, name)
     fnFig = fullfile(outputDir, [name '.fig']);
     savefig(fig, fnFig, 'compact');
     fprintf('  Saved: %s\n', fnFig);
+end
+
+function saveFigKeyframe(fig, keyframeDir, name, label)
+    % 保存动画关键帧为 .fig + .png (可在MATLAB中交互式旋转/缩放3D场景)
+    fnFig = fullfile(keyframeDir, [name '.fig']);
+    savefig(fig, fnFig, 'compact');
+    fnPng = fullfile(keyframeDir, [name '.png']);
+    print(fig, fnPng, '-dpng', '-r150');
+    fprintf('    关键帧: %s → %s\n', label, name);
 end
 
 function R=axang2r_local(ax)
