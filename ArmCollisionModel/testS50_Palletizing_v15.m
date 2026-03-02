@@ -1535,18 +1535,6 @@ hTcpStartEnd = gobjects(0);    % 任务起止点标记
 allGifFrames = {};
 boxForTask = min((1:nTasks)', nBoxes);
 
-% --- 关键帧.fig快照 (可在MATLAB中交互式3D查看) ---
-% 在重要姿态时保存完整3D场景.fig: HOME/取料/搬运/放料/返回
-keyframeSaved = struct();  % 已保存的关键帧标记
-keyframeSaved.home_start = false;
-keyframeSaved.pick = false;
-keyframeSaved.carry_mid = false;
-keyframeSaved.place = false;
-keyframeSaved.home_end = false;
-keyframeDir = fullfile(outputDir, 'keyframes_3d');
-if ~exist(keyframeDir, 'dir'), mkdir(keyframeDir); end
-fprintf('  关键帧.fig保存目录: %s\n', keyframeDir);
-
 % 动画任务限制 (调试用: 仅播放前N个任务)
 if cfg_animTaskLimit > 0
     nAnimTasks = min(cfg_animTaskLimit, nTasks);
@@ -1554,6 +1542,13 @@ else
     nAnimTasks = nTasks;
 end
 fprintf('  动画: %d/%d tasks, subsample=%d, %d boxes\n', nAnimTasks, nTasks, ANIM_SUBSAMPLE, nBoxes);
+
+% --- 关键帧.fig快照配置 ---
+% 在动画关键时刻保存独立.fig文件, 用户可在MATLAB中打开进行3D交互
+keyframeDir = fullfile(outputDir, 'keyframes');
+if ~exist(keyframeDir, 'dir'), mkdir(keyframeDir); end
+keyframeSaved = struct();  % 已保存的关键帧标记(防重复)
+nKeyframes = 0;
 
 for ti = 1:nAnimTasks
     mask = pall_raw(:,1)==pall_tasks(ti);
@@ -1563,6 +1558,8 @@ for ti = 1:nAnimTasks
     bi = boxForTask(ti);
     prevSeg = -1;         % 段号变化检测
     soToolActive = false;  % SO库工具碰撞球状态
+    seg4_midSaved = false; % seg4中点快照标记
+    kfPrevSeg = -1;        % 关键帧独立段号跟踪
     
     % 清除上一任务的起止点标记
     if ~isempty(hTcpStartEnd) && any(isvalid(hTcpStartEnd))
@@ -1709,32 +1706,50 @@ for ti = 1:nAnimTasks
         
         drawnow limitrate;
         
-        % --- 关键帧.fig快照: 在重要姿态保存可交互3D场景 ---
-        if seg == 0 && ri == 1 && ~keyframeSaved.home_start
-            % HOME起始位
-            saveFigKeyframe(fig8, keyframeDir, sprintf('T%02d_0_home_start', ti), 'HOME起始');
-            keyframeSaved.home_start = true;
+        % --- 关键帧.fig快照检测 ---
+        % 1) HOME起始: 第一个任务的第一帧 (seg=0)
+        if ti == 1 && ri == 1
+            nKeyframes = nKeyframes + 1;
+            saveKeyframeFig(fig8, keyframeDir, sprintf('T%02d_0_home_start', ti), ...
+                sprintf('Task%d HOME起始', ti));
         end
-        if seg == 2 && ~keyframeSaved.pick
-            % 取料位 (PickApproach→Pick, 首次进入seg2)
-            saveFigKeyframe(fig8, keyframeDir, sprintf('T%02d_1_pick', ti), '取料位');
-            keyframeSaved.pick = true;
+        % 2) 取料位: 进入seg3 (工具ON, 首帧)
+        if seg == 3 && kfPrevSeg ~= 3 && ~isfield(keyframeSaved, sprintf('t%d_pick', ti))
+            keyframeSaved.(sprintf('t%d_pick', ti)) = true;
+            nKeyframes = nKeyframes + 1;
+            saveKeyframeFig(fig8, keyframeDir, sprintf('T%02d_1_pick', ti), ...
+                sprintf('Task%d 取料 seg3', ti));
         end
-        if seg == 4 && ~keyframeSaved.carry_mid
-            % 搬运中段 (取料接近→放料接近, 取中间帧)
-            segMask = rows(:,2)==4;
-            segFrames = find(segMask);
-            midIdx = segFrames(round(end/2));
-            if ri >= midIdx
-                saveFigKeyframe(fig8, keyframeDir, sprintf('T%02d_2_carrying', ti), '搬运中');
-                keyframeSaved.carry_mid = true;
+        % 3) 搬运中间位: seg4 中点
+        if seg == 4 && ~seg4_midSaved
+            seg4_rows = rows(rows(:,2)==4, :);
+            seg4_mid_ri = ceil(size(seg4_rows,1)/2);
+            % 判断当前帧是否接近中点
+            seg4_mask = find(rows(:,2)==4);
+            if ~isempty(seg4_mask)
+                seg4_mid_abs = seg4_mask(min(seg4_mid_ri, length(seg4_mask)));
+                if abs(ri - seg4_mid_abs) <= ANIM_SUBSAMPLE
+                    seg4_midSaved = true;
+                    nKeyframes = nKeyframes + 1;
+                    saveKeyframeFig(fig8, keyframeDir, sprintf('T%02d_2_carrying', ti), ...
+                        sprintf('Task%d 搬运中 seg4', ti));
+                end
             end
         end
-        if seg == 6 && ~keyframeSaved.place
-            % 放料位 (Place→PlaceApproach, 箱子刚放下, 首次进入seg6)
-            saveFigKeyframe(fig8, keyframeDir, sprintf('T%02d_3_place', ti), '放料位');
-            keyframeSaved.place = true;
+        % 4) 放料位: 进入seg6 (工具OFF, 首帧)
+        if seg == 6 && kfPrevSeg ~= 6 && ~isfield(keyframeSaved, sprintf('t%d_place', ti))
+            keyframeSaved.(sprintf('t%d_place', ti)) = true;
+            nKeyframes = nKeyframes + 1;
+            saveKeyframeFig(fig8, keyframeDir, sprintf('T%02d_3_place', ti), ...
+                sprintf('Task%d 放料 seg6', ti));
         end
+        % 5) HOME结束: 最后一个任务的最后帧 (seg=8)
+        if ti == nAnimTasks && ri + ANIM_SUBSAMPLE > nR
+            nKeyframes = nKeyframes + 1;
+            saveKeyframeFig(fig8, keyframeDir, sprintf('T%02d_4_home_end', ti), ...
+                sprintf('Task%d HOME结束', ti));
+        end
+        kfPrevSeg = seg;  % 更新关键帧段号跟踪
         
         if isHeadless && mod(ri, GIF_SUBSAMPLE)==1
             allGifFrames{end+1} = getframe(fig8); %#ok<AGROW>
@@ -1774,16 +1789,8 @@ for bi = 1:nBoxes
     end
 end
 
-% 最终帧: HOME返回
-if ~keyframeSaved.home_end
-    saveFigKeyframe(fig8, keyframeDir, sprintf('T%02d_4_home_end', nAnimTasks), 'HOME返回');
-    keyframeSaved.home_end = true;
-end
-fprintf('  关键帧.fig: %d个已保存到 %s\n', ...
-    keyframeSaved.home_start+keyframeSaved.pick+keyframeSaved.carry_mid+keyframeSaved.place+keyframeSaved.home_end, ...
-    keyframeDir);
-
 saveFig(fig8, outputDir, '08_dynamic_replay_v15');
+fprintf('  关键帧.fig快照: %d 个 → %s/\n', nKeyframes, keyframeDir);
 if isHeadless && ~isempty(allGifFrames)
     gifFile = fullfile(outputDir, 'palletizing_v15.gif');
     for gi = 1:length(allGifFrames)
@@ -2475,13 +2482,24 @@ function saveFig(fig, outputDir, name)
     fprintf('  Saved: %s\n', fnFig);
 end
 
-function saveFigKeyframe(fig, keyframeDir, name, label)
-    % 保存动画关键帧为 .fig + .png (可在MATLAB中交互式旋转/缩放3D场景)
-    fnFig = fullfile(keyframeDir, [name '.fig']);
-    savefig(fig, fnFig, 'compact');
-    fnPng = fullfile(keyframeDir, [name '.png']);
-    print(fig, fnPng, '-dpng', '-r150');
-    fprintf('    关键帧: %s → %s\n', label, name);
+function saveKeyframeFig(fig, keyframeDir, name, description)
+%SAVEKEYFRAMEFIG 保存动画关键帧为独立.fig+.png快照
+%  用户可在MATLAB中 openfig('xxx.fig') 进行3D旋转/缩放/平移交互查看
+%  fig:          源figure
+%  keyframeDir:  输出目录
+%  name:         文件名 (不含扩展名)
+%  description:  日志描述
+    try
+        % 保存.fig (compact模式, 减小文件大小)
+        fnFig = fullfile(keyframeDir, [name '.fig']);
+        savefig(fig, fnFig, 'compact');
+        % 同时保存.png (150dpi, 便于快速预览)
+        fnPng = fullfile(keyframeDir, [name '.png']);
+        print(fig, fnPng, '-dpng', '-r150');
+        fprintf('    关键帧: %s → .fig+.png (%s)\n', name, description);
+    catch ME
+        fprintf('    [WARN] 关键帧保存失败 %s: %s\n', name, ME.message);
+    end
 end
 
 function R=axang2r_local(ax)
