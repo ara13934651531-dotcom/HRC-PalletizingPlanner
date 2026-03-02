@@ -994,14 +994,14 @@ for ci = 1:size(ENV_COLL.conveyor, 1)
     p2 = [cv(4), cv(5), cv(6)] + [baseX, baseY, baseZ];
     drawCylinder3D(ax3a, p1, p2, cv(7), [0.5 0.5 0.5], 0.15);
 end
-% 环境碰撞体: 框架墙面板 (绿色半透明, 无端盖球)
+% 环境碰撞体: 框架墙面板 (绿色半透明矩形面板, 替代厚圆柱以消除端面圆形伪影)
 wallTypes_3 = {ENV_COLL.wallBack, ENV_COLL.wallLeft, ENV_COLL.wallRight};
 for fi = 1:3
     wd = wallTypes_3{fi};
     for wi = 1:size(wd,1)
         p1 = [wd(wi,1), wd(wi,2), wd(wi,3)] + [baseX, baseY, baseZ];
         p2 = [wd(wi,4), wd(wi,5), wd(wi,6)] + [baseX, baseY, baseZ];
-        drawCylinder3D(ax3a, p1, p2, wd(wi,7), [0.3 0.8 0.3], 0.18);
+        drawWallPanel3D(ax3a, p1, p2, wd(wi,7), [0.3 0.8 0.3], 0.18);
     end
 end
 
@@ -1159,14 +1159,14 @@ for vi = 1:min(4, length(keyPoses))
         p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
         drawCylinder3D(ax, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.10);
     end
-    % 环境碰撞体: 框架墙面板 (绿色半透明, 无端盖球)
+    % 环境碰撞体: 框架墙面板 (绿色半透明矩形面板)
     wallTypes_4 = {ENV_COLL.wallBack, ENV_COLL.wallLeft, ENV_COLL.wallRight};
     for fi = 1:3
         wd = wallTypes_4{fi};
         for wi = 1:size(wd,1)
             p1_w = [wd(wi,1)+baseX, wd(wi,2)+baseY, wd(wi,3)+baseZ];
             p2_w = [wd(wi,4)+baseX, wd(wi,5)+baseY, wd(wi,6)+baseZ];
-            drawCylinder3D(ax, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.15);
+            drawWallPanel3D(ax, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.15);
         end
     end
     
@@ -1397,14 +1397,14 @@ for eci = 1:size(ENV_COLL.conveyor, 1)
     p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
     drawCylinder3D(ax7a, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.08);
 end
-% 环境碰撞体: 框架墙面板 (绿色半透明, 无端盖球)
+% 环境碰撞体: 框架墙面板 (绿色半透明矩形面板)
 wallTypes_7 = {ENV_COLL.wallBack, ENV_COLL.wallLeft, ENV_COLL.wallRight};
 for fi = 1:3
     wd = wallTypes_7{fi};
     for wi = 1:size(wd,1)
         p1_w = [wd(wi,1)+baseX, wd(wi,2)+baseY, wd(wi,3)+baseZ];
         p2_w = [wd(wi,4)+baseX, wd(wi,5)+baseY, wd(wi,6)+baseZ];
-        drawCylinder3D(ax7a, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.12);
+        drawWallPanel3D(ax7a, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.12);
     end
 end
 
@@ -1490,14 +1490,14 @@ for eci = 1:size(ENV_COLL.conveyor, 1)
     p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
     drawCylinder3D(ax3d, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.10);
 end
-% 环境碰撞体: 框架墙面板 (绿色半透明, 无端盖球)
+% 环境碰撞体: 框架墙面板 (绿色半透明矩形面板)
 wallTypes_8 = {ENV_COLL.wallBack, ENV_COLL.wallLeft, ENV_COLL.wallRight};
 for fi = 1:3
     wd = wallTypes_8{fi};
     for wi = 1:size(wd,1)
         p1_w = [wd(wi,1)+baseX, wd(wi,2)+baseY, wd(wi,3)+baseZ];
         p2_w = [wd(wi,4)+baseX, wd(wi,5)+baseY, wd(wi,6)+baseZ];
-        drawCylinder3D(ax3d, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.15);
+        drawWallPanel3D(ax3d, p1_w, p2_w, wd(wi,7), [0.3 0.8 0.3], 0.15);
     end
 end
 
@@ -1738,7 +1738,7 @@ saveFig(fig8, outputDir, '08_dynamic_replay_v15');
 if isHeadless && ~isempty(allGifFrames)
     gifFile = fullfile(outputDir, 'palletizing_v15.gif');
     for gi = 1:length(allGifFrames)
-        [A,map] = rgb2ind(allGifFrames{gi}.cdata, 128);
+        [A,map] = rgb2ind(allGifFrames{gi}.cdata, 256);
         if gi==1, imwrite(A,map,gifFile,'gif','LoopCount',0,'DelayTime',0.12);
         else, imwrite(A,map,gifFile,'gif','WriteMode','append','DelayTime',0.12); end
     end
@@ -2233,6 +2233,21 @@ function drawCylinder3D(ax, p1, p2, r, col, alpha)
     end
     surf(ax,X,Y,Z,'FaceColor',col,'FaceAlpha',alpha,'EdgeColor','none',...
         'FaceLighting','gouraud','AmbientStrength',0.4);
+end
+
+function drawWallPanel3D(ax, p1, p2, r, col, alpha)
+    % 绘制墙面板碰撞体为扁平半透明矩形面板 (替代厚圆柱)
+    % 消除端面圆形伪影, 不遮蔽框架立柱, 更准确表达墙面碰撞近似
+    % 面板在包含胶囊中心线和Z轴的垂直平面内:
+    %   宽度 = 胶囊长度 (p1→p2), 高度 = 2*r (胶囊直径=碰撞覆盖范围)
+    % p1, p2: 胶囊中心线端点 (世界坐标, m)
+    % r: 胶囊半径 (面板半高, m)
+    x = [p1(1), p2(1), p2(1), p1(1)];
+    y = [p1(2), p2(2), p2(2), p1(2)];
+    z = [p1(3)-r, p2(3)-r, p2(3)+r, p1(3)+r];
+    patch(ax, 'XData', x, 'YData', y, 'ZData', z, ...
+        'FaceColor', col, 'FaceAlpha', alpha, ...
+        'EdgeColor', col, 'EdgeAlpha', min(alpha*2.5, 0.5), 'LineWidth', 0.5);
 end
 
 function drawInfoPanel_v15(ax, taskIdx, nTotal, q_deg, vel, tcp, dist, time_s, cjkFont, dColor, soActive, carrying, nPlaced, nBoxTotal, envColl)
