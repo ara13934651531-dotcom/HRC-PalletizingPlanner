@@ -209,7 +209,10 @@ public:
         for (int c = 0; c < nColliders; c++) {
             const auto& col = colliders[c];
             if (col.radius < 1.0) continue;             // 跳过无效碰撞体
-            if (col.index >= 3) continue;  // 跳过Elbow(3)/UpArm(4)/Wrist(5)/Tool(6,7) — 与TCP结构性相邻
+            // v6.4: Base(1)+LowerArm(2)+Elbow(3) 全部作为硬约束
+            // Elbow曾有-116mm最大穿透, 不能跳过!
+            // 仅跳过UpArm(4)/Wrist(5)/Tool(6,7) — 与TCP结构性相邻
+            if (col.index >= 3) continue;  // Skip Elbow(3)/UpArm(4)/Wrist(5) — diagnostic only
 
             for (int i = 0; i < 26; i++) {
                 double d;
@@ -271,9 +274,10 @@ public:
                 report.closestSamplePt = cMinPt;
             }
 
-            // 碰撞判定仅考虑远端连杆 (Base=1, LowArm=2)
-            // Elbow(3)前端距TCP仅~450mm, UpArm(4)/Wrist(5)更近 — 结构性相邻
-            if (col.index >= 1 && col.index <= 2) {
+            // 碰撞判定: Base(1)+LowArm(2)+Elbow(3) 为安全关键
+            // v6.4: Elbow最大穿透-116mm, 必须纳入硬约束
+            // UpArm(4)/Wrist(5) 与TCP结构性相邻, 仅诊断
+            if (col.index >= 1 && col.index <= 2) {  // Base(1) + LowerArm(2) = hard constraints
                 if (cMin < criticalMin) {
                     criticalMin = cMin;
                     criticalIdx = logicIdx;

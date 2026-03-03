@@ -119,7 +119,7 @@ cfg_box.lx=0.35; cfg_box.wy=0.28; cfg_box.hz=0.25;
 cfg_box.color=[0.65,0.45,0.25];
 cfg_nBoxes = 1;   % 箱子数目 (可调: 1=验证, 3=演示, 12=完整码垛)
 cfg_animTaskLimit = 0;  % 0=全部任务 (调试时可设为3限制前N个)
-cfg_frameGap = 0.20; cfg_convGap = 0.40;  % v6.1: FRAME_GAP=200mm, CONV_GAP=400mm
+cfg_frameGap = 0.50; cfg_convGap = 0.60;  % v6.4: FRAME_GAP=500mm, CONV_GAP=600mm
 cfg_convOffY = -0.80; cfg_convBoxYStart = 0.50; cfg_convBoxYStep = -0.30;  % v6.2: 修正符号! +0.50=C++ pkY=CONV_OFF+500
 
 % --- 环境碰撞体 (由场景参数动态计算, 与C++ v6.2一致) ---

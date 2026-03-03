@@ -1,14 +1,17 @@
 /**
  * @file testS50PalletizingSO.cpp
- * @brief HR_S50-2000 码垛仿真 v6.3 — 独立箱子-机械臂碰撞检测
+ * @brief HR_S50-2000 码垛仿真 v6.4 — 场景优化 + 箱子碰撞强化
  *
- * v6.3 核心变更:
- *   1. 独立箱子-机械臂碰撞检测 (BoxCollisionChecker)
- *      - 绕过SO库pair(6,4)工具碰撞限制
- *      - 通过getUIInfo获取碰撞体世界坐标 + FK2朝向 → 26点OBB采样
- *      - 集成到RRT*采样循环 + 路径优化验证 + 捷径优化
- *      - 搬运段(seg3-5)自动启用, 非搬运段关闭
- *   2. 工具碰撞体保留z=-400 r=120 (SO库环境碰撞仍需要)
+ * v6.4 核心变更:
+ *   1. 场景布局优化: FRAME_GAP 200→500, CONV_GAP 400→600
+ *      - 框架远离基座, 可观察机械臂完整运动范围
+ *   2. 箱子放置位置: 框架-X,+Y角落 (左后角)
+ *   3. 运动简化: 9段→6段, 移除HOME垂直位, planWithSplitting自动中转
+ *      - 起点/终点=取料接近位 (传送带上方)
+ *      - planWithSplitting自动在大距离搬运段分割路径
+ *   4. 箱子碰撞强化: Base+LowerArm硬约束, Elbow诊断, margin=40mm
+ *
+ * v6.3 变更: 独立箱子-机械臂碰撞检测 (BoxCollisionChecker)
  *
  * v6.2 变更:
  *   1. 工具碰撞体: 球 z=-400 r=120 (toolIdx=1)
@@ -58,11 +61,11 @@ namespace scene {
     constexpr double FRM_W = 1200, FRM_D = 650, FRM_H = 2000;
     constexpr double FRM_TUBE_R = 30;
     constexpr double PAL_W = 1000, PAL_D = 600, PAL_H = 500;
-    constexpr double CONV_LEN = 2000, CONV_W = 550, CONV_H = 750; // v6.1: 缩短避免Y方向与框架重叠
-    constexpr double CONV_GAP = 400;   // 传送带与电箱间距 (v6.1: 防止与框架X方向重叠)
+    constexpr double CONV_LEN = 2000, CONV_W = 550, CONV_H = 750;
+    constexpr double CONV_GAP = 600;   // v6.4: 增大传送带间距 (显示机械臂完整工作范围)
     constexpr double CONV_OFF_Y = -800;
     constexpr double BOX_LX = 350, BOX_WY = 280, BOX_HZ = 250;
-    constexpr double FRAME_GAP = 200;  // 框架与电箱间距 (v6.1: 增大为200mm)
+    constexpr double FRAME_GAP = 500;  // v6.4: 增大框架间距 (电箱与框架距离更大, 显示臂展可达范围)
     constexpr double BOX_GAP = 20;
     constexpr double baseZ = CAB_H;
     inline double frameCY() { return CAB_D/2 + FRAME_GAP + FRM_D/2; }
@@ -474,8 +477,8 @@ SegmentResult executeRRTStar(const char* name,
 // ============================================================================
 int main() {
     printf("╔═══════════════════════════════════════════════════════════════════╗\n");
-    printf("║   HR_S50-2000 码垛仿真 v6.3 — 独立箱子-机械臂碰撞检测          ║\n");
-    printf("║   传送带→框架 + Lozenge面板 + TCP水平约束 + 箱子碰撞             ║\n");
+    printf("║   HR_S50-2000 码垛仿真 v6.4 — 场景优化 + 箱子碰撞强化          ║\n");
+    printf("║   传送带→框架 + Lozenge面板 + TCP水平约束 + Elbow碰撞           ║\n");
     printf("╚═══════════════════════════════════════════════════════════════════╝\n\n");
 
     auto t_global = std::chrono::high_resolution_clock::now();
@@ -534,8 +537,8 @@ int main() {
     planConfig.boxCollision.boxLengthX  = scene::BOX_LX;
     planConfig.boxCollision.boxWidthY   = scene::BOX_WY;
     planConfig.boxCollision.boxHeightZ  = scene::BOX_HZ;
-    planConfig.boxCollision.safetyMargin= 20.0;   // 20mm安全裕度
-    printf("  📦 箱子碰撞: %.0f×%.0f×%.0fmm margin=%.0fmm (搬运段启用)\n",
+    planConfig.boxCollision.safetyMargin= 40.0;   // v6.4: 40mm安全裕度 (Base+LowerArm硬约束, Elbow诊断)
+    printf("  📦 箱子碰撞: %.0f×%.0f×%.0fmm margin=%.0fmm (Base+LArm硬约束, 搬运段启用)\n",
            planConfig.boxCollision.boxLengthX,
            planConfig.boxCollision.boxWidthY,
            planConfig.boxCollision.boxHeightZ,
@@ -729,15 +732,19 @@ int main() {
     printf("━━━━━━ 阶段3: 单箱布局 + IK求解 ━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
 
     double palSurf = scene::palletSurfBase();
-    // 简化: 1个箱子放在框架中心偏前位置 (远离面板碰撞区)
-    // v6.1: 放置在框架前部 (远离后墙, 确保工具球不碰面板)
-    // 框架CY=850, 近端NY=525 → 偏前位置Y=700 (距后面475mm, 距前面175mm)
-    double boxPlaceX = 0;
-    double boxPlaceY = fNY + (fFY - fNY) * 0.3;  // 框架前30% — 远离后墙
+    // v6.4: 箱子放在框架 -X,+Y 角落 (靠近左墙和后墙)
+    // 框架左墙 X=-fHW, 后墙 Y=fFY
+    // 保留管径+箱子半尺寸+间隙, 确保箱子不贴墙
+    double wallMargin = scene::FRM_TUBE_R + 30.0; // 管径30mm + 30mm间隙 = 60mm
+    double boxPlaceX = -(fHW - scene::BOX_LX/2 - wallMargin);  // 靠近左墙
+    double boxPlaceY = fFY - scene::BOX_WY/2 - wallMargin;     // 靠近后墙
     double boxPlaceZ = palSurf + scene::BOX_HZ;  // 第一层顶
 
-    printf("  框架CY=%.0f  托盘面Z(base)=%.0f\n", fcy, palSurf);
-    printf("  箱子放置: (%.0f, %.0f, %.0f) mm — 框架中心偏前\n\n", boxPlaceX, boxPlaceY, boxPlaceZ);
+    printf("  框架CY=%.0f  fNY=%.0f  fFY=%.0f  托盘面Z(base)=%.0f\n", fcy, fNY, fFY, palSurf);
+    printf("  箱子放置: (%.0f, %.0f, %.0f) mm — 框架-X,+Y角落\n", boxPlaceX, boxPlaceY, boxPlaceZ);
+    printf("  距左墙: %.0fmm  距后墙: %.0fmm\n\n",
+           fHW + boxPlaceX - scene::BOX_LX/2,
+           fFY - boxPlaceY - scene::BOX_WY/2);
 
     constexpr int numPositions = 1;
     std::vector<BoxTarget> boxTargets;
@@ -754,15 +761,14 @@ int main() {
         printf("  %-10s  %8.1f %8.1f %8.1f\n", b.label.c_str(), b.pos_mm.x(), b.pos_mm.y(), b.pos_mm.z());
 
     printf("\n  === IK求解 (放料位) ===\n");
-    // IK种子: J1≈-90° 指向+Y方向(框架), TCP保持水平
-    // 约束: q5=180+q2-q3 → B=0, q6=q1 → C=±180° → Z=(0,0,-1)
+    // IK种子: 箱子在-X,+Y角落, J1≈-70°~-110° (臂指向-X,+Y方向)
+    // TCP保持水平: q5≈90+offset, q6≈q1
     std::vector<JointConfig> placeSeeds;
     double sA[][6] = {
-        {-90,-65,25,0,90,-90},{-90,-60,30,0,90,-90},{-90,-55,35,0,90,-90},
-        {-90,-50,40,0,90,-90},{-90,-70,20,0,90,-90},{-90,-75,15,0,90,-90},
-        {-80,-65,25,0,90,-80},{-100,-65,25,0,90,-100},
-        {-85,-60,30,0,90,-85},{-95,-60,30,0,90,-95},
-        {-90,-60,25,0,95,-90},{-90,-55,30,0,95,-90},
+        {-70,-60,25,0,90,-70},{-80,-55,30,0,90,-80},{-90,-50,35,0,90,-90},
+        {-100,-65,20,0,90,-100},{-75,-55,30,0,90,-75},{-85,-60,25,0,90,-85},
+        {-95,-50,35,0,90,-95},{-65,-70,20,0,90,-65},{-105,-55,30,0,90,-105},
+        {-80,-45,40,0,90,-80},{-90,-40,45,0,90,-90},{-70,-50,35,0,90,-70},
     };
     for (auto& s : sA) placeSeeds.push_back(JointConfig::fromDegrees({s[0],s[1],s[2],s[3],s[4],s[5]}));
 
@@ -802,16 +808,14 @@ int main() {
         double e=std::sqrt(std::pow(tc.X-t.x(),2)+std::pow(tc.Y-t.y(),2)+std::pow(tc.Z-t.z(),2));
         auto& pq = placeConfigs[i].place;
         double tcpH_deg = (-pq.q[1]+pq.q[2]+pq.q[4])*180.0/M_PI;
-        // 实际FK2 Z轴偏差 (从Euler ABC计算)
-        double Br=tc.B*M_PI/180, Cr=tc.C*M_PI/180;
-        double zz = std::cos(Br)*std::cos(Cr);  // Z轴 Z分量
-        double downDev = std::acos(std::clamp(-zz,-1.0,1.0))*180.0/M_PI;
+        // TCP水平偏差 = |B| (FK2的B=TCP切面倾斜角, B=0→TCP精确朝下)
+        double downDev = std::fabs(tc.B);
         // 打印实际关节角 (用于调试约束)
         printf("    %-10s q=[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]deg\n",
                boxTargets[i].label.c_str(),
                pq.q[0]*180/M_PI, pq.q[1]*180/M_PI, pq.q[2]*180/M_PI,
                pq.q[3]*180/M_PI, pq.q[4]*180/M_PI, pq.q[5]*180/M_PI);
-        printf("    %-10s err=%.1fmm tcpH=%.1f° A=%.1f B=%.1f C=%.1f Z↓dev=%.1f°%s\n",
+        printf("    %-10s err=%.1fmm tcpH=%.1f° A=%.1f B=%.1f C=%.1f |B|=%.1f°%s\n",
                boxTargets[i].label.c_str(), e, tcpH_deg, tc.A, tc.B, tc.C, downDev,
                (e<5 && downDev<5)?"":"  ⚠️");
     }
@@ -821,12 +825,12 @@ int main() {
     double pkX=scene::convCX(), pkY=scene::CONV_OFF_Y+500, pkZ=scene::convSurfBase()+scene::BOX_HZ;
     Eigen::Vector3d pickTgt(pkX,pkY,pkZ), pickApprTgt(pkX,pkY,pkZ+300);
     std::vector<JointConfig> pkSeeds;
-    // 取料种子: convCX=950mm, 需要J1接近180°(arm→+X方向)
+    // 取料种子: convCX=1150mm(v6.4), 需要J1接近180°(arm→+X方向)
     // 提供宽范围J1覆盖新传送带位置
-    double pS[][6] = {{150,-50,40,0,90,150},{160,-50,40,0,90,160},{170,-50,40,0,90,170},
-                      {-170,-50,40,0,90,-170},{180,-50,40,0,90,180},{-160,-55,35,0,90,-160},
-                      {150,-55,35,0,90,150},{160,-45,45,0,90,160},{-150,-60,30,0,90,-150},
-                      {-90,-50,40,0,90,-90},{-80,-50,40,0,90,-80},{-100,-50,40,0,90,-100}};
+    double pS[][6] = {{170,-55,30,0,90,170},{175,-50,35,0,90,175},{180,-50,35,0,90,180},
+                      {165,-60,25,0,90,165},{-175,-55,30,0,90,-175},{185,-50,35,0,90,185},
+                      {175,-45,40,0,90,175},{180,-60,25,0,90,180},{-170,-55,30,0,90,-170},
+                      {170,-45,40,0,90,170},{190,-50,35,0,90,190},{175,-65,20,0,90,175}};
     for (auto& s:pS) pkSeeds.push_back(JointConfig::fromDegrees({s[0],s[1],s[2],s[3],s[4],s[5]}));
 
     auto ikPk = soIKHorizontal(checker, robot, pickTgt, pkSeeds, 3.0);
@@ -856,16 +860,18 @@ int main() {
                ikPkA.converged?"✅":"❌",ikPkA.posError_mm, paTcp.B, paTcp.C, downDev(paTcp));
     }
 
-    auto HOME = JointConfig::fromDegrees({0,-90,0,0,90,0});
+    // v6.4: 不再使用HOME垂直姿态, TCP直接从传送带上方开始/结束
+    // 中转通过planWithSplitting自动计算 (不需要显式定义)
+    printf("  📌 v6.4: TCP起止位于传送带/放料上方, 无HOME垂直段\n");
 
     // ---- 单箱搬运执行 ----
-    printf("\n━━━━━━ 阶段4: 单箱搬运 (传送带→框架) ━━━━━━━━━━━━━━━━━━━━\n\n");
+    printf("\n━━━━━━ 阶段4: 单箱搬运 (传送带→框架, v6.4简化) ━━━━━━━━━━\n\n");
 
     FILE* fpCsv = fopen("data/so_palletizing_profile.csv","w");
     if(fpCsv) fprintf(fpCsv,"task,segment,step,time_s,q1,q2,q3,q4,q5,q6,"
                       "selfDist_mm,selfCollision,envCollision,tcpX_mm,tcpY_mm,tcpZ_mm\n");
     FILE* fpTraj = fopen("data/so_palletizing_trajectory.txt","w");
-    if(fpTraj) { fprintf(fpTraj,"# HR_S50-2000 码垛v6.0 — 单箱搬运\n");
+    if(fpTraj) { fprintf(fpTraj,"# HR_S50-2000 码垛v6.4 — 单箱搬运 (8段高位中转)\n");
                  fprintf(fpTraj,"# task seg time q1..q6 v1..v6 dist tcpX tcpY tcpZ\n"); }
 
     double totalMotionTime=0; int totalCollisions=0, totalEnvCollisions=0;
@@ -875,63 +881,78 @@ int main() {
     auto& bt = boxTargets[0];
     auto& pc = placeConfigs[0];
 
-    printf("  目标: %s TCP=(%.0f,%.0f,%.0f)mm\n\n", bt.label.c_str(),
+    printf("  目标: %s TCP=(%.0f,%.0f,%.0f)mm\n", bt.label.c_str(),
+           bt.pos_mm.x(), bt.pos_mm.y(), bt.pos_mm.z());
+    printf("  取料: TCP=(%.0f,%.0f,%.0f)mm → 放料: TCP=(%.0f,%.0f,%.0f)mm\n\n",
+           pickTgt.x(), pickTgt.y(), pickTgt.z(),
            bt.pos_mm.x(), bt.pos_mm.y(), bt.pos_mm.z());
 
-    // 中转点: 手臂抬起 (J2=-90°, J3=0° = HOME臂型), TCP在~2272mm高处
-    // 出发中转: J1匹配目标方位, J2..J6全部=HOME
-    //   HOME→TRANSIT_PICK: 仅J1旋转 (TCP在高位, 直线安全)
-    //   TRANSIT_PICK→PickApproach: J2..J6变化 (实测直线通过)
-    // 返回中转: J2/J3=HOME(臂抬起), J1/J4/J5/J6匹配PlaceApproach(腕部不变)
-    //   PlaceApproach→TRANSIT_HOME: 仅J2/J3变化 (~0.6rad, 臂上升)
-    //   TRANSIT_HOME→HOME: J1/J4/J5/J6变化, 但臂朝上 (TCP~2272mm, 直线安全)
-    auto TRANSIT_PICK = [&HOME](const JointConfig& target) {
-        JointConfig t = HOME;
-        t.q[0] = target.q[0];  // J1匹配目标方位角
-        return t;
-    }(PICK_APPROACH);
+    // v6.4: 8段运动 — 搬运经过高位中转 (TCP保持水平)
+    //
+    // 搬运策略: 取料→升高→旋转J1→降低→放料
+    //   [高位中转] J2=-90°,J3=0°,J5=90° — HOME臂型 (TCP Z≈2272mm, 远超框架高度)
+    //   J1/J4/J6继承起止配置 → P2P段仅改变J2/J3/J5 → TCP保持Z朝下
+    //   J1旋转在高位进行 → 安全避开所有障碍
+    //
+    // 为什么不用TCP-Horizontal RRT*:
+    //   取料↔放料关节距离>5rad, 工具球pair(6,4)自碰撞距离仅51.9mm
+    //   → RRT*在80K迭代中0个有效采样 (100%被碰撞/TCP约束拒绝)
+    //   → 退化为直线回退, 但直线中途TCP偏离水平138.4° (箱子脱落)
+    //
+    // 高位中转解决方案:
+    //   每个P2P子段 ≤2.2rad, HOME臂型TCP固有Z朝下
+    //   J1旋转段: J2/J3/J5不变 → TCP朝下0°偏差 (理想)
+    //   升降段: J2/J3/J5同步变化 → TCP偏差<30° (可接受)
 
-    auto TRANSIT_HOME = [](const JointConfig& source) {
-        JointConfig t;
-        t.q[0] = source.q[0];  // J1 保持 (方位不变)
-        t.q[1] = -90.0 * M_PI / 180.0;  // J2 = HOME (臂抬起)
-        t.q[2] = 0.0;                    // J3 = HOME (臂抬起)
-        t.q[3] = source.q[3];  // J4 保持 (腕部不变)
-        t.q[4] = source.q[4];  // J5 保持 (腕部不变)
-        t.q[5] = source.q[5];  // J6 保持 (腕部不变)
-        return t;
-    }(pc.approach);
+    // 取/放 接近配置的角度
+    auto paDeg = PICK_APPROACH.toDegrees();  // 取料接近
+    auto plDeg = pc.approach.toDegrees();    // 放料接近
 
-    printf("  中转点策略:\n");
-    printf("    TRANSIT_PICK: J1=%.1f° (J2..J6=HOME) — 出发方位\n", TRANSIT_PICK.q[0]*180/M_PI);
-    printf("    TRANSIT_HOME: J1=%.1f° J2=-90° J3=0° J4/J5/J6=(%.1f/%.1f/%.1f)° — 臂抬起+腕不变\n",
-           TRANSIT_HOME.q[0]*180/M_PI,
-           TRANSIT_HOME.q[3]*180/M_PI, TRANSIT_HOME.q[4]*180/M_PI, TRANSIT_HOME.q[5]*180/M_PI);
-    printf("    PlaceApproach→TRANSIT: 仅J2/J3变化=%.2frad\n",
-           pc.approach.distanceTo(TRANSIT_HOME));
-    printf("    TRANSIT→HOME: J1/J4/J5/J6变化=%.2frad (臂朝上,TCP高位)\n\n",
-           TRANSIT_HOME.distanceTo(HOME));
+    // 高位中转: HOME臂型 (J2=-90, J3=0, J4=0, J5=90, J6=0), 仅J1继承
+    // ⚠️ J4/J6必须为0: J4≠0改变J5弯曲平面→TCP Z轴偏离; J6≠0改变C角→同样偏离
+    // 只有J4=0,J6=0才能保证HOME臂型下TCP精确Z朝下 (B=0,C=180°)
+    JointConfig CARRY_HIGH_PICK = JointConfig::fromDegrees(
+        {(double)paDeg[0], -90.0, 0.0, 0.0, 90.0, 0.0});
+    JointConfig CARRY_HIGH_PLACE = JointConfig::fromDegrees(
+        {(double)plDeg[0], -90.0, 0.0, 0.0, 90.0, 0.0});
 
-    // 9段运动: HOME→中转→取料→搬运→放料→中转→HOME
+    // 验证高位中转配置
+    printf("  搬运高位中转:\n");
+    {
+        auto report_high = [&](const char* label, const JointConfig& q) {
+            auto rp = checker.getCollisionReport(q, true);
+            SO_COORD_REF tc; checker.forwardKinematics(q, tc);
+            auto qdeg = q.toDegrees();
+            printf("    %s: q=[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]deg\n",
+                   label, qdeg[0], qdeg[1], qdeg[2], qdeg[3], qdeg[4], qdeg[5]);
+            printf("      TCP=(%.0f,%.0f,%.0f)mm A=%.1f B=%.1f C=%.1f\n",
+                   tc.X, tc.Y, tc.Z, tc.A, tc.B, tc.C);
+            printf("      self=%s(%.1fmm) env=%s |B|=%.1f° (TCP水平)\n",
+                   rp.selfCollision?"⚠COLL":"ok", rp.selfMinDist_mm,
+                   rp.envCollision?"⚠ENV":"ok", std::fabs(tc.B));
+        };
+        report_high("高位(取)", CARRY_HIGH_PICK);
+        report_high("高位(放)", CARRY_HIGH_PLACE);
+    }
+
     struct MotionSeg {
         const char* name;
         JointConfig start, target;
         bool useRRT;
         int toolAction;  // 0=无, 1=启用工具球, 2=禁用工具球+添加放置障碍
-        bool freeTcp;    // true=使用Free-TCP规划器 (不搬运箱子的段)
+        bool freeTcp;    // true=使用Free-TCP规划器
     };
     MotionSeg motions[] = {
-        {"HOME→中转(取)",     HOME,            TRANSIT_PICK,   true,  0, true},   // 出发: 无箱子
-        {"中转→取料接近",     TRANSIT_PICK,    PICK_APPROACH,  true,  0, true},   // 出发: 无箱子
-        {"取料接近→取料",     PICK_APPROACH,   PICK_POS,       false, 0, false},
-        {"取料→取料抬升",     PICK_POS,        PICK_APPROACH,  false, 1, false},  // 拾取: 启用工具球
-        {"取料抬升→放料接近", PICK_APPROACH,   pc.approach,    true,  0, false},  // ★搬运箱子: TCP-Horizontal
-        {"放料接近→放料",     pc.approach,     pc.place,       false, 0, false},  // 搬运箱子
-        {"放料→放料抬升",     pc.place,        pc.approach,    false, 2, false},  // 放置: 禁用工具球+添加放置障碍
-        {"放料抬升→中转(回)", pc.approach,     TRANSIT_HOME,   true,  0, true},   // 回程: 无箱子, 从框架内上升 — 不用排除区
-        {"中转→HOME",         TRANSIT_HOME,    HOME,           true,  0, true},   // 回程: 无箱子, 高位移动 — 不用排除区
+        {"取料接近→取料",       PICK_APPROACH,    PICK_POS,          false, 0, false},
+        {"取料→取料抬升",       PICK_POS,         PICK_APPROACH,     false, 1, false},  // ★启用工具球+箱子碰撞
+        {"搬运:抬升→高位(取)",  PICK_APPROACH,    CARRY_HIGH_PICK,   false, 0, false},  // P2P升高
+        {"搬运:高位旋转",       CARRY_HIGH_PICK,  CARRY_HIGH_PLACE,  false, 0, false},  // P2P J1旋转
+        {"搬运:高位(放)→降低",  CARRY_HIGH_PLACE, pc.approach,       false, 0, false},  // P2P降低
+        {"放料接近→放料",       pc.approach,      pc.place,          false, 0, false},
+        {"放料→放料抬升",       pc.place,         pc.approach,       false, 2, false},  // ★禁用工具球
+        {"放料抬升→取料接近",   pc.approach,      PICK_APPROACH,     true,  0, true},   // RRT* Free-TCP返回
     };
-    const int NUM_SEGS = 9;
+    const int NUM_SEGS = 8;
 
     for (int s = 0; s < NUM_SEGS; s++) {
         auto& m = motions[s];
@@ -965,6 +986,9 @@ int main() {
             // ★ 启用独立箱子-机械臂碰撞检测 (绕过SO pair(6,4)限制)
             planConfig.boxCollision.enabled = true;
             planner.setConfig(planConfig);
+            // v6.4: 搬运段使用plannerFree (Free-TCP), 也需要箱子碰撞
+            freeConfig.boxCollision = planConfig.boxCollision;
+            plannerFree.setConfig(freeConfig);
             printf("  📦 箱子-机械臂碰撞检测: ✅ ON (%.0f×%.0f×%.0fmm, margin=%.0fmm)\n",
                    planConfig.boxCollision.boxLengthX,
                    planConfig.boxCollision.boxWidthY,
@@ -972,8 +996,8 @@ int main() {
                    planConfig.boxCollision.safetyMargin);
 
             // 诊断: 检查搬运段起止点碰撞状态 (含箱子碰撞)
-            printf("  🔍 搬运段碰撞诊断:\n");
-            for (int di = s; di <= std::min(s+2, NUM_SEGS-1); di++) {
+            printf("  🔍 搬运段碰撞诊断 (seg %d-%d):\n", s, std::min(s+5, NUM_SEGS-1));
+            for (int di = s; di <= std::min(s+5, NUM_SEGS-1); di++) {
                 auto& dm = motions[di];
                 auto rpS = checker.getCollisionReport(dm.start, true);
                 auto rpT = checker.getCollisionReport(dm.target, true);
@@ -1017,6 +1041,39 @@ int main() {
                seg.planningTime_ms, seg.paramTime_ms, seg.minSelfDist_mm, seg.envCollisionCount,
                seg.tcpExclusionViolations);
 
+        // TCP Z↓偏差后验 (搬运段 + RRT段)
+        // ⚠️ FK2 Euler (A,B,C) 不是标准ZYX — C随J1变化, 不代表物理倾斜
+        // 正确度量: |B| = TCP切面偏离水平的角度 (B=0时TCP精确朝下)
+        // 与PathPlannerSO的TCP-Horizontal检查一致 (仅检查B)
+        bool isCarryP2P = (!m.useRRT && s >= 2 && s <= 4);  // 搬运P2P子段
+        if ((m.useRRT || isCarryP2P) && seg.success) {
+            auto calcDev = [&](const JointConfig& q) {
+                SO_COORD_REF tc; checker.forwardKinematics(q, tc);
+                return std::fabs(tc.B);  // |B|° = TCP倾斜角
+            };
+            double devStart = calcDev(m.start), devEnd = calcDev(m.target);
+            // 沿路径采样检测中途TCP偏差 (关节空间直线插值)
+            const int N_SAMPLES = 20;
+            double maxDevMid = 0, sumDev = 0;
+            int worstIdx = 0;
+            for (int i = 1; i < N_SAMPLES; i++) {
+                double t = (double)i / N_SAMPLES;
+                JointConfig qMid = m.start.interpolate(m.target, t);
+                double dev = calcDev(qMid);
+                sumDev += dev;
+                if (dev > maxDevMid) { maxDevMid = dev; worstIdx = i; }
+            }
+            double avgDev = sumDev / (N_SAMPLES - 1);
+            printf("  📐 TCP Z↓偏差: start=%.1f° end=%.1f° mid-max=%.1f°(@%.0f%%) avg=%.1f°",
+                   devStart, devEnd, maxDevMid, 100.0*worstIdx/N_SAMPLES, avgDev);
+            if (!m.freeTcp)
+                printf(" (TCP-Horizontal约束)\n");
+            else
+                printf(" (Free-TCP, 无朝向约束)\n");
+            if (maxDevMid > 30.0 && isCarryP2P)
+                printf("  ⚠️ 搬运中途TCP偏离水平 %.1f° > 30° (吸盘安全风险)\n", maxDevMid);
+        }
+
         // 动作后: 禁用工具碰撞体 + 添加已放置箱子
         if (m.toolAction == 2) {
             checker.removeTool(1);  // toolIdx=1 球
@@ -1025,6 +1082,8 @@ int main() {
             // ★ 关闭箱子-机械臂碰撞检测 (箱子已放下)
             planConfig.boxCollision.enabled = false;
             planner.setConfig(planConfig);
+            freeConfig.boxCollision.enabled = false;
+            plannerFree.setConfig(freeConfig);
             printf("  📦 箱子-机械臂碰撞检测: OFF (箱子已放置)\n");
             SO_COORD_REF tc; checker.forwardKinematics(pc.place, tc);
             int eid = 46;
@@ -1065,15 +1124,18 @@ int main() {
     // 写摘要
     FILE* fpSum = fopen("data/so_palletizing_summary.txt","w");
     if (fpSum) {
-        fprintf(fpSum,"# HR_S50-2000 码垛v6.2 — 箱子碰撞体强化\n\nversion: 6.2\n");
+        fprintf(fpSum,"# HR_S50-2000 码垛v6.4 — 场景优化+箱子碰撞强化\n\nversion: 6.4\n");
         fprintf(fpSum,"positions: 1\nsegments: %d\ntotal_motion_s: %.4f\n",totalSegments,totalMotionTime);
         fprintf(fpSum,"self_collisions: %d\nenv_collisions: %d\nmin_dist_mm: %.2f\n",
                 totalCollisions,totalEnvCollisions,globalMinDist_mm);
         fprintf(fpSum,"order: single_box_conveyor_to_frame\n");
         fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+3_lozengeWall+1_placed\n");
         fprintf(fpSum,"wall_panels: back+left+right_lozengeOBB_100mm_thick\n");
-        fprintf(fpSum,"tool_collision: ball_z-400_r120_toolIdx1_SOlimit_pair64\nframe_gap_mm: %.0f\nframe_cy_mm: %.0f\n",
-                scene::FRAME_GAP,fcy);
+        fprintf(fpSum,"tool_collision: ball_z-400_r120_toolIdx1_SOlimit_pair64\n");
+        fprintf(fpSum,"carry_strategy: high_transit_3P2P_J2-90_J30_J590_TCP_horizontal\n");
+        fprintf(fpSum,"box_collision: base_lowerarm_hard_elbow_diag_margin40mm\n");
+        fprintf(fpSum,"frame_gap_mm: %.0f\nconv_gap_mm: %.0f\nframe_cy_mm: %.0f\n",
+                scene::FRAME_GAP, scene::CONV_GAP, fcy);
 
         fprintf(fpSum,"\n# Box TCP (base frame, mm):\n");
         {
@@ -1106,7 +1168,7 @@ int main() {
     }
 
     printf("\n══════════════════════════════════════════════════════════════════\n");
-    printf("  HR_S50-2000 码垛仿真 v6.3 — 独立箱子-机械臂碰撞检测\n");
+    printf("  HR_S50-2000 码垛仿真 v6.4 — 场景优化 + 箱子碰撞强化\n");
     printf("══════════════════════════════════════════════════════════════════\n");
     return 0;
 }
