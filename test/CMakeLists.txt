@@ -50,6 +50,16 @@ target_include_directories(testTrajectoryOptimality PRIVATE ${CMAKE_SOURCE_DIR}/
 target_link_libraries(testTrajectoryOptimality ${SO_STACK_LIBS})
 add_test(NAME testTrajectoryOptimality COMMAND testTrajectoryOptimality)
 
+# 箱子-机械臂碰撞分析工具
+if(EXISTS ${CMAKE_SOURCE_DIR}/test/testBoxArmCollision.cpp)
+  add_executable(testBoxArmCollision
+    ${CMAKE_SOURCE_DIR}/test/testBoxArmCollision.cpp
+  )
+  target_include_directories(testBoxArmCollision PRIVATE ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(testBoxArmCollision ${SO_STACK_LIBS})
+  add_test(NAME testBoxArmCollision COMMAND testBoxArmCollision)
+endif()
+
 # ============================================================================
 # SO栈示例
 # ============================================================================

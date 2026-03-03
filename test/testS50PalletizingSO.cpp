@@ -1,8 +1,16 @@
 /**
  * @file testS50PalletizingSO.cpp
- * @brief HR_S50-2000 码垛仿真 v6.2 — 箱子碰撞体强化 + 传送带箱位修正
+ * @brief HR_S50-2000 码垛仿真 v6.3 — 独立箱子-机械臂碰撞检测
  *
- * v6.2 核心变更:
+ * v6.3 核心变更:
+ *   1. 独立箱子-机械臂碰撞检测 (BoxCollisionChecker)
+ *      - 绕过SO库pair(6,4)工具碰撞限制
+ *      - 通过getUIInfo获取碰撞体世界坐标 + FK2朝向 → 26点OBB采样
+ *      - 集成到RRT*采样循环 + 路径优化验证 + 捷径优化
+ *      - 搬运段(seg3-5)自动启用, 非搬运段关闭
+ *   2. 工具碰撞体保留z=-400 r=120 (SO库环境碰撞仍需要)
+ *
+ * v6.2 变更:
  *   1. 工具碰撞体: 球 z=-400 r=120 (toolIdx=1)
  *      - SO库限制: pair(6,4) 工具vs腕部(r=140mm) 自碰撞距离硬编码
  *      - 箱子顶部(z=0~-250)无法通过SO API建模为工具碰撞体
@@ -250,15 +258,23 @@ static Path planWithSplitting(
 {
     double dist = start.distanceTo(target);
 
-    // 1) 直线路径: 自碰撞 + TCP排除区 双重检查
+    // 1) 直线路径: 自碰撞 + TCP排除区 + 箱子碰撞 三重检查
     bool selfOk = checker.isPathCollisionFree(start, target, 0.03);
     bool wsOk = isDirectPathInWorkspace(start, target, checker, exclusionBoxes);
-    if (selfOk && wsOk) {
+    bool boxOk = true;
+    const auto& boxCfg = planner.getConfig().boxCollision;
+    if (boxCfg.enabled) {
+        boxOk = checker.isPathBoxCollisionFree(start, target, boxCfg, 0.05);
+    }
+    if (selfOk && wsOk && boxOk) {
         Path p;
         Waypoint w0(start); w0.pathParam=0; Waypoint w1(target); w1.pathParam=1;
         p.waypoints.push_back(w0); p.waypoints.push_back(w1);
         printf("        %*s直线ok (dist=%.2f)\n", depth*2, "", dist);
         return p;
+    }
+    if (!boxOk) {
+        printf("        %*s直线箱子碰撞! (dist=%.2f) → RRT*\n", depth*2, "", dist);
     }
 
     // 2) RRT* 规划
@@ -458,8 +474,8 @@ SegmentResult executeRRTStar(const char* name,
 // ============================================================================
 int main() {
     printf("╔═══════════════════════════════════════════════════════════════════╗\n");
-    printf("║   HR_S50-2000 码垛仿真 v6.2 — 箱子碰撞体强化+位置修正          ║\n");
-    printf("║   传送带→框架 + Lozenge面板 + TCP水平约束 + 工具碰撞             ║\n");
+    printf("║   HR_S50-2000 码垛仿真 v6.3 — 独立箱子-机械臂碰撞检测          ║\n");
+    printf("║   传送带→框架 + Lozenge面板 + TCP水平约束 + 箱子碰撞             ║\n");
     printf("╚═══════════════════════════════════════════════════════════════════╝\n\n");
 
     auto t_global = std::chrono::high_resolution_clock::now();
@@ -510,10 +526,26 @@ int main() {
     printf("  路径规划: %s Informed RRT*\n",
            planConfig.constrainTcpHorizontal ? "TCP-Horizontal" : "Free-TCP");
 
+    // ── 箱子-机械臂碰撞检测配置 (搬运段启用) ──
+    // SO库pair(6,4)限制: 工具球z=-400mm无法覆盖箱子体积(z=0~-250mm)
+    // 独立检测: getUIInfo碰撞体 + 26点OBB采样 → 精确箱子-臂碰撞
+    // 在搬运规划前设置, 搬运完成后关闭
+    planConfig.boxCollision.enabled     = false;  // 初始关闭, 搬运段动态启用
+    planConfig.boxCollision.boxLengthX  = scene::BOX_LX;
+    planConfig.boxCollision.boxWidthY   = scene::BOX_WY;
+    planConfig.boxCollision.boxHeightZ  = scene::BOX_HZ;
+    planConfig.boxCollision.safetyMargin= 20.0;   // 20mm安全裕度
+    printf("  📦 箱子碰撞: %.0f×%.0f×%.0fmm margin=%.0fmm (搬运段启用)\n",
+           planConfig.boxCollision.boxLengthX,
+           planConfig.boxCollision.boxWidthY,
+           planConfig.boxCollision.boxHeightZ,
+           planConfig.boxCollision.safetyMargin);
+
     // 无TCP水平约束的规划器 — 用于不搬运箱子的回程段
     // (回程不携带箱子, 无需保持TCP水平, 接受率~100% → 更少迭代)
     TCPPlannerConfig freeConfig = planConfig;
     freeConfig.constrainTcpHorizontal = false;
+    freeConfig.boxCollision.enabled = false;  // 回程不携带箱子, 无需箱子碰撞检测
     freeConfig.maxIterations = 30000;
     freeConfig.maxPlanningTime = 10.0;
     PathPlannerSO plannerFree(robot, checker, freeConfig);
@@ -930,7 +962,16 @@ int main() {
             bool toolOk = checker.setToolBall(1, Eigen::Vector3d(0, 0, -400), 120.0);
             printf("  📦 工具1 球ON idx=1 (z=-400, r=120): %s\n", toolOk?"✅":"❌");
 
-            // 诊断: 检查搬运段起止点碰撞状态
+            // ★ 启用独立箱子-机械臂碰撞检测 (绕过SO pair(6,4)限制)
+            planConfig.boxCollision.enabled = true;
+            planner.setConfig(planConfig);
+            printf("  📦 箱子-机械臂碰撞检测: ✅ ON (%.0f×%.0f×%.0fmm, margin=%.0fmm)\n",
+                   planConfig.boxCollision.boxLengthX,
+                   planConfig.boxCollision.boxWidthY,
+                   planConfig.boxCollision.boxHeightZ,
+                   planConfig.boxCollision.safetyMargin);
+
+            // 诊断: 检查搬运段起止点碰撞状态 (含箱子碰撞)
             printf("  🔍 搬运段碰撞诊断:\n");
             for (int di = s; di <= std::min(s+2, NUM_SEGS-1); di++) {
                 auto& dm = motions[di];
@@ -942,6 +983,17 @@ int main() {
                 printf("    seg%d goal:  self=%s dist=%.1fmm pair=(%d,%d)\n",
                        di, rpT.selfCollision?"⚠COLL":"ok", rpT.selfMinDist_mm,
                        rpT.selfPairA, rpT.selfPairB);
+                // 箱子碰撞诊断
+                auto bxS = checker.getBoxCollisionReport(dm.start, planConfig.boxCollision);
+                auto bxT = checker.getBoxCollisionReport(dm.target, planConfig.boxCollision);
+                printf("    seg%d start: box=%s critical=%.1fmm(%s) overall=%.1fmm(%s)\n",
+                       di, bxS.collision?"⚠BOX-COLL":"ok",
+                       bxS.criticalMinDist_mm, BoxCollisionReport::colliderName(bxS.criticalClosest),
+                       bxS.minDistance_mm, BoxCollisionReport::colliderName(bxS.closestCollider));
+                printf("    seg%d goal:  box=%s critical=%.1fmm(%s) overall=%.1fmm(%s)\n",
+                       di, bxT.collision?"⚠BOX-COLL":"ok",
+                       bxT.criticalMinDist_mm, BoxCollisionReport::colliderName(bxT.criticalClosest),
+                       bxT.minDistance_mm, BoxCollisionReport::colliderName(bxT.closestCollider));
             }
         }
 
@@ -969,6 +1021,11 @@ int main() {
         if (m.toolAction == 2) {
             checker.removeTool(1);  // toolIdx=1 球
             printf("  📦 工具碰撞体OFF (idx=1)\n");
+
+            // ★ 关闭箱子-机械臂碰撞检测 (箱子已放下)
+            planConfig.boxCollision.enabled = false;
+            planner.setConfig(planConfig);
+            printf("  📦 箱子-机械臂碰撞检测: OFF (箱子已放置)\n");
             SO_COORD_REF tc; checker.forwardKinematics(pc.place, tc);
             int eid = 46;
             bool ok = checker.addEnvObstacleBall(eid,
@@ -1049,7 +1106,7 @@ int main() {
     }
 
     printf("\n══════════════════════════════════════════════════════════════════\n");
-    printf("  HR_S50-2000 码垛仿真 v6.2 — 箱子碰撞体强化完成\n");
+    printf("  HR_S50-2000 码垛仿真 v6.3 — 独立箱子-机械臂碰撞检测\n");
     printf("══════════════════════════════════════════════════════════════════\n");
     return 0;
 }

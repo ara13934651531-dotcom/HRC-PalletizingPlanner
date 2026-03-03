@@ -31,6 +31,7 @@
 #include "Types.hpp"
 #include "RobotModel.hpp"
 #include "CollisionGeometry.hpp"
+#include "BoxCollisionChecker.hpp"
 
 #include <dlfcn.h>
 #include <unistd.h>
@@ -71,12 +72,15 @@ struct TimingStats {
     double envCheckTime_us  = 0;   // 平均环境检测耗时 (微秒)
     double fkTime_us        = 0;   // 累计正运动学耗时 (微秒)
     double ikTime_us        = 0;   // 累计逆运动学耗时 (微秒)
+    double boxCheckTime_us  = 0;   // 累计箱子碰撞检测耗时 (微秒)
     double totalCheckTime_us = 0;  // 累计单次完整检测耗时 (微秒)
     int    callCount        = 0;   // 碰撞检测调用次数
     int    fkCallCount      = 0;   // FK调用次数 (独立计数)
     int    ikCallCount      = 0;   // IK调用次数 (独立计数)
     int    selfCollCount    = 0;   // 自碰撞次数
     int    envCollCount     = 0;   // 环境碰撞次数
+    int    boxCheckCount    = 0;   // 箱子碰撞检测次数
+    int    boxCollCount     = 0;   // 箱子碰撞次数
     
     void reset() { *this = TimingStats{}; }
     
@@ -90,14 +94,16 @@ struct TimingStats {
             "  │ 环境检测:    %.2f μs/次  (envCollision)\n"
             "  │ 正运动学:    %.2f μs/次  (FK, %d次调用)\n"
             "  │ 逆运动学:    %.2f μs/次  (IK, %d次调用)\n"
+            "  │ 箱子碰撞:   %.2f μs/次  (box, %d次调用)\n"
             "  │ 单次合计:    %.2f μs/次  (total)\n"
-            "  │ 碰撞统计:    自碰撞=%d  环境=%d\n"
+            "  │ 碰撞统计:    自碰撞=%d  环境=%d  箱子=%d\n"
             "  └─────────────────────────────────────────────────\n",
             callCount, initTime_ms,
             updateTime_us, selfCheckTime_us, envCheckTime_us,
             fkTime_us, fkCallCount, ikTime_us, ikCallCount,
+            boxCheckTime_us, boxCheckCount,
             totalCheckTime_us,
-            selfCollCount, envCollCount);
+            selfCollCount, envCollCount, boxCollCount);
         return std::string(buf);
     }
 };
@@ -122,10 +128,16 @@ struct CollisionReportSO {
     SO_COORD_REF tcpPose = {};     // 位置: mm, 姿态: deg (v1.0.0: FK2返回mm)
     bool hasTcpPose = false;
     
+    // 箱子碰撞 (独立检测, 绕过SO工具碰撞体限制)
+    bool boxCollision       = false;
+    double boxMinDist_mm    = 1e10;   ///< 箱子-机械臂最小表面距离 (mm)
+    int boxClosestCollider  = -1;     ///< 最近碰撞体 (0=Base..4=Wrist)
+    bool hasBoxCheck        = false;
+    
     /// 总体是否安全
     /// @param marginMm 安全裕度 (mm), 默认值来自 S50CollisionGeometry::defaultSafetyMarginMm
     bool isSafe(double marginMm = S50CollisionGeometry::defaultSafetyMarginMm) const {
-        return !selfCollision && !envCollision && selfMinDist_mm > marginMm;
+        return !selfCollision && !envCollision && !boxCollision && selfMinDist_mm > marginMm;
     }
 };
 
@@ -581,6 +593,115 @@ public:
             acc[i]  = jAcc[i] * 180.0 / M_PI;
         }
         calcCartVelAcc_(jPos, vel, acc, &cartVel, &cartAcc);
+        return true;
+    }
+    
+    // ========================================================================
+    // 箱子-机械臂碰撞检测 (独立于SO工具碰撞体)
+    // ========================================================================
+    
+    /**
+     * @brief 检查箱子是否与机械臂碰撞 (快速判定)
+     *
+     * 绕过SO库pair(6,4)工具碰撞限制, 通过getUIInfoMation获取碰撞体世界坐标,
+     * 26点采样OBB与5个碰撞体(Base~Wrist)做距离计算。
+     *
+     * @param config  关节配置 (内部rad)
+     * @param boxCfg  箱子碰撞配置 (尺寸+安全裕度)
+     * @return true=无碰撞 (安全)
+     */
+    bool isBoxCollisionFree(const JointConfig& config, const BoxCollisionConfig& boxCfg) const {
+        if (!initialized_ || !boxCfg.enabled) return true;
+        if (!getUIInfo_ || !forwardKin_) return true;  // 无法检测时默认放行
+        
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto t0 = std::chrono::high_resolution_clock::now();
+        
+        // 1. 更新关节状态
+        SO_LREAL jDeg[6], vel[6]={0}, acc[6]={0};
+        for (int i = 0; i < 6; i++) jDeg[i] = config.q[i] * 180.0 / M_PI;
+        updateAC_(jDeg, vel, acc);
+        
+        // 2. 获取碰撞体世界坐标
+        SO_DINT idx[7], type[7];
+        SO_LREAL data[7][9], radius[7];
+        getUIInfo_(idx, type, data, radius);
+        
+        // 3. FK2获取TCP朝向
+        SO_LREAL jDeg2[6];
+        for (int i = 0; i < 6; i++) jDeg2[i] = config.q[i] * 180.0 / M_PI;
+        SO_COORD_REF tcp = {};
+        forwardKin_(jDeg2, &tcp);
+        
+        // 4. 解析碰撞体
+        BoxCollisionChecker::ArmCollider colliders[7];
+        int nColl = BoxCollisionChecker::parseArmColliders(idx, type, data, radius, colliders);
+        
+        // 5. 箱子碰撞检测
+        BoxCollisionChecker::Vec3 tcpPos(tcp.X, tcp.Y, tcp.Z);
+        bool safe = BoxCollisionChecker::isBoxCollisionFree(tcpPos, tcp.A, tcp.B, tcp.C,
+                                                             boxCfg, colliders, nColl);
+        
+        auto t1 = std::chrono::high_resolution_clock::now();
+        timing_.boxCheckTime_us += std::chrono::duration<double, std::micro>(t1 - t0).count();
+        timing_.boxCheckCount++;
+        if (!safe) timing_.boxCollCount++;
+        
+        return safe;
+    }
+    
+    /**
+     * @brief 箱子碰撞检测完整报告
+     */
+    BoxCollisionReport getBoxCollisionReport(const JointConfig& config,
+                                              const BoxCollisionConfig& boxCfg) const {
+        BoxCollisionReport report;
+        if (!initialized_ || !boxCfg.enabled) return report;
+        if (!getUIInfo_ || !forwardKin_) return report;
+        
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        SO_LREAL jDeg[6], vel[6]={0}, acc[6]={0};
+        for (int i = 0; i < 6; i++) jDeg[i] = config.q[i] * 180.0 / M_PI;
+        updateAC_(jDeg, vel, acc);
+        
+        SO_DINT idx[7], type[7];
+        SO_LREAL data[7][9], radius[7];
+        getUIInfo_(idx, type, data, radius);
+        
+        SO_LREAL jDeg2[6];
+        for (int i = 0; i < 6; i++) jDeg2[i] = config.q[i] * 180.0 / M_PI;
+        SO_COORD_REF tcp = {};
+        forwardKin_(jDeg2, &tcp);
+        
+        BoxCollisionChecker::ArmCollider colliders[7];
+        int nColl = BoxCollisionChecker::parseArmColliders(idx, type, data, radius, colliders);
+        
+        BoxCollisionChecker::Vec3 tcpPos(tcp.X, tcp.Y, tcp.Z);
+        report = BoxCollisionChecker::checkBoxCollision(tcpPos, tcp.A, tcp.B, tcp.C,
+                                                         boxCfg, colliders, nColl);
+        return report;
+    }
+    
+    /**
+     * @brief 路径箱子碰撞检测 (批量)
+     * @note  对路径上的插值点逐一检测箱子碰撞, 与isPathCollisionFree()配合使用
+     */
+    bool isPathBoxCollisionFree(const JointConfig& start, const JointConfig& end,
+                                 const BoxCollisionConfig& boxCfg,
+                                 double resolution = 0.05) const {
+        if (!initialized_ || !boxCfg.enabled) return true;
+        if (!getUIInfo_ || !forwardKin_) return true;
+        
+        double d = start.distanceTo(end);
+        int nChecks = std::max(2, (int)std::ceil(d / resolution) + 1);
+        
+        // 注意: 这里不加锁, 因为 isBoxCollisionFree 内部有锁
+        for (int i = 0; i <= nChecks; i++) {
+            double t = (double)i / nChecks;
+            JointConfig interp = start.interpolate(end, t);
+            if (!isBoxCollisionFree(interp, boxCfg)) return false;
+        }
         return true;
     }
     

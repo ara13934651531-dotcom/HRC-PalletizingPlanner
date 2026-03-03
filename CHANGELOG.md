@@ -7,6 +7,47 @@
 
 ---
 
+## [3.3.0] - 2026-02-28
+
+### 独立箱子-机械臂碰撞检测 (v6.3)
+
+SO库工具碰撞球 (pair(6,4)) 无法有效保护搬运箱子——工具球位于z=-400mm，
+而箱子在z=[0,250]mm，两者不重叠（间距30mm）。
+v6.3实现完全独立的箱子OBB-机械臂碰撞检测，绕过SO库限制。
+
+#### 新增
+- 🆕 **BoxCollisionChecker.hpp** — 独立箱子-机械臂碰撞检测模块
+  - 26点OBB采样 (8角 + 12边中 + 6面中)
+  - 基于SO `getUIInfoMation` 获取碰撞体世界坐标
+  - TCP朝向通过FK2 eulerZYX旋转矩阵计算箱子位姿
+  - 安全分级: Base+LowerArm 为硬约束, Elbow/UpArm/Wrist 为诊断
+- 🆕 **CollisionCheckerSO** 新增3个方法:
+  - `isBoxCollisionFree()` — 快速碰撞检测 (仅Base+LowerArm)
+  - `getBoxCollisionReport()` — 完整诊断报告 (全部5个碰撞体)
+  - `isPathBoxCollisionFree()` — 路径插值批量检测
+- 🆕 **PathPlannerSO** RRT*集成:
+  - `BoxCollisionConfig` 配置 (尺寸/偏移/裕度)
+  - RRT*采样拒绝、捷径验证、B-Spline验证均含箱子碰撞检测
+  - 自适应阈值: 起止点固有碰撞时自动放宽margin
+- 🆕 **testBoxArmCollision.cpp** — 独立验证工具 (SO + 轨迹文件)
+- 🆕 **boxArmCollDist.m** — MATLAB箱子碰撞距离分析函数
+
+#### 关键技术决策
+- **碰撞体分级**: Elbow前端距TCP仅~451mm (d4+d5+d6)，UpArm仅158.5mm，
+  Wrist仅134.5mm——与箱体(250mm高)必然重叠。仅Base+LowerArm作为硬约束。
+- **箱子方向**: TCP +Z方向 = 世界下方。eulerZYX(0,0,180) → R[2][2]=-1，
+  TCP local +Z 映射到 world -Z (朝下)，箱子正确悬挂在TCP下方。
+- **工具球无效性证明**: toolIdx=1, z=-400, r=120 覆盖 z=[-520,-280]，
+  箱子在 z=[0,250]，间距30mm，无法检测箱子碰撞。
+
+#### 测试结果
+- `testS50PalletizingSO`: 9/9段成功，0碰撞，规划0ms (直线路径可行)
+  - 安全关键距离(Base+LowArm): 271-620mm >> 20mm margin
+  - 近端碰撞体(Elbow/UpArm/Wrist): -50~-67mm (结构性，不影响规划)
+- `testBoxArmCollision`: Base=219mm, LowArm=140mm (安全); Elbow=-116mm (诊断)
+
+---
+
 ## [3.2.0] - 2026-02-27
 
 ### 代码审查与质量升级

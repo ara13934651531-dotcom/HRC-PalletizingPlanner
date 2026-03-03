@@ -223,6 +223,11 @@ struct TCPPlannerConfig : public PlannerConfig {
         }
     };
     std::vector<TCPExclusionBox> tcpExclusionBoxes;
+
+    // ═══ 箱子-机械臂碰撞检测 (独立于SO工具碰撞体) ═══
+    // SO库pair(6,4)限制导致工具球无法覆盖箱子实际体积(z=0~-250mm)
+    // 此独立检测器通过getUIInfo获取碰撞体位置, 26点OBB采样精确检测
+    BoxCollisionConfig boxCollision;
 };
 
 // ============================================================================
@@ -248,6 +253,8 @@ struct PipelineTimingReport {
     int    nodesExplored      = 0;
     int    collisionChecks    = 0;
     int    fkCalls            = 0;
+    int    boxCheckRejects    = 0;   ///< 箱子碰撞检测拒绝的采样点数
+    double boxCheck_ms        = 0;   ///< 箱子碰撞检测总耗时 (ms)
     
     std::string toString() const {
         char buf[2048];
@@ -265,6 +272,7 @@ struct PipelineTimingReport {
             "  ║     ├ BSpline平滑:    %8.2f ms                    ║\n"
             "  ║     └ 验证:           %8.2f ms                    ║\n"
             "  ║ [4] 时间参数化:       %8.2f ms                    ║\n"
+            "  ║ [5] 箱子碰撞:        %8.2f ms  (%d 拒绝)          ║\n"
             "  ╠════════════════════════════════════════════════════════╣\n"
             "  ║   总计:              %8.2f ms                     ║\n"
             "  ╚════════════════════════════════════════════════════════╝\n",
@@ -277,6 +285,7 @@ struct PipelineTimingReport {
             optimizationTotal_ms,
             shortcut_ms, bspline_ms, validation_ms,
             parameterization_ms,
+            boxCheck_ms, boxCheckRejects,
             totalPipeline_ms);
         return std::string(buf);
     }
@@ -413,11 +422,35 @@ public:
             return result;
         }
         
+        // ── 箱子碰撞自适应阈值 ──
+        // 当起止点本身存在箱子-机械臂碰撞时 (IK解的固有限制):
+        //   - 自动降低safetyMargin至起止点最差距离 - buffer
+        //   - 确保中间路径不会比起止点更差
+        //   - 规划完成后恢复原始margin
+        double originalBoxMargin = config_.boxCollision.safetyMargin;
+        if (config_.boxCollision.enabled) {
+            auto bxS = checker_.getBoxCollisionReport(start, config_.boxCollision);
+            auto bxG = checker_.getBoxCollisionReport(goal, config_.boxCollision);
+            if (bxS.collision || bxG.collision) {
+                // 使用安全关键距离 (仅Base+LowerArm) 进行自适应
+                double worstDist = std::min(bxS.criticalMinDist_mm, bxG.criticalMinDist_mm);
+                double adaptiveMargin = worstDist - 5.0;
+                config_.boxCollision.safetyMargin = adaptiveMargin;
+                printf("  ⚠️ 箱子碰撞自适应: start=%.1fmm(%s) goal=%.1fmm(%s) → margin=%.1fmm\n",
+                       bxS.criticalMinDist_mm, BoxCollisionReport::colliderName(bxS.criticalClosest),
+                       bxG.criticalMinDist_mm, BoxCollisionReport::colliderName(bxG.criticalClosest),
+                       adaptiveMargin);
+            }
+        }
+
         // 规划
         auto tPlan = std::chrono::high_resolution_clock::now();
         Path rawPath = planInformedRRTStar(start, goal, result);
         auto tPlanEnd = std::chrono::high_resolution_clock::now();
         timing_.planningTotal_ms = ms(tPlan, tPlanEnd);
+
+        // 恢复原始margin
+        config_.boxCollision.safetyMargin = originalBoxMargin;
         
         if (rawPath.empty()) {
             result.status = PlanningStatus::NoPath;
@@ -448,6 +481,7 @@ public:
     PipelineTimingReport getTimingReport() const { return timing_; }
     
     void setConfig(const TCPPlannerConfig& config) { config_ = config; }
+    const TCPPlannerConfig& getConfig() const { return config_; }
     
 private:
     // ========================================================================
@@ -549,6 +583,20 @@ private:
                 // RRT采样不做硬排除 — 单树RRT难以通过大关节距的窄通道
                 // RRT*自然倾向最短路径, 从而绕过后墙区域
             }
+
+            // ── 箱子-机械臂碰撞检测 (独立于SO工具碰撞体) ──
+            // 绕过SO pair(6,4)限制: 通过getUIInfo获取碰撞体世界坐标,
+            // 26点OBB采样检查箱子与5个碰撞体(Base~Wrist)的距离
+            if (config_.boxCollision.enabled) {
+                auto tBoxCheck = std::chrono::high_resolution_clock::now();
+                bool boxSafe = checker_.isBoxCollisionFree(qNew, config_.boxCollision);
+                timing_.boxCheck_ms += msNow(tBoxCheck);
+                if (!boxSafe) {
+                    timing_.boxCheckRejects++;
+                    continue;
+                }
+            }
+
             // TCP代价评估
             auto tTcp = std::chrono::high_resolution_clock::now();
             double jointDist = nodes_[nearestId].config.distanceTo(qNew);
@@ -742,7 +790,7 @@ private:
         Path smoothed = spline.sample(config_.splineResolution);
         timing_.bspline_ms = msNow(t2);
         
-        // 5. 验证
+        // 5. 验证 (自碰撞 + 环境 + 箱子碰撞)
         auto t3 = std::chrono::high_resolution_clock::now();
         bool valid = true;
         for (size_t i = 0; i + 1 < smoothed.waypoints.size(); i++) {
@@ -751,6 +799,16 @@ private:
                                               config_.collisionResolution)) {
                 valid = false;
                 break;
+            }
+            // 箱子碰撞验证: 确保BSpline平滑后箱子仍不与机械臂碰撞
+            if (config_.boxCollision.enabled) {
+                if (!checker_.isPathBoxCollisionFree(smoothed.waypoints[i].config,
+                                                     smoothed.waypoints[i+1].config,
+                                                     config_.boxCollision,
+                                                     config_.collisionResolution)) {
+                    valid = false;
+                    break;
+                }
             }
         }
         timing_.validation_ms = msNow(t3);
@@ -774,11 +832,21 @@ private:
             if (checker_.isPathCollisionFree(opt.waypoints[i].config,
                                               opt.waypoints[j].config,
                                               config_.collisionResolution)) {
-                std::vector<Waypoint> newWps;
-                for (int k = 0; k <= i; k++) newWps.push_back(opt.waypoints[k]);
-                for (int k = j; k < n; k++) newWps.push_back(opt.waypoints[k]);
-                opt.waypoints = std::move(newWps);
-                dist = std::uniform_int_distribution<int>(0, (int)opt.waypoints.size() - 1);
+                // 箱子碰撞检查: 捷径不允许穿过箱子碰撞区域
+                bool boxOk = true;
+                if (config_.boxCollision.enabled) {
+                    boxOk = checker_.isPathBoxCollisionFree(opt.waypoints[i].config,
+                                                            opt.waypoints[j].config,
+                                                            config_.boxCollision,
+                                                            config_.collisionResolution);
+                }
+                if (boxOk) {
+                    std::vector<Waypoint> newWps;
+                    for (int k = 0; k <= i; k++) newWps.push_back(opt.waypoints[k]);
+                    for (int k = j; k < n; k++) newWps.push_back(opt.waypoints[k]);
+                    opt.waypoints = std::move(newWps);
+                    dist = std::uniform_int_distribution<int>(0, (int)opt.waypoints.size() - 1);
+                }
             }
         }
         opt.updatePathParameters();

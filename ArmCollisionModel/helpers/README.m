@@ -9,6 +9,11 @@
 %   fk2Skeleton.m         - [DEPRECATED] 旧压缩FK2骨架模型
 %   soFK2Skeleton.m       - SO库真实DH碰撞体骨架 (v1.0.0)
 %
+% ═══════════════════ 碰撞分析 (v6.3) ══════════════════════
+%   boxArmCollDist.m       - ★ 独立箱子-机械臂碰撞距离分析
+%                              26点OBB采样, Base+LowArm硬约束
+%                              匹配C++ BoxCollisionChecker.hpp
+%
 % ═══════════════════ 机器人渲染 ═══════════════════════════
 %   renderSTLRobot.m           - STL网格渲染
 %   renderSTLRobotOnBase.m     - STL网格渲染 (含基座偏移)
@@ -51,5 +56,5 @@
 %   ifelse.m               - 条件选择 (三元运算符)
 %   getField.m             - 安全获取结构体字段
 %
-% @date   2026-02-24
+% @date   2026-02-28
 % Copyright (c) 2026 Guangdong Huayan Robotics Co., Ltd.
