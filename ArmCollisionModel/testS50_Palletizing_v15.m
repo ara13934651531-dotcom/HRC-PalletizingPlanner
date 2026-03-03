@@ -1599,6 +1599,12 @@ else
 end
 fprintf('  动画: %d/%d tasks, subsample=%d, %d boxes\n', nAnimTasks, nTasks, ANIM_SUBSAMPLE, nBoxes);
 
+% --- 动画碰撞统计 ---
+animSelfCollisions = 0;   % 动画中检测到自碰撞帧数
+animEnvCollisions  = 0;   % 动画中检测到环境碰撞帧数
+animMinDist_mm = Inf;     % 动画中最小自碰撞距离
+animToolPairFrames = 0;   % 工具球pair(6,4)帧数
+
 % --- 关键帧.fig快照配置 ---
 % 在动画关键时刻保存独立.fig文件, 用户可在MATLAB中打开进行3D交互
 keyframeDir = fullfile(outputDir, 'keyframes');
@@ -1649,19 +1655,35 @@ for ti = 1:nAnimTasks
             prevSeg = seg;
         end
         
+        carrying = (seg >= 3 && seg <= 5) && (bi <= nBoxes);  % v6.0 9-seg: seg3-5搬运, seg6-8=回HOME(无箱)
+        
+        % --- 实时碰撞检测 (v6.2: 含工具球碰撞对+环境碰撞) ---
+        selfPair = [0, 0];  % 碰撞对 [linkA, linkB]
+        selfColl = false;   % 自碰撞标志
+        envCollFrame = false; % 当前帧环境碰撞标志
         if soLoaded
-            % 碰撞检测 (update已在renderCapsuleRobotHandles中执行, 但此处需先做)
             velArr = vel; accArr = zeros(1,6);
             calllib('libHRCInterface','updateACAreaConstrainPackageInterface',q_deg,velArr,accArr);
             pairArr = int64([0,0]); distVal = 0.0;
-            [~,pairArr,distVal] = calllib('libHRCInterface','checkCPSelfCollisionInterface',pairArr,distVal);
+            [collFlag,pairArr,distVal] = calllib('libHRCInterface','checkCPSelfCollisionInterface',pairArr,distVal);
             dist = distVal;
+            selfPair = double(pairArr);  % 碰撞对 (如 [6,4]=工具球vs腕部)
+            selfColl = (collFlag ~= 0);
+            % 环境碰撞检测 (区域约束: OBB/半平面)
+            areaList = int32(zeros(1,13));
+            [areaOutside, areaList] = calllib('libHRCInterface','getACTCPInAreaListInterface',areaList);
+            envCollFrame = (areaOutside == 0);
+            % 统计
+            if selfColl, animSelfCollisions = animSelfCollisions + 1; end
+            if envCollFrame, animEnvCollisions = animEnvCollisions + 1; end
+            if dist < animMinDist_mm, animMinDist_mm = dist; end
+            if carrying && any(selfPair==6) && any(selfPair==4)
+                animToolPairFrames = animToolPairFrames + 1;
+            end
             timing.collisionCalls = timing.collisionCalls + 1;
         else
             dist = rows(ri, 16);
         end
-        
-        carrying = (seg >= 3 && seg <= 5) && (bi <= nBoxes);  % v6.0 9-seg: seg3-5搬运, seg6-8=回HOME(无箱)
         
         if ~isempty(prevRobotH) && any(isvalid(prevRobotH))
             delete(prevRobotH(isvalid(prevRobotH)));
@@ -1753,12 +1775,20 @@ for ti = 1:nAnimTasks
                 'h','MarkerSize',14,'MarkerFaceColor',[0.9 0.1 0.6],'MarkerEdgeColor','k','LineWidth',1);
         end
         
-        if dist>400, dColor=[0 0.7 0.2]; elseif dist>200, dColor=[0.8 0.6 0]; else, dColor=[0.9 0.1 0.1]; end
-        set(hTitle,'String',sprintf('v15 | Task %d/%d Seg%d | self=%.0fmm env=%d',ti,nTasks,seg,dist,envCollisions));
+        % 颜色编码: 搬运期间工具球pair(6,4)距离低是预期行为(橙色), 非搬运低距离是警告(红色)
+        isToolPair = carrying && any(selfPair==6) && any(selfPair==4);
+        if dist>400, dColor=[0 0.7 0.2];  % 绿色: 安全
+        elseif dist>200, dColor=[0.8 0.6 0];  % 黄色: 注意
+        elseif isToolPair, dColor=[0.9 0.5 0.0];  % 橙色: 工具球预期低距离
+        else, dColor=[0.9 0.1 0.1]; end  % 红色: 自碰撞警告
+        titleEnv = animEnvCollisions;
+        if envCollFrame, envStr = sprintf('env=COLL!'); else, envStr = sprintf('env=%d',titleEnv); end
+        set(hTitle,'String',sprintf('v15 | Task %d/%d Seg%d | self=%.0fmm %s',ti,nTasks,seg,dist,envStr));
         
         cla(ax_info);
         drawInfoPanel_v15(ax_info, ti, nTasks, q_deg, vel, tcp, dist, rows(ri,3), ...
-            CJK_FONT, dColor, soLoaded, carrying, sum(placedFlag), nBoxes, envCollisions);
+            CJK_FONT, dColor, soLoaded, carrying, sum(placedFlag), nBoxes, ...
+            animEnvCollisions, selfPair, envCollFrame, selfColl);
         
         drawnow limitrate;
         
@@ -1819,12 +1849,21 @@ for ti = 1:nAnimTasks
     
     % 确保SO工具球在任务结束后被移除 (防止数据不完整时遗留)
     if soLoaded && soToolActive
-        calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(6));
+        calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(1));  % v6.2: toolIdx=1
         soToolActive = false;
         fprintf('    [WARN] Task %d 结束但工具球未自动移除, 已强制清理\n', ti);
     end
     
     fprintf('  Task %d/%d (%d frames) — placed: %d/%d\n', ti, nTasks, ceil(nR/ANIM_SUBSAMPLE), sum(placedFlag), nBoxes);
+end
+
+% --- 动画碰撞统计报告 ---
+fprintf('\n  === 动画碰撞统计 ===\n');
+fprintf('    自碰撞帧数: %d (其中工具球pair(6,4): %d)\n', animSelfCollisions, animToolPairFrames);
+fprintf('    环境碰撞帧数: %d\n', animEnvCollisions);
+fprintf('    最小自碰撞距离: %.1f mm\n', animMinDist_mm);
+if animSelfCollisions > 0 && animToolPairFrames == 0
+    fprintf('    ⚠ 存在非工具球相关自碰撞!\n');
 end
 
 % 动画结束后补全未标记的放置箱子 (最后一个任务=回原位, seg从未达到6)
