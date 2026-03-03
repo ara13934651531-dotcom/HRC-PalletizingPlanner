@@ -120,12 +120,13 @@ cfg_box.color=[0.65,0.45,0.25];
 cfg_nBoxes = 1;   % 箱子数目 (可调: 1=验证, 3=演示, 12=完整码垛)
 cfg_animTaskLimit = 0;  % 0=全部任务 (调试时可设为3限制前N个)
 cfg_frameGap = 0.20; cfg_convGap = 0.40;  % v6.1: FRAME_GAP=200mm, CONV_GAP=400mm
-cfg_convOffY = -0.80; cfg_convBoxYStart = -0.50; cfg_convBoxYStep = 0.25;  % v6.1: 传送带缩短, 箱子从Y=-1.30开始
+cfg_convOffY = -0.80; cfg_convBoxYStart = 0.50; cfg_convBoxYStep = -0.30;  % v6.2: 修正符号! +0.50=C++ pkY=CONV_OFF+500
 
-% --- 环境碰撞体 (由场景参数动态计算, 与C++ v6.0一致) ---
+% --- 环境碰撞体 (由场景参数动态计算, 与C++ v6.2一致) ---
 % 注: 坐标为机器人基座坐标系(m), 下方初始化时根据scene参数计算
 ENV_COLL.boxR_m = 0.250;   % 已放置箱碰撞球半径
-ENV_COLL.toolR_m = 0.120;  % v6.1: 工具球r=120mm@z=-400mm (toolIdx=1)
+ENV_COLL.toolBallZ  = -0.400;  % v6.2: 工具球z偏移 (m), SO库pair(6,4)限制最大位置
+ENV_COLL.toolBallR_m = 0.120;  % v6.2: 工具球半径 (m), 覆盖z=-280→-520mm
 ENV_COLL.cabR_m = 0.080;   % 电箱碰撞胶囊半径
 ENV_COLL.convR_m = 0.080;  % 传送带碰撞胶囊半径
 
@@ -250,7 +251,7 @@ fprintf('  ENV_COLL: frame(4col+2topY+3wallLoz)=[%.3f,%.3f]->[%.3f,%.3f] cab(4) 
 
 fprintf('\n');
 fprintf([char(9556) repmat(char(9552),1,72) char(9559) '\n']);
-fprintf([char(9553) '  HR_S50-2000 v16.1 -- Single Box + Lozenge Wall + Tool Coll        ' char(9553) '\n']);
+fprintf([char(9553) '  HR_S50-2000 v16.2 -- Box Collision Capsule + Pick Pos Fix       ' char(9553) '\n']);
 fprintf([char(9562) repmat(char(9552),1,72) char(9565) '\n\n']);
 fprintf('Font: %s | Headless: %d | nBoxes: %d\n', CJK_FONT, isHeadless, nBoxes);
 fprintf('Collision .so: %s\n', SO_PATH);
@@ -1082,12 +1083,32 @@ fprintf('>>> Fig 4: Palletizing 3D scene (%d-box layout)...\n', nBoxes);
 tFig = tic;
 fig4 = figure('Position',[20 20 1920 1080],'Color','w','Name','Palletizing 3D Scene v15');
 
-% 传送带上箱子位置
+% 传送带上箱子位置: 优先从C++摘要读取pick TCP, 确保与取料位一致
 convBoxY = zeros(1, nBoxes);
-for bi = 1:nBoxes
-    convBoxY(bi) = conv.cy + cfg_convBoxYStart + (bi-1)*cfg_convBoxYStep;
-end
 convBoxX = conv.cx;
+pickTcpFound = false;
+if isfield(pallSummary, 'pick_tcp_mm')
+    vals = sscanf(pallSummary.pick_tcp_mm, '%f %f %f');
+    if length(vals)==3
+        % C++ pick TCP在基坐标系(mm) → MATLAB世界坐标系(m)
+        pickWorld = [vals(1)/1000+baseX, vals(2)/1000+baseY, vals(3)/1000+baseZ];
+        convBoxY(1) = pickWorld(2);  % 第一箱子Y = 取料TCP Y
+        convBoxX = pickWorld(1);     % X也从摘要读取
+        pickTcpFound = true;
+        fprintf('  传送带箱位: 从C++ pick_tcp_mm读取 (%.3f, %.3f)m\n', convBoxX, convBoxY(1));
+    end
+end
+if ~pickTcpFound
+    % 回退: 使用场景参数计算 (与C++ pkY=CONV_OFF_Y+500 一致)
+    for bi = 1:nBoxes
+        convBoxY(bi) = conv.cy + cfg_convBoxYStart + (bi-1)*cfg_convBoxYStep;
+    end
+    fprintf('  传送带箱位: 从场景参数计算 Y=%.3f\n', convBoxY(1));
+end
+for bi = 2:nBoxes
+    if ~pickTcpFound, break; end  % 已由上面的循环初始化
+    convBoxY(bi) = convBoxY(1) + (bi-1)*cfg_convBoxYStep;
+end
 
 % 码垛放置位: 从C++ IK求解TCP位置读取 (消除MATLAB独立计算偏差)
 % 注: C++ TCP = 箱子顶面中心; drawBox_v11 需要箱子体积中心 → Z减box.hz/2
@@ -1608,19 +1629,18 @@ for ti = 1:nAnimTasks
         vel = rows(ri, 10:15);
         seg = rows(ri, 2);
         
-        % SO库工具碰撞体管理 (匹配C++ v6.0 9-seg: seg=3启用/seg=6移除)
+        % SO库工具碰撞体管理 (v6.2: 球 z=-400 r=120, toolIdx=1)
         if soLoaded && seg ~= prevSeg
-            % 进入seg 3: 启用工具碰撞球 (吸附箱子, toolIdx=6)
+            % 进入seg 3: 启用工具碰撞球 (吸附箱子)
             if seg == 3 && ~soToolActive && bi <= nBoxes
-                toolOffset_mm = [0, 0, -box.hz/2*1000];  % 箱子中心在TCP下方
+                ballOff_mm = [0, 0, ENV_COLL.toolBallZ*1000];
                 calllib('libHRCInterface', 'setCPToolCollisionBallShapeInterface', ...
-                    int64(6), toolOffset_mm, 225.0);  % r=225mm
+                    int64(1), ballOff_mm, ENV_COLL.toolBallR_m*1000);
                 soToolActive = true;
             end
-            % 进入seg 6: 移除工具碰撞球, 注册已放置箱子为环境障碍
-            % C++ v6.0 9-seg: seg5=PlaceApproach→Place, seg6=Place→PlaceApproach(工具OFF)
+            % 进入seg 6: 移除工具碰撞体, 注册已放置箱子为环境障碍
             if seg == 6 && soToolActive && bi <= nBoxes
-                calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(6));
+                calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(1));
                 soToolActive = false;
                 boxCenter_mm = placePos(bi,:) * 1000;  % m→mm
                 calllib('libHRCInterface', 'addEnvObstacleBallInterface', ...
@@ -1663,11 +1683,12 @@ for ti = 1:nAnimTasks
         
         if carrying
             hCarryBox = drawBox_v11(ax3d, [tcp(1),tcp(2),tcp(3)-box.hz/2], box);
-            % 工具碰撞球 (半透明绿色)
-            toolR = 0.225;  % 225mm → m
-            [Xs,Ys,Zs] = sphere(10);
-            hToolCollSphere = surf(ax3d, Xs*toolR+tcp(1), Ys*toolR+tcp(2), Zs*toolR+tcp(3)-0.125,...
-                'FaceColor',[0.2 0.8 0.3],'FaceAlpha',0.08,'EdgeColor','none');
+            % v6.2: 工具碰撞球可视化 (球 z=-400 r=120)
+            [Xs,Ys,Zs] = sphere(12);
+            bc = [tcp(1), tcp(2), tcp(3) + ENV_COLL.toolBallZ];
+            hToolCollSphere(end+1) = surf(ax3d, Xs*ENV_COLL.toolBallR_m+bc(1), ...
+                Ys*ENV_COLL.toolBallR_m+bc(2), Zs*ENV_COLL.toolBallR_m+bc(3), ...
+                'FaceColor',[0.2 0.8 0.3],'FaceAlpha',0.10,'EdgeColor','none');
         end
         
         % 传送带箱子可见性

@@ -1,13 +1,21 @@
 /**
  * @file testS50PalletizingSO.cpp
- * @brief HR_S50-2000 码垛仿真 v6.1 — 布局/碰撞/工具修正
+ * @brief HR_S50-2000 码垛仿真 v6.2 — 箱子碰撞体强化 + 传送带箱位修正
  *
- * v6.1 核心变更 (基于用户反馈7大修正):
- *   1. 布局修正: FRAME_GAP 50→200, CONV_GAP 200→400, CONV_LEN 3500→2000 消除重叠
- *   2. 面板碰撞: 12根胶囊体→3个Lozenge OBB实体面板 (SO棱体碰撞)
- *   3. 工具球修正: toolIndex 6→1 (SO API仅接受1/2, 不是碰撞体索引6/7)
- *   4. 路径后优化: planWithSplitting拼接后做300次shortcut优化
- *   5. 框架/传送带/电箱间距增大, 无物理重叠
+ * v6.2 核心变更:
+ *   1. 工具碰撞体: 球 z=-400 r=120 (toolIdx=1)
+ *      - SO库限制: pair(6,4) 工具vs腕部(r=140mm) 自碰撞距离硬编码
+ *      - 箱子顶部(z=0~-250)无法通过SO API建模为工具碰撞体
+ *      - 已测试: 胶囊z=-250/-300均碰撞, 通道控制(0,0,0)无效
+ *      - 覆盖范围: z=-280→z=-520mm (箱子底面下方150mm保护)
+ *   2. 取料TCP写入摘要 (pick_tcp_mm) 供MATLAB读取箱子位置
+ *   3. 传送带箱位修正: 与C++ IK取料位一致
+ *
+ * v6.1 变更:
+ *   1. 布局修正: FRAME_GAP 50→200, CONV_GAP 200→400, CONV_LEN 3500→2000
+ *   2. 面板碰撞: 3个Lozenge OBB实体面板
+ *   3. 工具球修正: toolIndex 6→1
+ *   4. 路径后优化: 300次shortcut
  *
  * @date 2026-03-02
  * @copyright Copyright (c) 2026 Guangdong Huayan Robotics Co., Ltd.
@@ -450,7 +458,7 @@ SegmentResult executeRRTStar(const char* name,
 // ============================================================================
 int main() {
     printf("╔═══════════════════════════════════════════════════════════════════╗\n");
-    printf("║   HR_S50-2000 码垛仿真 v6.1 — 布局/碰撞/工具修正                ║\n");
+    printf("║   HR_S50-2000 码垛仿真 v6.2 — 箱子碰撞体强化+位置修正          ║\n");
     printf("║   传送带→框架 + Lozenge面板 + TCP水平约束 + 工具碰撞             ║\n");
     printf("╚═══════════════════════════════════════════════════════════════════╝\n\n");
 
@@ -898,22 +906,33 @@ int main() {
         double segDist = m.start.distanceTo(m.target);
         printf("\n  --- seg %d: %s (dist=%.2f rad, %.1f°) ---\n", s, m.name, segDist, segDist*180/M_PI);
 
-        // 动作前: 启用/禁用工具球
+        // 动作前: 启用/禁用工具碰撞体
         if (m.toolAction == 1) {
             // ❗ SO库 toolIndex 只接受1或2 (Tool1/Tool2), 不是碰撞体索引(6/7)
-            // 箱子碰撞建模: 工具球沿TCP Z轴向下
-            // 已知限制: pair(6,4) tool-wrist, r太大→自碰撞
-            // 实用: r=120球@z=-400 (距法兰400mm, 箱底区域)
-            // 清距71mm@r=100, 留余量; 覆盖箱子底部碰撞区域
-            const double toolR = 120.0;
-            bool toolOk = checker.setToolBall(1, Eigen::Vector3d(0, 0, -400), toolR);
-            printf("  📦 工具球ON toolIdx=1 (r=%.0fmm, z=-400mm): %s\n",
-                   toolR, toolOk?"✅":"❌");
-            if (!toolOk) printf("  ⚠️  setToolBall(1) 失败! 箱子碰撞未生效\n");
+            //
+            // v6.2 箱子碰撞建模 — SO库限制分析:
+            //   箱子尺寸: 350×280×250mm, TCP在箱子顶面
+            //   箱子体积: z=0→z=-250mm (法兰坐标系)
+            //   SO库限制: pair(6,4) 工具(collider6) vs 腕部(collider4, r=140mm)
+            //     - 自碰撞距离公式: dist = |tool_surface - wrist_surface|
+            //     - 工具球z=-400 r=120: dist=51.9mm ✅ (远离腕部)
+            //     - 工具球z=-125 r=100: dist=0.0mm ❌ (在箱子中心, 碰腕)
+            //     - 工具胶囊z=-250→-400 r=100: dist=0.0mm ❌
+            //     - 工具胶囊z=-300→-400 r=100: dist=0.0mm ❌
+            //     - setCPSelfColliderLinkModelOpenState(0,0,0): 无效, 不控制tool-link pair
+            //   结论: SO库硬编码tool-wrist自碰撞, 无法通过API绕过
+            //
+            // 最终方案: 工具球 z=-400 r=120mm (覆盖z=-280→z=-520)
+            //   + 箱子底面以下150mm区域的环境碰撞保护
+            //   + TCP-Horizontal约束保持箱子朝下 (防倾斜碰撞)
+            //   + RRT*搬运段规划自动避障 (箱子-框架/电箱/传送带)
+
+            bool toolOk = checker.setToolBall(1, Eigen::Vector3d(0, 0, -400), 120.0);
+            printf("  📦 工具1 球ON idx=1 (z=-400, r=120): %s\n", toolOk?"✅":"❌");
 
             // 诊断: 检查搬运段起止点碰撞状态
-            printf("  🔍 搬运段碰撞诊断 (工具已启用):\n");
-            for (int di = s; di <= std::min(s+1, NUM_SEGS-1); di++) {
+            printf("  🔍 搬运段碰撞诊断:\n");
+            for (int di = s; di <= std::min(s+2, NUM_SEGS-1); di++) {
                 auto& dm = motions[di];
                 auto rpS = checker.getCollisionReport(dm.start, true);
                 auto rpT = checker.getCollisionReport(dm.target, true);
@@ -946,10 +965,10 @@ int main() {
                seg.planningTime_ms, seg.paramTime_ms, seg.minSelfDist_mm, seg.envCollisionCount,
                seg.tcpExclusionViolations);
 
-        // 动作后: 禁用工具球 + 添加已放置箱子
+        // 动作后: 禁用工具碰撞体 + 添加已放置箱子
         if (m.toolAction == 2) {
-            checker.removeTool(1);  // toolIdx=1 (匹配上面setToolBall(1))
-            printf("  📦 工具球OFF toolIdx=1\n");
+            checker.removeTool(1);  // toolIdx=1 球
+            printf("  📦 工具碰撞体OFF (idx=1)\n");
             SO_COORD_REF tc; checker.forwardKinematics(pc.place, tc);
             int eid = 46;
             bool ok = checker.addEnvObstacleBall(eid,
@@ -989,14 +1008,14 @@ int main() {
     // 写摘要
     FILE* fpSum = fopen("data/so_palletizing_summary.txt","w");
     if (fpSum) {
-        fprintf(fpSum,"# HR_S50-2000 码垛v6.1 — 布局/碰撞/工具修正\n\nversion: 6.1\n");
+        fprintf(fpSum,"# HR_S50-2000 码垛v6.2 — 箱子碰撞体强化\n\nversion: 6.2\n");
         fprintf(fpSum,"positions: 1\nsegments: %d\ntotal_motion_s: %.4f\n",totalSegments,totalMotionTime);
         fprintf(fpSum,"self_collisions: %d\nenv_collisions: %d\nmin_dist_mm: %.2f\n",
                 totalCollisions,totalEnvCollisions,globalMinDist_mm);
         fprintf(fpSum,"order: single_box_conveyor_to_frame\n");
         fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+3_lozengeWall+1_placed\n");
         fprintf(fpSum,"wall_panels: back+left+right_lozengeOBB_100mm_thick\n");
-        fprintf(fpSum,"tool_collision: ball_r120mm_z-400mm_toolIdx1\nframe_gap_mm: %.0f\nframe_cy_mm: %.0f\n",
+        fprintf(fpSum,"tool_collision: ball_z-400_r120_toolIdx1_SOlimit_pair64\nframe_gap_mm: %.0f\nframe_cy_mm: %.0f\n",
                 scene::FRAME_GAP,fcy);
 
         fprintf(fpSum,"\n# Box TCP (base frame, mm):\n");
@@ -1017,6 +1036,8 @@ int main() {
         {auto q=PICK_POS.toDegrees(); auto a=PICK_APPROACH.toDegrees();
          fprintf(fpSum,"\n# Pick (deg):\nik_pick: %.2f %.2f %.2f %.2f %.2f %.2f\nik_pick_appr: %.2f %.2f %.2f %.2f %.2f %.2f\n",
                  q[0],q[1],q[2],q[3],q[4],q[5],a[0],a[1],a[2],a[3],a[4],a[5]);}
+        {SO_COORD_REF ptc; checker.forwardKinematics(PICK_POS,ptc);
+         fprintf(fpSum,"pick_tcp_mm: %.1f %.1f %.1f\n",ptc.X,ptc.Y,ptc.Z);}
 
         fprintf(fpSum,"\n# Timing:\ninit_ms: %.3f\nik_ms: %.3f\nplanning_total_ms: %.3f\n",initMs,ikMs,grandTotalPlanMs);
         fprintf(fpSum,"param_total_ms: %.3f\ncollision_runtime_ms: %.3f\nelapsed_s: %.3f\n",
@@ -1028,7 +1049,7 @@ int main() {
     }
 
     printf("\n══════════════════════════════════════════════════════════════════\n");
-    printf("  HR_S50-2000 码垛仿真 v6.1 — 布局/碰撞/工具修正完成\n");
+    printf("  HR_S50-2000 码垛仿真 v6.2 — 箱子碰撞体强化完成\n");
     printf("══════════════════════════════════════════════════════════════════\n");
     return 0;
 }

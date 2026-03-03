@@ -662,13 +662,27 @@ public:
     
     /**
      * @brief 移除工具碰撞体
-     * @param toolIdx 工具索引 (6=Tool1, 7=Tool2)
+     * @param toolIdx 工具索引 (1=Tool1, 2=Tool2)
      * @return 成功返回true
      */
     bool removeTool(int toolIdx) {
         if (!initialized_ || !removeTool_) return false;
         std::lock_guard<std::mutex> lock(mutex_);
         return removeTool_((SO_LINT)toolIdx) == 0;
+    }
+    
+    /**
+     * @brief 设置自碰撞通道开关 (3通道)
+     * @param ch0 通道0开关 (1=启用,0=禁用)
+     * @param ch1 通道1开关
+     * @param ch2 通道2开关
+     * @note 搬运箱子时可临时禁用工具-腕部通道以允许更大工具碰撞体
+     */
+    void setSelfCollisionChannels(int ch0, int ch1, int ch2) {
+        if (!initialized_ || !setColliderOpen_) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        SO_BOOL flags[3] = {(SO_BOOL)ch0, (SO_BOOL)ch1, (SO_BOOL)ch2};
+        setColliderOpen_(flags);
     }
     
     // ========================================================================
