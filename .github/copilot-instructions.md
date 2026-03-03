@@ -93,7 +93,14 @@ test/
 examples/
 └── basic_planning_example_so.cpp
 ArmCollisionModel/             ← MATLAB仿真 (验证/可视化)
-├── testS50_Palletizing_v15.m  ← ★ 最新码垛仿真 (~2083行, 9图+GIF)
+├── testS50_Palletizing_v15.m  ← ★ 最新码垛仿真 (~2081行, 9图+GIF)
+├── helpers/                   ← ★ 33个提取的辅助函数 (.m)
+│   ├── README.m               ← 函数目录说明
+│   ├── urdfFK.m / fk2Skeleton.m / soFK2Skeleton.m  ← FK
+│   ├── renderCapsuleRobotHandles.m / renderSTLRobot*.m  ← 渲染
+│   ├── draw*.m (13个)         ← 绘图原语/场景元素
+│   ├── loadNumericData.m / readSummaryFile.m  ← 数据I/O
+│   └── makeTrans.m / makeRot*.m / axang2r_local.m  ← 数学工具
 ├── testS50_Dynamic.m          ← 动态轨迹动画
 ├── testS50_Quick.m            ← 快速验证
 ├── diagnostic_so_frames.m     ← SO库诊断 (FK2/getUIInfo对比)
@@ -146,7 +153,10 @@ CMake >= 3.14, C++17, 仅Linux x86_64。SO栈链接: `stdc++` -> `m` -> `pthread
 
 ### 阶段2: 搬运箱子到托盘 (★核心优化阶段)
 
-- TCP吸附箱子: **箱子作为TCP碰撞体延伸** (球体近似, toolIdx=6)
+- TCP吸附箱子: **箱子作为TCP碰撞体延伸** (球体近似, **toolIdx=1**)
+- ⚠️ **toolIdx 只能选择 1 或 2** (SO库硬限制, 6/7是碰撞体连杆ID, 注册会静默失败!)
+- 工具球参数: r=120mm, offset=(0,0,-400)mm (法兰坐标系, Z朝下)
+- ⚠️ **工具球自碰撞约束**: pair(6,4)=工具vs腕部(r=140mm), z=-400mm时最大可用半径~170mm
 - 箱子面积远大于吸盘面积, 碰撞建模必须考虑箱子外形
 - TCP必须保持水平 (`constrainTcpHorizontal=true`)
 - 碰撞环境: 电箱 + 传送带 + 框架 + 已放置箱子
@@ -154,7 +164,7 @@ CMake >= 3.14, C++17, 仅Linux x86_64。SO栈链接: `stdc++` -> `m` -> `pthread
 
 ### 阶段3: 返回HOME (无箱子)
 
-- 释放箱子后, 移除工具碰撞体 (toolIdx=6)
+- 释放箱子后, 移除工具碰撞体 (removeTool(1))
 - 将刚放置的箱子添加为环境障碍 (球体近似)
 - 碰撞环境: 电箱 + 传送带 + 框架 + 已放置箱子 (含刚放置的)
 
@@ -177,16 +187,22 @@ CMake >= 3.14, C++17, 仅Linux x86_64。SO栈链接: `stdc++` -> `m` -> `pthread
 
 ## 环境碰撞模型
 
-### 框架 (Frame) — 4根立柱 + 2根顶梁
+### 框架 (Frame) — 4根立柱 + 2根顶梁 + 3面Lozenge OBB墙面板
 
 框架近端面（朝向机器人）是**开放**的（无顶横梁，便于机械臂进出）。碰撞建模：
 - 4根垂直立柱 (4个角, 胶囊体, r=50mm)
 - 2根顶梁 (沿Y轴, 连接同侧近端→远端立柱顶部, 胶囊体, r=50mm)
-- 近端面无横梁 (开放), 远端面无额外碰撞体
+- **3面Lozenge OBB实心墙面板** (后墙+左墙+右墙, envId 5/6/7, r=50mm)
+  - 使用 `addEnvObstacleLozengeInterface` (OBB面碰撞, 非胶囊)
+  - 参数: ref2local[6]={rx,ry,rz(deg), tx,ty,tz(mm)}, offset[3], xLen, yLen, zLen, radius
+  - 后墙: XZ平面, 100mm厚; 左/右墙: YZ平面, 100mm厚
+  - **若Lozenge注册失败**: 回退为6层胶囊堆叠 (r=250mm, 每层间距~330mm)
+- 近端面无横梁 (开放), 远端面有Lozenge OBB墙面板
 
 ### 箱子碰撞
 
-- **搬运中**: 箱子作为TCP延伸, 用工具碰撞球 (toolIdx=6, r=225mm) 近似
+- **搬运中**: 箱子作为TCP延伸, 用工具碰撞球 (**toolIdx=1**, r=120mm, z=-400mm)
+- ⚠️ **toolIdx 必须为 1 或 2** (SO库限制, 使用6/7会静默失败!)
 - **已放置**: 每放一箱添加环境障碍球 (envId=46+i, r=250mm)
 - 吸盘不一定居中抓取, 偏移影响球心位置
 
@@ -215,8 +231,11 @@ CMake >= 3.14, C++17, 仅Linux x86_64。SO栈链接: `stdc++` -> `m` -> `pthread
 
 | ID | 物体 | 类型 | 半径(mm) | 说明 |
 |----|------|------|----------|------|
+| 5 | 后墙面板 (Lozenge OBB) | OBB | 50 | 框架远端面 |
+| 6 | 左墙面板 (Lozenge OBB) | OBB | 50 | 框架左侧面 |
+| 7 | 右墙面板 (Lozenge OBB) | OBB | 50 | 框架右侧面 |
 | 46-57 | 已放置箱子 | 球 | 250 | 每放一箱添加一个 |
-| 6 | 搬运工具球 | 球 | 225 | 搬运中启用, 到达后移除 |
+| 1 (tool) | 搬运工具球 | 球 | 120 | toolIdx=1, z=-400mm, 搬运中启用 |
 
 ## C++ 核心 API
 
@@ -734,6 +753,47 @@ target_link_libraries(testMyTest stdc++ m pthread dl)
 | 9 | getUIInfo | 用于TCP位置 | 仅用于碰撞体几何 |
 | 10 | URDF渲染+FK2场景 | `renderSTLRobotOnBase`+FK2场景 | `renderCapsuleRobotHandles` (FK2一致) |
 | 11 | HOME描述 | "手臂竖直向上" | FK2: 水平伸出; 物理: 竖直向上 (不同坐标系!) |
+| 12 | 工具球toolIdx | `setToolBall(6, ...)` | **`setToolBall(1, ...)`** (SO库只接受1或2!) |
+| 13 | 工具球自碰撞 | r=225mm@z=-125 | r≤170mm@z=-400mm (pair(6,4)腕部约束) |
+| 14 | 墙面碰撞 | 胶囊条近似 (有缝隙) | Lozenge OBB实心面板 (addEnvObstacleLozengeInterface) |
+| 15 | 场景布局重叠 | 框架和传送带重叠 | FRAME_GAP≥200mm, CONV_GAP≥400mm, 运行时验证 |
+| 16 | 路径优化缺失 | planWithSplitting无后优化 | 添加300次post-split shortcut优化 |
+
+## ⚠️ v6.1 关键修复 (2026-02-24)
+
+### 1. 工具碰撞体索引修复
+- SO库 `setCPToolCollisionBallShapeInterface` 的 toolIdx **只能是 1 或 2**
+- toolIdx=6/7 是碰撞体连杆ID, 注册会返回1(失败)但不报错
+- 旧代码使用 toolIdx=6, **工具碰撞体从未生效!**
+- 修复: `setToolBall(1, {0,0,-400}, 120)`, 必须检查返回值
+
+### 2. 工具球自碰撞安全范围
+- 工具碰撞体(collider link 6) vs 腕部碰撞球(collider link 4, r=140mm)
+- 工具球z偏移越大(远离法兰), 可用半径越大
+- z=-400mm时: r=120mm给出51.9mm安全裕度, r=170mm是理论极限
+- z=-250mm时: r=100mm仍然碰撞 (pair 6,4 dist=0)
+
+### 3. Lozenge OBB 墙面板碰撞
+- `addEnvObstacleLozengeInterface(envId, ref2local, offset, xLen, yLen, zLen, radius)`
+- ref2local[6] = {rx, ry, rz (deg), tx, ty, tz (mm)}
+- 替代旧的多胶囊近似, 提供无缝隙的实心面碰撞
+- 注册成功返回0, 失败返回1
+
+### 4. 场景布局防重叠
+- FRAME_GAP=200mm (框架与基座间距)
+- CONV_GAP=400mm (传送带与基座间距)
+- CONV_LEN=2000mm (传送带长度, 缩短避免与框架重叠)
+- 运行时打印布局验证: X间距和Y间距必须≥0
+
+### 5. 路径后优化
+- `planWithSplitting()` 拼接子路径后无全局优化
+- 添加300次shortcut迭代对拼接路径进行全局优化
+- 进场高度从200mm增加到300mm
+
+### 6. MATLAB辅助函数提取
+- 33个本地函数从主脚本提取到 `ArmCollisionModel/helpers/` 目录
+- 主脚本通过 `addpath(helpers/)` 自动加载
+- 主脚本从2650行减少到2081行
 
 ## S曲线轨迹执行
 

@@ -40,13 +40,13 @@ function testS50_Palletizing_v15()
 %    4. 碰撞包络半径匹配CollisionGeometry.hpp (160/140/120/100mm)
 %    5. drawFrame_v11渲染: 近端底边+远端底顶+左右顶梁 (匹配实物框架)
 %    6. TCP方向quiver使用FK2导出Z轴, 非骨架近似
-%    7. cfg_nBoxes可调, TCP_ORIENT_TOL_DEG=30°, cfg_convGap=0.20 匹配C++
+%    7. cfg_nBoxes可调, TCP_ORIENT_TOL_DEG=30°, cfg_convGap=0.40 匹配C++ v6.1
 %    8. 框架碰撞半径 30mm→50mm (匹配C++ FRM_TUBE_R+20)
 %    9. pall_tcp_so 单位修复 (mm/1000→m, 非*1000)
 %
 %  v15.0 修复清单:
 %    1. 修复makeRotRPY: URDF标准 Rz*Ry*Rx (之前是Rx*Ry*Rz → 机械臂渲染错误)
-%    2. 场景布局匹配C++ v6.0: FRM_D=650,FRAME_GAP=50,PAL_H=500,CONV_GAP=200
+%    2. 场景布局匹配C++ v6.1: FRM_D=650,FRAME_GAP=200,PAL_H=500,CONV_GAP=400,CONV_LEN=2000
 %    3. 箱子放置位读取C++实际IK求解TCP位置 (消除MATLAB独立计算的偏差)
 %    4. 完整环境碰撞体: 电箱(4)+传送带(3)+框架(4)+已放箱(12) 全可视化
 %    5. 码垛顺序: 里→外,左→右,下→上 与C++ FIFO匹配
@@ -65,6 +65,9 @@ function testS50_Palletizing_v15()
 
 close all; clc;
 tTotal = tic;
+
+% 添加辅助函数目录到路径 (helpers/ 包含所有提取的工具函数)
+addpath(fullfile(fileparts(mfilename('fullpath')), 'helpers'));
 
 %% ╔══════════════════════════════════════════════════════════════════════╗
 %% ║                    用户可配置参数区                                  ║
@@ -109,20 +112,20 @@ cfg_frame.widthX=1.20; cfg_frame.depthY=0.65; cfg_frame.height=2.00;  % 深度65
 cfg_frame.tubeR=0.030; cfg_frame.color=[0.25,0.55,0.85];
 cfg_pallet.widthX=1.00; cfg_pallet.depthY=0.60; cfg_pallet.heightZ=0.50;  % PAL_H=500mm
 cfg_pallet.color=[0.20,0.45,0.80];
-cfg_conv.lengthY=3.50; cfg_conv.widthX=0.55; cfg_conv.heightZ=0.75;
-cfg_conv.beltH=0.035; cfg_conv.rollerR=0.030; cfg_conv.nRollers=18;
+cfg_conv.lengthY=2.00; cfg_conv.widthX=0.55; cfg_conv.heightZ=0.75;  % v6.1: CONV_LEN=2000mm
+cfg_conv.beltH=0.035; cfg_conv.rollerR=0.030; cfg_conv.nRollers=10;  % v6.1: 缩短传送带减少滚筒
 cfg_conv.color=[0.30,0.30,0.32];
 cfg_box.lx=0.35; cfg_box.wy=0.28; cfg_box.hz=0.25;
 cfg_box.color=[0.65,0.45,0.25];
 cfg_nBoxes = 1;   % 箱子数目 (可调: 1=验证, 3=演示, 12=完整码垛)
 cfg_animTaskLimit = 0;  % 0=全部任务 (调试时可设为3限制前N个)
-cfg_frameGap = 0.05; cfg_convGap = 0.20;  % 匹配C++ CONV_GAP=200mm
-cfg_convOffY = -0.80; cfg_convBoxYStart = -1.50; cfg_convBoxYStep = 0.25;  % 箱子从Y=-2.30开始,12个均在传送带范围内
+cfg_frameGap = 0.20; cfg_convGap = 0.40;  % v6.1: FRAME_GAP=200mm, CONV_GAP=400mm
+cfg_convOffY = -0.80; cfg_convBoxYStart = -0.50; cfg_convBoxYStep = 0.25;  % v6.1: 传送带缩短, 箱子从Y=-1.30开始
 
 % --- 环境碰撞体 (由场景参数动态计算, 与C++ v6.0一致) ---
 % 注: 坐标为机器人基座坐标系(m), 下方初始化时根据scene参数计算
 ENV_COLL.boxR_m = 0.250;   % 已放置箱碰撞球半径
-ENV_COLL.toolR_m = 0.225;  % 工具碰撞球半径
+ENV_COLL.toolR_m = 0.120;  % v6.1: 工具球r=120mm@z=-400mm (toolIdx=1)
 ENV_COLL.cabR_m = 0.080;   % 电箱碰撞胶囊半径
 ENV_COLL.convR_m = 0.080;  % 传送带碰撞胶囊半径
 
@@ -206,36 +209,25 @@ ENV_COLL.frameTopBars = [  % [x1,y1,z1, x2,y2,z2, r]
     -frmHW, frmNY, frmZT, -frmHW, frmFY, frmZT, frmR;   % 左侧顶梁 (Y平行)
      frmHW, frmNY, frmZT,  frmHW, frmFY, frmZT, frmR;   % 右侧顶梁 (Y平行)
 ];
-% 框架面板碰撞 — 12根胶囊体横杆 (后/左/右各4层, r=150mm)
-% 注: Lozenge OBB测试不通过 (SO库碰撞检测无效), 改用4层横杆胶囊体
-wallR_m = 0.150;  % 横杆碰撞半径 150mm (m)
-nWallLevels = 4;
-wallZSpan = frmZT - frmZB;  % 框架高度 (m)
-wallZLevels = zeros(1, nWallLevels);
-for wli = 1:nWallLevels
-    wallZLevels(wli) = frmZB + wallZSpan * (2*wli - 1) / (2*nWallLevels);
-end
-% wallCapsules: [x1,y1,z1, x2,y2,z2, r] 每行一根 (m, 基坐标系)
-% 后面 (envId 5-8): 沿X方向
-% 左面 (envId 22-25): 沿Y方向
-% 右面 (envId 26-29): 沿Y方向
-ENV_COLL.wallCapsules = zeros(12, 7);
-ENV_COLL.wallCapsuleIds = zeros(12, 1);
-backIds  = [5, 6, 7, 8];
-leftIds  = [22, 23, 24, 25];
-rightIds = [26, 27, 28, 29];
-for wli = 1:nWallLevels
-    zi = wallZLevels(wli);
-    % 后面:
-    ENV_COLL.wallCapsules(wli, :)     = [-frmHW, frmFY, zi, frmHW, frmFY, zi, wallR_m];
-    ENV_COLL.wallCapsuleIds(wli)       = backIds(wli);
-    % 左面:
-    ENV_COLL.wallCapsules(4+wli, :)   = [-frmHW, frmNY, zi, -frmHW, frmFY, zi, wallR_m];
-    ENV_COLL.wallCapsuleIds(4+wli)     = leftIds(wli);
-    % 右面:
-    ENV_COLL.wallCapsules(8+wli, :)   = [frmHW, frmNY, zi, frmHW, frmFY, zi, wallR_m];
-    ENV_COLL.wallCapsuleIds(8+wli)     = rightIds(wli);
-end
+% 框架面板碰撞 — v6.1: Lozenge OBB 实体面板 (后/左/右各1面)
+% C++ 使用 addEnvObstacleLozengeInterface, MATLAB 仅用于可视化
+% 面板参数: 100mm厚, r=50mm, envId=5/6/7
+wallThick_m = 0.100;  % 面板厚度 100mm
+wallR_m = 0.050;      % Lozenge碰撞半径 50mm
+% wallPanels: [cx, cy, cz, wx, wy, wz] 中心位置 + 半尺寸 (m, 基坐标系)
+% 后面 (envId 5): 1200×100×2000mm @ Y=frmFY
+% 左面 (envId 6): 100×650×2000mm @ X=-frmHW
+% 右面 (envId 7): 100×650×2000mm @ X=+frmHW
+wallCZ = (frmZB + frmZT) / 2;
+wallHZ = (frmZT - frmZB) / 2;
+ENV_COLL.wallPanels = struct();
+ENV_COLL.wallPanels.back  = struct('cx',0,      'cy',frmFY, 'cz',wallCZ, ...
+    'hwx',frmHW, 'hwy',wallThick_m/2, 'hwz',wallHZ, 'envId',5);
+ENV_COLL.wallPanels.left  = struct('cx',-frmHW, 'cy',frmCY, 'cz',wallCZ, ...
+    'hwx',wallThick_m/2, 'hwy',frame.depthY/2, 'hwz',wallHZ, 'envId',6);
+ENV_COLL.wallPanels.right = struct('cx', frmHW, 'cy',frmCY, 'cz',wallCZ, ...
+    'hwx',wallThick_m/2, 'hwy',frame.depthY/2, 'hwz',wallHZ, 'envId',7);
+ENV_COLL.wallR_m = wallR_m;
 % 电箱碰撞体 (4条边, 基坐标系)
 cabHW = cab.widthX/2; cabHD = cab.depthY/2;
 cabZB = frmZB; cabZT = -0.08;  % 电箱顶略低于机器人基座
@@ -258,7 +250,7 @@ fprintf('  ENV_COLL: frame(4col+2topY+3wallLoz)=[%.3f,%.3f]->[%.3f,%.3f] cab(4) 
 
 fprintf('\n');
 fprintf([char(9556) repmat(char(9552),1,72) char(9559) '\n']);
-fprintf([char(9553) '  HR_S50-2000 v16.0 -- Single Box + Wall Panels 3D Sim               ' char(9553) '\n']);
+fprintf([char(9553) '  HR_S50-2000 v16.1 -- Single Box + Lozenge Wall + Tool Coll        ' char(9553) '\n']);
 fprintf([char(9562) repmat(char(9552),1,72) char(9565) '\n\n']);
 fprintf('Font: %s | Headless: %d | nBoxes: %d\n', CJK_FONT, isHeadless, nBoxes);
 fprintf('Collision .so: %s\n', SO_PATH);
@@ -404,25 +396,29 @@ try
         fprintf('    传送带 envId=%d: %s\n', envId, soStat{(result==0)+1});
     end
     
-    % 框架面板 — 12根胶囊体 (envId 5-8, 22-25, 26-29)
-    wallNames = {'后面','后面','后面','后面', '左面','左面','左面','左面', '右面','右面','右面','右面'};
-    for fi = 1:size(ENV_COLL.wallCapsules, 1)
-        wc = ENV_COLL.wallCapsules(fi, :);
-        eid = int64(ENV_COLL.wallCapsuleIds(fi));
-        p1_mm = wc(1:3) * 1000;
-        p2_mm = wc(4:6) * 1000;
-        r_mm = wc(7) * 1000;
-        result = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', ...
-            eid, p1_mm, p2_mm, r_mm);
+    % 框架面板 — v6.1 Lozenge OBB (envId 5,6,7)
+    wallPanelNames = {'后面', '左面', '右面'};
+    wallPanelFields = {'back', 'left', 'right'};
+    for fi = 1:3
+        wp = ENV_COLL.wallPanels.(wallPanelFields{fi});
+        % Lozenge参数: ref2local=[rx,ry,rz(deg),tx,ty,tz(mm)], offset=[0,0,0], xLen,yLen,zLen,r (mm)
+        ref2local = [0, 0, 0, wp.cx*1000, wp.cy*1000, wp.cz*1000];
+        offset_mm = [0, 0, 0];
+        xLen_mm = wp.hwx * 2 * 1000;
+        yLen_mm = wp.hwy * 2 * 1000;
+        zLen_mm = wp.hwz * 2 * 1000;
+        r_mm = ENV_COLL.wallR_m * 1000;
+        eid = int64(wp.envId);
+        result = calllib('libHRCInterface', 'addEnvObstacleLozengeInterface', ...
+            eid, ref2local, offset_mm, xLen_mm, yLen_mm, zLen_mm, r_mm);
         envRegOK = envRegOK + (result == 0);
-        fprintf('    %s横杆 envId=%d Z=%.0f r=%.0f: %s\n', ...
-            wallNames{fi}, ENV_COLL.wallCapsuleIds(fi), wc(3)*1000, r_mm, soStat{(result==0)+1});
+        fprintf('    %s面板 envId=%d Lozenge(%dx%dx%d r=%.0f): %s\n', ...
+            wallPanelNames{fi}, wp.envId, xLen_mm, yLen_mm, zLen_mm, r_mm, soStat{(result==0)+1});
     end
     
     % 验证障碍物数量
     expectedTotal = size(ENV_COLL.frameColumns,1)+size(ENV_COLL.frameTopBars,1)+ ...
-        size(ENV_COLL.cabinet,1)+size(ENV_COLL.conveyor,1)+ ...
-        size(ENV_COLL.wallCapsules,1);  % 12根横杆胶囊体
+        size(ENV_COLL.cabinet,1)+size(ENV_COLL.conveyor,1)+3;  % 3 Lozenge面板
     envCount = calllib('libHRCInterface', 'getEnvObstacleCountInterface');
     fprintf('    注册成功: %d/%d, SO报告障碍物: %d\n', envRegOK, expectedTotal, envCount);
     
@@ -1007,12 +1003,24 @@ for ci = 1:size(ENV_COLL.conveyor, 1)
     p2 = [cv(4), cv(5), cv(6)] + [baseX, baseY, baseZ];
     drawCylinder3D(ax3a, p1, p2, cv(7), [0.5 0.5 0.5], 0.12);
 end
-% 环境碰撞体: 框架墙面板 — 12根胶囊横杆 (绿色半透明)
-for fi = 1:size(ENV_COLL.wallCapsules, 1)
-    wc = ENV_COLL.wallCapsules(fi, :);
-    p1_w = wc(1:3) + [baseX, baseY, baseZ];
-    p2_w = wc(4:6) + [baseX, baseY, baseZ];
-    drawCylinder3D(ax3a, p1_w, p2_w, wc(7), [0.3 0.8 0.3], 0.08);
+% 环境碰撞体: 框架面板 — v6.1 Lozenge OBB (绿色半透明矩形)
+panelFields = {'back', 'left', 'right'};
+for fi = 1:3
+    wp = ENV_COLL.wallPanels.(panelFields{fi});
+    cx = wp.cx + baseX; cy = wp.cy + baseY; cz = wp.cz + baseZ;
+    vx = [-wp.hwx, wp.hwx, wp.hwx, -wp.hwx] + cx;
+    vy = [-wp.hwy, -wp.hwy, wp.hwy, wp.hwy] + cy;
+    vz_lo = cz - wp.hwz; vz_hi = cz + wp.hwz;
+    fill3(ax3a, vx, vy, ones(1,4)*vz_lo, [0.3 0.8 0.3], 'FaceAlpha',0.10, 'EdgeColor','none');
+    fill3(ax3a, vx, vy, ones(1,4)*vz_hi, [0.3 0.8 0.3], 'FaceAlpha',0.10, 'EdgeColor','none');
+    % 4 side faces of the panel box
+    for si = 1:4
+        ni = mod(si, 4) + 1;
+        sx = [vx(si), vx(ni), vx(ni), vx(si)];
+        sy = [vy(si), vy(ni), vy(ni), vy(si)];
+        sz = [vz_lo, vz_lo, vz_hi, vz_hi];
+        fill3(ax3a, sx, sy, sz, [0.3 0.8 0.3], 'FaceAlpha',0.10, 'EdgeColor',[0.3 0.8 0.3],'EdgeAlpha',0.3);
+    end
 end
 
 % 显示全部码垛位碰撞球 (蓝色半透明) — 使用C++实际TCP位置
@@ -1169,12 +1177,21 @@ for vi = 1:min(4, length(keyPoses))
         p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
         drawCylinder3D(ax, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.08);
     end
-    % 环境碰撞体: 框架墙面板 — 12根胶囊横杆 (绿色半透明)
-    for fi = 1:size(ENV_COLL.wallCapsules, 1)
-        wc = ENV_COLL.wallCapsules(fi, :);
-        p1_w = wc(1:3) + [baseX, baseY, baseZ];
-        p2_w = wc(4:6) + [baseX, baseY, baseZ];
-        drawCylinder3D(ax, p1_w, p2_w, wc(7), [0.3 0.8 0.3], 0.06);
+    % 环境碰撞体: 框架墙面板 — v6.1 Lozenge面板 (绿色半透明)
+    panelFields = {'back', 'left', 'right'};
+    for fi = 1:3
+        wp = ENV_COLL.wallPanels.(panelFields{fi});
+        cx = wp.cx + baseX; cy = wp.cy + baseY; cz = wp.cz + baseZ;
+        vx = [-wp.hwx, wp.hwx, wp.hwx, -wp.hwx] + cx;
+        vy = [-wp.hwy, -wp.hwy, wp.hwy, wp.hwy] + cy;
+        vz_lo = cz - wp.hwz; vz_hi = cz + wp.hwz;
+        for si = 1:4
+            ni = mod(si, 4) + 1;
+            sx = [vx(si), vx(ni), vx(ni), vx(si)];
+            sy = [vy(si), vy(ni), vy(ni), vy(si)];
+            sz = [vz_lo, vz_lo, vz_hi, vz_hi];
+            fill3(ax, sx, sy, sz, [0.3 0.8 0.3], 'FaceAlpha',0.10, 'EdgeColor',[0.3 0.8 0.3],'EdgeAlpha',0.3);
+        end
     end
     
     q_rad = deg2rad(pall_keyQ(ti,:));
@@ -1404,12 +1421,21 @@ for eci = 1:size(ENV_COLL.conveyor, 1)
     p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
     drawCylinder3D(ax7a, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.06);
 end
-% 环境碰撞体: 框架墙面板 — 12根胶囊横杆 (绿色半透明)
-for fi = 1:size(ENV_COLL.wallCapsules, 1)
-    wc = ENV_COLL.wallCapsules(fi, :);
-    p1_w = wc(1:3) + [baseX, baseY, baseZ];
-    p2_w = wc(4:6) + [baseX, baseY, baseZ];
-    drawCylinder3D(ax7a, p1_w, p2_w, wc(7), [0.3 0.8 0.3], 0.06);
+% 环境碰撞体: 框架墙面板 — v6.1 Lozenge面板 (绿色半透明)
+panelFields = {'back', 'left', 'right'};
+for fi = 1:3
+    wp = ENV_COLL.wallPanels.(panelFields{fi});
+    cx = wp.cx + baseX; cy = wp.cy + baseY; cz = wp.cz + baseZ;
+    vx = [-wp.hwx, wp.hwx, wp.hwx, -wp.hwx] + cx;
+    vy = [-wp.hwy, -wp.hwy, wp.hwy, wp.hwy] + cy;
+    vz_lo = cz - wp.hwz; vz_hi = cz + wp.hwz;
+    for si = 1:4
+        ni = mod(si, 4) + 1;
+        sx = [vx(si), vx(ni), vx(ni), vx(si)];
+        sy = [vy(si), vy(ni), vy(ni), vy(si)];
+        sz = [vz_lo, vz_lo, vz_hi, vz_hi];
+        fill3(ax7a, sx, sy, sz, [0.3 0.8 0.3], 'FaceAlpha',0.10, 'EdgeColor',[0.3 0.8 0.3],'EdgeAlpha',0.3);
+    end
 end
 
 xlabel(ax7a,'X','FontSize',10,'FontName',CJK_FONT);
@@ -1494,12 +1520,21 @@ for eci = 1:size(ENV_COLL.conveyor, 1)
     p2_w = [cv(4)+baseX, cv(5)+baseY, cv(6)+baseZ];
     drawCylinder3D(ax3d, p1_w, p2_w, cv(7), [0.5 0.5 0.5], 0.08);
 end
-% 环境碰撞体: 框架墙面板 — 12根胶囊横杆 (绿色半透明)
-for fi = 1:size(ENV_COLL.wallCapsules, 1)
-    wc = ENV_COLL.wallCapsules(fi, :);
-    p1_w = wc(1:3) + [baseX, baseY, baseZ];
-    p2_w = wc(4:6) + [baseX, baseY, baseZ];
-    drawCylinder3D(ax3d, p1_w, p2_w, wc(7), [0.3 0.8 0.3], 0.06);
+% 环境碰撞体: 框架墙面板 — v6.1 Lozenge面板 (绿色半透明)
+panelFields = {'back', 'left', 'right'};
+for fi = 1:3
+    wp = ENV_COLL.wallPanels.(panelFields{fi});
+    cx = wp.cx + baseX; cy = wp.cy + baseY; cz = wp.cz + baseZ;
+    vx = [-wp.hwx, wp.hwx, wp.hwx, -wp.hwx] + cx;
+    vy = [-wp.hwy, -wp.hwy, wp.hwy, wp.hwy] + cy;
+    vz_lo = cz - wp.hwz; vz_hi = cz + wp.hwz;
+    for si = 1:4
+        ni = mod(si, 4) + 1;
+        sx = [vx(si), vx(ni), vx(ni), vx(si)];
+        sy = [vy(si), vy(ni), vy(ni), vy(si)];
+        sz = [vz_lo, vz_lo, vz_hi, vz_hi];
+        fill3(ax3d, sx, sy, sz, [0.3 0.8 0.3], 'FaceAlpha',0.10, 'EdgeColor',[0.3 0.8 0.3],'EdgeAlpha',0.3);
+    end
 end
 
 bz_center = convSurfZ + box.hz/2;
@@ -2040,576 +2075,7 @@ if isHeadless, close all; end
 fprintf('\nv15.0 complete! (%.1f s)\n', totalElapsed_s);
 end % testS50_Palletizing_v15
 
-
 %% ═══════════════════════════════════════════════════════════════════════
-%%                         辅助函数
+%% 辅助函数已提取到 helpers/ 目录 (33个独立.m文件)
+%% 参见: ArmCollisionModel/helpers/README.m
 %% ═══════════════════════════════════════════════════════════════════════
-
-function result = ifelse(cond, trueVal, falseVal)
-    if cond, result = trueVal; else, result = falseVal; end
-end
-
-function T_all = urdfFK(JOINTS, q_rad)
-    % 返回8个变换矩阵: T{1}=base(eye4), T{2..7}=链路1..6, T{8}=TCP末端
-    % elfin_end_joint: xyz=[0,0,0.1345] rpy=[0,0,pi] (固定关节, 无旋转自由度)
-    T_all = cell(8,1); T_all{1} = eye(4);
-    for i = 1:6
-        xyz = JOINTS(i,1:3); rpy = JOINTS(i,4:6);
-        T_all{i+1} = T_all{i} * makeTrans(xyz) * makeRotRPY(rpy) * makeRotZ(q_rad(i));
-    end
-    % 添加末端关节: elfin_end_joint (固定偏移 134.5mm + 绕Z旋转180°)
-    T_all{8} = T_all{7} * makeTrans([0, 0, 0.1345]) * makeRotRPY([0, 0, pi]);
-end
-
-function joints_m = fk2Skeleton(q_deg)
-    % ⚠ DEPRECATED: 旧压缩FK2骨架模型, v1.0.0后尺度不正确!
-    %   仅在SO库未加载时作为回退使用. 正常情况下使用 soFK2Skeleton().
-    %   旧模型总臂长~1.175m, 真实DH总臂长~1.842m (差异~57%)
-    H = 0.220; L1 = 0.380; L2 = 0.420; L3 = 0.155;
-    q1 = q_deg(1); q2 = q_deg(2); q3 = q_deg(3); q5 = q_deg(5);
-    arm_dir = [cosd(q1), sind(q1), 0];
-    a2 = -q2; a23 = -q2 + q3; a235 = -q2 + q3 + q5;
-    base     = [0, 0, 0];
-    shoulder = [0, 0, H];
-    elbow    = shoulder + L1 * [sind(a2)*arm_dir(1), sind(a2)*arm_dir(2), cosd(a2)];
-    wrist    = elbow    + L2 * [sind(a23)*arm_dir(1), sind(a23)*arm_dir(2), cosd(a23)];
-    tcp_pos  = wrist    + L3 * [sind(a235)*arm_dir(1), sind(a235)*arm_dir(2), cosd(a235)];
-    joints_m = [base; shoulder; elbow; wrist; tcp_pos];
-end
-
-function [joints_m, bodies] = soFK2Skeleton(q_deg)
-    % soFK2Skeleton - 使用SO库获取真实DH碰撞体骨架 (v1.0.0)
-    %   调用 getUIInfoMationInterface 获取碰撞体全局位置 (mm)
-    %   调用 forwardKinematics2 获取TCP (mm)
-    %   返回:
-    %     joints_m: 5x3 骨架关键点 (m, 机器人基座坐标系)
-    %               [BaseBottom; BaseTop; Elbow; Wrist; TCP]
-    %     bodies: 1x5 struct array, 碰撞体几何
-    %             .type: 'capsule'|'ball'|'none'
-    %             .p1/.p2: 端点 (m, 基座坐标系)
-    %             .center: 中心 (m)
-    %             .radius_m: 碰撞半径 (m)
-    
-    % update() 设置SO内部状态 (getUIInfo依赖此状态)
-    vel = zeros(1,6); acc = zeros(1,6);
-    calllib('libHRCInterface', 'updateACAreaConstrainPackageInterface', q_deg, vel, acc);
-    
-    % 获取碰撞体全局位置 (mm, FK2坐标系)
-    collIdx = int32(zeros(1,7)); collType = int32(zeros(1,7));
-    dataList = zeros(1,63); radiusList = zeros(1,7);
-    [~, collType, dataList, radiusList] = calllib('libHRCInterface', ...
-        'getUIInfoMationInterface', collIdx, collType, dataList, radiusList);
-    dataM = reshape(dataList, 9, 7)';  % 7x9 matrix
-    
-    % FK2 获取TCP (mm)
-    tcpS = libstruct('MC_COORD_REF');
-    tcpS.X=0; tcpS.Y=0; tcpS.Z=0; tcpS.A=0; tcpS.B=0; tcpS.C=0;
-    [~, ~, tcpS] = calllib('libHRCInterface', 'forwardKinematics2', q_deg, tcpS);
-    tcp_m = [tcpS.X, tcpS.Y, tcpS.Z] / 1000;  % mm → m
-    
-    % 提取5个碰撞体几何 (Base/LowerArm/Elbow/UpperArm/Wrist)
-    bodies = struct('type', cell(1,5), 'p1', cell(1,5), 'p2', cell(1,5), ...
-                    'center', cell(1,5), 'radius_m', cell(1,5));
-    for bi = 1:5
-        d = dataM(bi,:);
-        bodies(bi).radius_m = radiusList(bi) / 1000;
-        if collType(bi) == 2  % Capsule
-            bodies(bi).type = 'capsule';
-            bodies(bi).p1 = [d(1), d(2), d(3)] / 1000;
-            bodies(bi).p2 = [d(4), d(5), d(6)] / 1000;
-            bodies(bi).center = (bodies(bi).p1 + bodies(bi).p2) / 2;
-        elseif collType(bi) == 1  % Ball
-            bodies(bi).type = 'ball';
-            bodies(bi).center = [d(1), d(2), d(3)] / 1000;
-            bodies(bi).p1 = bodies(bi).center;
-            bodies(bi).p2 = bodies(bi).center;
-        else
-            bodies(bi).type = 'none';
-            bodies(bi).p1 = [0 0 0]; bodies(bi).p2 = [0 0 0];
-            bodies(bi).center = [0 0 0];
-        end
-    end
-    
-    % 骨架关键点: 从碰撞体端点提取
-    %   BaseBottom = body1.p1, BaseTop = body1.p2
-    %   Elbow = body2.p2 (大臂远端), Wrist = body3.p2 (小臂远端)
-    %   TCP = FK2
-    joints_m = [
-        bodies(1).p1;       % 基座底部
-        bodies(1).p2;       % 基座顶部 / 肩
-        bodies(2).p2;       % 大臂远端 / 肘
-        bodies(3).p2;       % 小臂远端 / 腕
-        tcp_m;              % TCP (FK2)
-    ];
-end
-
-function renderSTLRobot(ax, meshData, JOINTS, q_rad, colors, alpha)
-    hold(ax,'on');
-    T_all = urdfFK(JOINTS, q_rad);
-    for li = 1:7
-        V = meshData{li}.V; F = meshData{li}.F;
-        T = T_all{li}; R = T(1:3,1:3); t = T(1:3,4);
-        V_w = (R * V' + t)';
-        patch(ax,'Faces',F,'Vertices',V_w,'FaceColor',colors{li},'EdgeColor','none',...
-            'FaceAlpha',alpha,'FaceLighting','gouraud','AmbientStrength',0.4,...
-            'DiffuseStrength',0.7,'SpecularStrength',0.3);
-    end
-    tcp = T_all{8}(1:3,4)';  % 使用末端TCP (含elfin_end_joint偏移)
-    plot3(ax,tcp(1),tcp(2),tcp(3),'rp','MarkerSize',10,'MarkerFaceColor','r');
-    jpts = zeros(7,3);
-    for i=1:7, jpts(i,:) = T_all{i}(1:3,4)'; end
-    plot3(ax,jpts(:,1),jpts(:,2),jpts(:,3),'k-o','MarkerSize',4,'MarkerFaceColor',[0.3 0.3 0.3]);
-    axis(ax,'equal'); grid(ax,'on'); camlight(ax,'headlight'); lighting(ax,'gouraud');
-end
-
-function renderSTLRobotOnBase(ax, meshData, JOINTS, q_rad, colors, alpha, Tbase)
-    hold(ax,'on');
-    T_all = urdfFK(JOINTS, q_rad);
-    for li = 1:7
-        V = meshData{li}.V; F = meshData{li}.F;
-        T = Tbase * T_all{li}; R = T(1:3,1:3); t = T(1:3,4);
-        V_w = (R * V' + t)';
-        patch(ax,'Faces',F,'Vertices',V_w,'FaceColor',colors{li},'EdgeColor','none',...
-            'FaceAlpha',alpha,'FaceLighting','gouraud','AmbientStrength',0.4,...
-            'DiffuseStrength',0.7,'SpecularStrength',0.3);
-    end
-    tw = Tbase * T_all{8};  % 使用TCP末端 (含elfin_end_joint 134.5mm偏移)
-    plot3(ax,tw(1,4),tw(2,4),tw(3,4),'rp','MarkerSize',10,'MarkerFaceColor','r');
-end
-
-function handles = renderSTLRobotHandles(ax, meshData, JOINTS, q_rad, colors, alpha, Tbase)
-    T_all = urdfFK(JOINTS, q_rad);
-    handles = gobjects(9,1);
-    for li = 1:7
-        V = meshData{li}.V; F = meshData{li}.F;
-        T = Tbase * T_all{li}; R = T(1:3,1:3); t = T(1:3,4);
-        V_w = (R * V' + t)';
-        handles(li) = patch(ax,'Faces',F,'Vertices',V_w,'FaceColor',colors{li},...
-            'EdgeColor','none','FaceAlpha',alpha,'FaceLighting','gouraud',...
-            'AmbientStrength',0.4,'DiffuseStrength',0.7,'SpecularStrength',0.3);
-    end
-    tw = Tbase * T_all{8};  % 使用TCP末端 (含elfin_end_joint 134.5mm偏移)
-    handles(8) = plot3(ax,tw(1,4),tw(2,4),tw(3,4),'rp','MarkerSize',10,'MarkerFaceColor','r');
-    jpts = zeros(7,3);
-    for i=1:7, jw = Tbase*T_all{i}; jpts(i,:) = jw(1:3,4)'; end
-    handles(9) = plot3(ax,jpts(:,1),jpts(:,2),jpts(:,3),'k-o','MarkerSize',4,...
-        'MarkerFaceColor',[0.3 0.3 0.3],'LineWidth',1);
-end
-
-%% 碰撞包络模型渲染 (v16.0: 使用SO getUIInfoMation真实碰撞体位置)
-function [handles, tcp_world] = renderCapsuleRobotHandles(ax, q_deg, baseOffset, ~)
-    % v16.0: 渲染真实碰撞包络 (SO getUIInfoMation) + TCP (FK2)
-    % 当SO库可用时使用真实碰撞体位置; 否则回退到fk2Skeleton(近似, 弃用)
-    % 输入: q_deg=关节角(deg), baseOffset=[bx,by,bz] 基座世界坐标(m)
-    % 输出: handles=图形句柄, tcp_world=TCP世界坐标 [x,y,z](m)
-    capsuleColors = {[0.4 0.4 0.45], [0.2 0.4 0.8], [0.2 0.7 0.3], ...
-                     [0.9 0.5 0.1], [0.6 0.2 0.8]};
-    capsuleAlpha = 0.45;
-    bx = baseOffset(1); by = baseOffset(2); bz = baseOffset(3);
-    
-    if libisloaded('libHRCInterface')
-        % ★ SO库可用: 使用getUIInfoMation获取真实碰撞体位置
-        [joints, bodies] = soFK2Skeleton(q_deg);
-        handles = gobjects(7,1);  % 5碰撞体 + TCP标记 + 骨架线
-        for bi = 1:5
-            if strcmp(bodies(bi).type, 'capsule')
-                p1 = bodies(bi).p1 + [bx, by, bz];
-                p2 = bodies(bi).p2 + [bx, by, bz];
-                handles(bi) = drawCapsule3D_h(ax, p1, p2, bodies(bi).radius_m, capsuleColors{bi}, capsuleAlpha);
-            elseif strcmp(bodies(bi).type, 'ball')
-                c = bodies(bi).center + [bx, by, bz];
-                [Xs,Ys,Zs] = sphere(8);
-                handles(bi) = surf(ax, Xs*bodies(bi).radius_m+c(1), ...
-                    Ys*bodies(bi).radius_m+c(2), Zs*bodies(bi).radius_m+c(3), ...
-                    'FaceColor', capsuleColors{bi}, 'FaceAlpha', capsuleAlpha, 'EdgeColor', 'none');
-            end
-        end
-        tcp_world = joints(5,:) + [bx, by, bz];
-        handles(6) = plot3(ax, tcp_world(1), tcp_world(2), tcp_world(3),...
-            'rp','MarkerSize',14,'MarkerFaceColor','r','LineWidth',1.5);
-        skel_w = joints + [bx, by, bz];
-        handles(7) = plot3(ax, skel_w(:,1), skel_w(:,2), skel_w(:,3), 'k--o',...
-            'MarkerSize',5,'MarkerFaceColor',[0.3 0.3 0.3],'LineWidth',1.2);
-    else
-        % 回退: 旧fk2Skeleton近似 (⚠ v1.0.0后尺度不正确, 仅用于无SO场景)
-        capsuleR = [0.160, 0.140, 0.120, 0.100];
-        joints = fk2Skeleton(q_deg);
-        joints_w = joints + [bx, by, bz];
-        handles = gobjects(6,1);
-        for li = 1:4
-            handles(li) = drawCapsule3D_h(ax, joints_w(li,:), joints_w(li+1,:), capsuleR(li), capsuleColors{li}, capsuleAlpha);
-        end
-        tcp_world = joints_w(5,:);
-        handles(5) = plot3(ax, tcp_world(1), tcp_world(2), tcp_world(3),...
-            'rp','MarkerSize',14,'MarkerFaceColor','r','LineWidth',1.5);
-        handles(6) = plot3(ax, joints_w(:,1), joints_w(:,2), joints_w(:,3), 'k--o',...
-            'MarkerSize',5,'MarkerFaceColor',[0.3 0.3 0.3],'LineWidth',1.2);
-    end
-end
-
-function h = drawCapsule3D_h(ax, p1, p2, r, col, alpha)
-    % 绘制胶囊体并返回hggroup句柄 (删除句柄即清除所有子对象)
-    h = hggroup('Parent', ax);
-    v = p2-p1; L = norm(v);
-    if L < 1e-6, return; end
-    [X,Y,Z] = cylinder(r, 12);
-    Z = Z*L;
-    dd=[0;0;1]; td=v(:)/L;
-    cp = cross(dd,td);
-    if norm(cp) > 1e-6
-        RR=axang2r_local([cp'/norm(cp), acos(max(-1,min(1,dot(dd,td))))]);
-    else
-        RR=eye(3); if dot(dd,td)<0, RR(3,3)=-1; RR(1,1)=-1; end
-    end
-    for i=1:numel(X)
-        pt=RR*[X(i);Y(i);Z(i)]; X(i)=pt(1)+p1(1); Y(i)=pt(2)+p1(2); Z(i)=pt(3)+p1(3);
-    end
-    surf(X, Y, Z, 'Parent',h, 'FaceColor',col,'FaceAlpha',alpha,'EdgeColor','none',...
-        'FaceLighting','gouraud','AmbientStrength',0.4);
-    [Xs,Ys,Zs]=sphere(8);
-    surf(Xs*r+p1(1),Ys*r+p1(2),Zs*r+p1(3),'Parent',h,'FaceColor',col,'FaceAlpha',alpha,'EdgeColor','none');
-    surf(Xs*r+p2(1),Ys*r+p2(2),Zs*r+p2(3),'Parent',h,'FaceColor',col,'FaceAlpha',alpha,'EdgeColor','none');
-end
-
-function drawCapsule3D(ax, p1, p2, r, col, alpha)
-    v = p2-p1; L = norm(v);
-    if L < 1e-6, return; end
-    [X,Y,Z] = cylinder(r, 12);
-    Z = Z*L;
-    dd=[0;0;1]; td=v(:)/L;
-    cp = cross(dd,td);
-    if norm(cp) > 1e-6
-        RR=axang2r_local([cp'/norm(cp), acos(max(-1,min(1,dot(dd,td))))]);
-    else
-        RR=eye(3); if dot(dd,td)<0, RR(3,3)=-1; RR(1,1)=-1; end
-    end
-    for i=1:numel(X)
-        pt=RR*[X(i);Y(i);Z(i)]; X(i)=pt(1)+p1(1); Y(i)=pt(2)+p1(2); Z(i)=pt(3)+p1(3);
-    end
-    surf(ax,X,Y,Z,'FaceColor',col,'FaceAlpha',alpha,'EdgeColor','none');
-    [Xs,Ys,Zs]=sphere(8);
-    surf(ax,Xs*r+p1(1),Ys*r+p1(2),Zs*r+p1(3),'FaceColor',col,'FaceAlpha',alpha,'EdgeColor','none');
-    surf(ax,Xs*r+p2(1),Ys*r+p2(2),Zs*r+p2(3),'FaceColor',col,'FaceAlpha',alpha,'EdgeColor','none');
-end
-
-function drawCylinder3D(ax, p1, p2, r, col, alpha)
-    % 绘制碰撞体圆柱 (无两端半球端盖, 避免端点处产生突兀球形)
-    v = p2-p1; L = norm(v);
-    if L < 1e-6, return; end
-    [X,Y,Z] = cylinder(r, 16);
-    Z = Z*L;
-    dd=[0;0;1]; td=v(:)/L;
-    cp = cross(dd,td);
-    if norm(cp) > 1e-6
-        RR=axang2r_local([cp'/norm(cp), acos(max(-1,min(1,dot(dd,td))))]);
-    else
-        RR=eye(3); if dot(dd,td)<0, RR(3,3)=-1; RR(1,1)=-1; end
-    end
-    for i=1:numel(X)
-        pt=RR*[X(i);Y(i);Z(i)]; X(i)=pt(1)+p1(1); Y(i)=pt(2)+p1(2); Z(i)=pt(3)+p1(3);
-    end
-    surf(ax,X,Y,Z,'FaceColor',col,'FaceAlpha',alpha,'EdgeColor','none',...
-        'FaceLighting','gouraud','AmbientStrength',0.4);
-end
-
-function drawWallPanel3D(ax, p1, p2, r, col, alpha)
-    % 绘制墙面板碰撞体为扁平半透明矩形面板 (替代厚圆柱)
-    % 消除端面圆形伪影, 不遮蔽框架立柱, 更准确表达墙面碰撞近似
-    % 面板在包含胶囊中心线和Z轴的垂直平面内:
-    %   宽度 = 胶囊长度 (p1→p2), 高度 = 2*r (胶囊直径=碰撞覆盖范围)
-    % p1, p2: 胶囊中心线端点 (世界坐标, m)
-    % r: 胶囊半径 (面板半高, m)
-    x = [p1(1), p2(1), p2(1), p1(1)];
-    y = [p1(2), p2(2), p2(2), p1(2)];
-    z = [p1(3)-r, p2(3)-r, p2(3)+r, p1(3)+r];
-    patch(ax, 'XData', x, 'YData', y, 'ZData', z, ...
-        'FaceColor', col, 'FaceAlpha', alpha, ...
-        'EdgeColor', col, 'EdgeAlpha', min(alpha*2.5, 0.5), 'LineWidth', 0.5);
-end
-
-function drawOBBWall3D(ax, center, dims, col, alpha)
-    % 绘制 Lozenge OBB 墙面板 (退化为扁平矩形面片)
-    % center: 面板中心 (世界坐标, m)
-    % dims: [xLen, yLen, zLen] (m) — 最薄轴自动作为法线
-    hx = dims(1)/2; hy = dims(2)/2; hz = dims(3)/2;
-    [~, thinAxis] = min(dims);
-    switch thinAxis
-        case 1  % YZ面板 (薄X) — 左/右墙
-            x = center(1) * [1 1 1 1];
-            y = center(2) + [-hy, hy, hy, -hy];
-            z = center(3) + [-hz, -hz, hz, hz];
-        case 2  % XZ面板 (薄Y) — 后墙
-            x = center(1) + [-hx, hx, hx, -hx];
-            y = center(2) * [1 1 1 1];
-            z = center(3) + [-hz, -hz, hz, hz];
-        case 3  % XY面板 (薄Z) — 地板/天花板
-            x = center(1) + [-hx, hx, hx, -hx];
-            y = center(2) + [-hy, hy, hy, -hy];
-            z = center(3) * [1 1 1 1];
-    end
-    patch(ax, 'XData', x, 'YData', y, 'ZData', z, ...
-        'FaceColor', col, 'FaceAlpha', alpha, ...
-        'EdgeColor', col*0.7, 'EdgeAlpha', min(alpha*3, 0.4), 'LineWidth', 0.5);
-end
-
-function drawInfoPanel_v15(ax, taskIdx, nTotal, q_deg, vel, tcp, dist, time_s, cjkFont, dColor, soActive, carrying, nPlaced, nBoxTotal, envColl)
-    rectangle(ax,'Position',[0 0 1 1],'FaceColor',[0.97 0.97 0.99],...
-        'EdgeColor',[0.5 0.5 0.7],'LineWidth',2,'Curvature',0.02);
-    yP = 0.96;
-    text(ax,0.5,yP,'v15 ENV COLLISION','FontSize',14,'FontWeight','bold',...
-        'HorizontalAlignment','center','Color',[0.1 0.1 0.3],'FontName',cjkFont);
-    yP=yP-0.035;
-    if soActive, srcStr = 'libHRCInterface.so (实时)'; else, srcStr = 'C++ (预计算)'; end
-    text(ax,0.5,yP,srcStr,'FontSize',9,'FontWeight','bold','HorizontalAlignment','center',...
-        'Color',[0.3 0.3 0.5],'FontName',cjkFont);
-    
-    yP=yP-0.05;
-    progW = max(0.01, 0.86*(taskIdx/nTotal));
-    rectangle(ax,'Position',[0.05 yP-0.03 0.90 0.04],'FaceColor',[0.15 0.35 0.65],'EdgeColor','none','Curvature',0.3);
-    rectangle(ax,'Position',[0.07 yP-0.025 progW 0.03],'FaceColor',[0.3 0.75 0.45],'EdgeColor','none','Curvature',0.3);
-    text(ax,0.5,yP-0.01,sprintf('Task %d / %d  [FIFO]',taskIdx,nTotal),...
-        'FontSize',12,'FontWeight','bold','HorizontalAlignment','center','Color','w','FontName',cjkFont);
-    
-    % Self-distance
-    yP=yP-0.06;
-    rectangle(ax,'Position',[0.05 yP-0.035 0.90 0.05],'FaceColor',[1 1 1],...
-        'EdgeColor',dColor,'LineWidth',3,'Curvature',0.2);
-    text(ax,0.5,yP-0.01,sprintf('Self: %.1f mm', dist),...
-        'FontSize',14,'FontWeight','bold','HorizontalAlignment','center','Color',dColor,'FontName',cjkFont);
-    
-    % Env collision
-    yP=yP-0.06;
-    if envColl==0, ec=[0 0.6 0.2]; ecStr='CLEAR'; else, ec=[0.9 0.1 0.1]; ecStr=sprintf('%d',envColl); end
-    text(ax,0.08,yP,sprintf('Env: %s', ecStr),'FontSize',12,'FontWeight','bold','Color',ec,'FontName',cjkFont);
-    
-    % Carrying / Placed status
-    yP=yP-0.035;
-    if carrying
-        text(ax,0.08,yP,sprintf('搬运中 | 已放置: %d/%d', nPlaced, nBoxTotal),...
-            'FontSize',10,'FontWeight','bold','Color',[0.8 0.5 0],'FontName',cjkFont);
-    else
-        text(ax,0.08,yP,sprintf('空夹 | 已放置: %d/%d', nPlaced, nBoxTotal),...
-            'FontSize',10,'FontWeight','bold','Color',[0.4 0.4 0.4],'FontName',cjkFont);
-    end
-    
-    % TCP
-    yP=yP-0.04;
-    text(ax,0.05,yP,'TCP (mm)','FontSize',11,'FontWeight','bold','Color',[0.2 0.2 0.5],'FontName',cjkFont);
-    yP=yP-0.025;
-    labels={'X','Y','Z'}; colors_xyz={[0.8 0.1 0.1],[0.1 0.6 0.1],[0.1 0.1 0.8]};
-    for ci=1:3
-        text(ax,0.08,yP,sprintf('%s: %+8.1f',labels{ci},tcp(ci)*1000),...
-            'FontSize',11,'FontWeight','bold','Color',colors_xyz{ci},'FontName',cjkFont);
-        yP=yP-0.022;
-    end
-    
-    % Joint bars
-    yP=yP-0.01;
-    text(ax,0.05,yP,'Joint (deg)','FontSize',11,'FontWeight','bold','Color',[0.2 0.2 0.5],'FontName',cjkFont);
-    yP=yP-0.022;
-    for ji=1:6
-        barFrac=abs(q_deg(ji))/360; barW=max(0.01,barFrac*0.45);
-        if q_deg(ji)>=0, bC=[0.3 0.6 0.9]; else, bC=[0.9 0.5 0.2]; end
-        rectangle(ax,'Position',[0.22 yP-0.006 0.45 0.012],'FaceColor',[0.93 0.93 0.93],'EdgeColor','none');
-        rectangle(ax,'Position',[0.22 yP-0.006 barW 0.012],'FaceColor',bC,'EdgeColor','none','Curvature',0.3);
-        text(ax,0.06,yP,sprintf('J%d',ji),'FontSize',8,'FontWeight','bold','Color',[0.3 0.3 0.3],'FontName',cjkFont);
-        text(ax,0.72,yP,sprintf('%+6.1f',q_deg(ji)),'FontSize',9,'FontWeight','bold','Color',bC,'FontName',cjkFont);
-        yP=yP-0.019;
-    end
-    
-    yP=yP-0.01;
-    text(ax,0.08,yP,sprintf('Time: %.3f s', time_s),...
-        'FontSize',10,'FontWeight','bold','Color',[0.2 0.2 0.2],'FontName',cjkFont);
-end
-
-function data = loadNumericData(filepath)
-    fid = fopen(filepath, 'r');
-    if fid==-1, error('Cannot open: %s', filepath); end
-    lines = {};
-    while ~feof(fid)
-        line = fgetl(fid);
-        if ischar(line) && ~isempty(strtrim(line)) && line(1)~='#'
-            lines{end+1} = line; %#ok<AGROW>
-        end
-    end
-    fclose(fid);
-    nLines = length(lines);
-    if nLines==0, data=[]; return; end
-    vals = sscanf(lines{1}, '%f');
-    nCols = length(vals);
-    data = zeros(nLines, nCols);
-    data(1,:) = vals';
-    for i = 2:nLines
-        vals = sscanf(lines{i}, '%f');
-        if length(vals)==nCols, data(i,:)=vals'; end
-    end
-end
-
-function summary = readSummaryFile(filepath)
-    summary = struct();
-    if ~exist(filepath,'file'), return; end
-    fid = fopen(filepath, 'r');
-    while ~feof(fid)
-        line = fgetl(fid);
-        if ~ischar(line) || isempty(strtrim(line)) || line(1)=='#', continue; end
-        tokens = regexp(line, '^\s*([a-zA-Z_0-9]+)\s*:\s*(.+)$', 'tokens');
-        if ~isempty(tokens)
-            key = strtrim(tokens{1}{1});
-            val = strtrim(tokens{1}{2});
-            summary.(key) = val;
-        end
-    end
-    fclose(fid);
-end
-
-function val = getField(s, fieldName, default)
-    if isfield(s, fieldName), val = s.(fieldName); else, val = default; end
-end
-
-function T = makeTrans(xyz), T = eye(4); T(1:3,4) = xyz(:); end
-function R = makeRotX(a), c=cos(a); s=sin(a); R=[1 0 0 0;0 c -s 0;0 s c 0;0 0 0 1]; end %#ok<DEFNU>
-function R = makeRotY(a), c=cos(a); s=sin(a); R=[c 0 s 0;0 1 0 0;-s 0 c 0;0 0 0 1]; end %#ok<DEFNU>
-function R = makeRotZ(a), c=cos(a); s=sin(a); R=[c -s 0 0;s c 0 0;0 0 1 0;0 0 0 1]; end
-function R = makeRotRPY(rpy), R = makeRotZ(rpy(3))*makeRotY(rpy(2))*makeRotX(rpy(1)); end  % URDF: Rz*Ry*Rx
-
-function saveFig(fig, outputDir, name)
-    fn = fullfile(outputDir, [name '.png']);
-    print(fig, fn, '-dpng', '-r150');
-    fprintf('  Saved: %s\n', fn);
-    % 保存 .fig 文件 (交互式3D查看)
-    fnFig = fullfile(outputDir, [name '.fig']);
-    savefig(fig, fnFig, 'compact');
-    fprintf('  Saved: %s\n', fnFig);
-end
-
-function saveKeyframeFig(fig, keyframeDir, name, description)
-%SAVEKEYFRAMEFIG 保存动画关键帧为独立.fig+.png快照
-%  用户可在MATLAB中 openfig('xxx.fig') 进行3D旋转/缩放/平移交互查看
-%  fig:          源figure
-%  keyframeDir:  输出目录
-%  name:         文件名 (不含扩展名)
-%  description:  日志描述
-    try
-        % 保存.fig (compact模式, 减小文件大小)
-        fnFig = fullfile(keyframeDir, [name '.fig']);
-        savefig(fig, fnFig, 'compact');
-        % 同时保存.png (150dpi, 便于快速预览)
-        fnPng = fullfile(keyframeDir, [name '.png']);
-        print(fig, fnPng, '-dpng', '-r150');
-        fprintf('    关键帧: %s → .fig+.png (%s)\n', name, description);
-    catch ME
-        fprintf('    [WARN] 关键帧保存失败 %s: %s\n', name, ME.message);
-    end
-end
-
-function R=axang2r_local(ax)
-    a=ax(1:3);g=ax(4);c=cos(g);s=sin(g);t=1-c;x=a(1);y=a(2);z=a(3);
-    R=[t*x*x+c t*x*y-s*z t*x*z+s*y;t*x*y+s*z t*y*y+c t*y*z-s*x;t*x*z-s*y t*y*z+s*x t*z*z+c];
-end
-
-%% ═══════════════════ 场景辅助函数 ═══════════════════
-
-function drawGround_v11(ax,x0,x1,y0,y1)
-    patch(ax,'Vertices',[x0 y0 0;x1 y0 0;x1 y1 0;x0 y1 0],'Faces',[1 2 3 4],...
-          'FaceColor',[.92 .92 .90],'EdgeColor','none','FaceAlpha',0.4);
-end
-
-function drawCabinet_v11(ax,c,bx,by)
-    x=bx-c.widthX/2;y=by-c.depthY/2;w=c.widthX;d=c.depthY;h=c.heightZ;
-    v=[x y 0;x+w y 0;x+w y+d 0;x y+d 0;x y h;x+w y h;x+w y+d h;x y+d h];
-    patch(ax,'Vertices',v,'Faces',[1 2 3 4;5 6 7 8;1 2 6 5;2 3 7 6;3 4 8 7;4 1 5 8],...
-          'FaceColor',c.color,'EdgeColor',[.5 .5 .5],'FaceAlpha',.95,'LineWidth',1);
-end
-
-function drawFrame_v11(ax,f,cylN)
-    r=f.tubeR;wx=f.widthX;dy=f.depthY;h=f.height;cx=f.cx;cy=f.cy;
-    % corners: 1=left-near, 2=right-near, 3=right-far, 4=left-far
-    c=[cx-wx/2 cy-dy/2;cx+wx/2 cy-dy/2;cx+wx/2 cy+dy/2;cx-wx/2 cy+dy/2];
-    % 4根立柱
-    for i=1:4, drawTube_v11(ax,c(i,1),c(i,2),0,c(i,1),c(i,2),h,r,f.color,cylN); end
-    rb = r*0.8;  % 横梁半径
-    % 近端面 (Y-neg): 仅底边 (开放入口, 无顶边/中间栏杆, 便于机器人进出)
-    drawTube_v11(ax,c(1,1),c(1,2),0.05,c(2,1),c(2,2),0.05,rb,f.color,cylN);
-    % 远端面 (Y-pos): 底边 + 顶边
-    drawTube_v11(ax,c(3,1),c(3,2),0.05,c(4,1),c(4,2),0.05,rb,f.color,cylN);
-    drawTube_v11(ax,c(3,1),c(3,2),h-0.05,c(4,1),c(4,2),h-0.05,rb,f.color,cylN);
-    % 顶部: 2根侧梁 (平行于Y轴, 连接近端→远端)
-    drawTube_v11(ax,c(1,1),c(1,2),h-0.05,c(4,1),c(4,2),h-0.05,rb,f.color,cylN);  % 左侧
-    drawTube_v11(ax,c(2,1),c(2,2),h-0.05,c(3,1),c(3,2),h-0.05,rb,f.color,cylN);  % 右侧
-    % 底部: 2根侧梁 (平行于Y轴, 连接近端→远端底部)
-    drawTube_v11(ax,c(1,1),c(1,2),0.05,c(4,1),c(4,2),0.05,rb,f.color,cylN);  % 左侧底
-    drawTube_v11(ax,c(2,1),c(2,2),0.05,c(3,1),c(3,2),0.05,rb,f.color,cylN);  % 右侧底
-end
-
-function drawPallet_v11(ax,pal,frm,fontName)
-    x=frm.cx-pal.widthX/2;y=frm.cy-pal.depthY/2;
-    w=pal.widthX;d=pal.depthY;h=pal.heightZ;
-    v=[x y 0;x+w y 0;x+w y+d 0;x y+d 0;x y h;x+w y h;x+w y+d h;x y+d h];
-    patch(ax,'Vertices',v,'Faces',[1 2 3 4;5 6 7 8;1 2 6 5;2 3 7 6;3 4 8 7;4 1 5 8],...
-          'FaceColor',pal.color,'EdgeColor',[.15 .30 .60],'FaceAlpha',.45,'LineWidth',1.2);
-    text(ax,frm.cx,frm.cy,h+0.03,sprintf('Pallet %dcm',round(h*100)),...
-         'FontSize',12,'HorizontalAlignment','center','Color',[.05 .15 .45],...
-         'FontWeight','bold','FontName',fontName);
-end
-
-function drawConveyor_v15(ax,cv,cylN)
-    cx=cv.cx;cy=cv.cy;ly=cv.lengthY;wx=cv.widthX;hz=cv.heightZ;
-    x0=cx-wx/2;y0=cy-ly/2;
-    % 侧板
-    drawBox3D_v11(ax,x0-.015,y0,hz-.06,.015,ly,.06,[.4 .4 .42]);
-    drawBox3D_v11(ax,x0+wx,y0,hz-.06,.015,ly,.06,[.4 .4 .42]);
-    % 腿 (6对)
-    lw=.035;nLegs=6;
-    legSpacing = ly/(nLegs+1);
-    for li=1:nLegs
-        yLeg = y0 + li*legSpacing;
-        for s=[-1 1]
-            lx=cx+s*(wx/2-.06);
-            drawBox3D_v11(ax,lx-lw/2,yLeg-lw/2,0,lw,lw,hz-.01,[.25 .25 .25]);
-        end
-    end
-    % 滚筒
-    sp=ly/(cv.nRollers+1);
-    for ri=1:cv.nRollers
-        ry=y0+ri*sp;
-        [X,Y,Z]=cylinder(cv.rollerR,cylN); Z=Z*wx*.9-wx*.9/2;
-        surf(ax,Z+cx,zeros(size(X))+ry,X+hz+cv.rollerR,'FaceColor',[.55 .55 .55],'EdgeColor','none','FaceAlpha',.6);
-    end
-    % 皮带
-    bz=hz+cv.rollerR;
-    bV=[x0+.02 y0+.04 bz;x0+wx-.02 y0+.04 bz;x0+wx-.02 y0+ly-.04 bz;x0+.02 y0+ly-.04 bz;
-        x0+.02 y0+.04 bz+cv.beltH;x0+wx-.02 y0+.04 bz+cv.beltH;
-        x0+wx-.02 y0+ly-.04 bz+cv.beltH;x0+.02 y0+ly-.04 bz+cv.beltH];
-    patch(ax,'Vertices',bV,'Faces',[1 2 3 4;5 6 7 8;1 2 6 5;2 3 7 6;3 4 8 7;4 1 5 8],...
-          'FaceColor',cv.color,'EdgeColor',[.15 .15 .15],'FaceAlpha',.92);
-end
-
-function drawBox3D_v11(ax,x,y,z,dx,dy,dz,col)
-    v=[x y z;x+dx y z;x+dx y+dy z;x y+dy z;x y z+dz;x+dx y z+dz;x+dx y+dy z+dz;x y+dy z+dz];
-    patch(ax,'Vertices',v,'Faces',[1 2 3 4;5 6 7 8;1 2 6 5;2 3 7 6;3 4 8 7;4 1 5 8],...
-          'FaceColor',col,'EdgeColor','none','FaceAlpha',.95);
-end
-
-function h = drawBox_v11(ax, pos, bx)
-    x=pos(1)-bx.lx/2; y=pos(2)-bx.wy/2; z=pos(3)-bx.hz/2;
-    v=[x y z;x+bx.lx y z;x+bx.lx y+bx.wy z;x y+bx.wy z;
-       x y z+bx.hz;x+bx.lx y z+bx.hz;x+bx.lx y+bx.wy z+bx.hz;x y+bx.wy z+bx.hz];
-    h = patch(ax,'Vertices',v,'Faces',[1 2 3 4;5 6 7 8;1 2 6 5;2 3 7 6;3 4 8 7;4 1 5 8],...
-          'FaceColor',bx.color,'EdgeColor',[.35 .25 .1],'FaceAlpha',.95,'LineWidth',1.2);
-end
-
-function drawTube_v11(ax,x1,y1,z1,x2,y2,z2,radius,color,cylN)
-    [X,Y,Z]=cylinder(radius,cylN);
-    v=[x2-x1;y2-y1;z2-z1];l=norm(v);
-    if l<.001,return;end
-    Z=Z*l;dd=[0;0;1];td=v/l;cp=cross(dd,td);
-    if norm(cp)>1e-6
-        RR=axang2r_local([cp'/norm(cp),acos(max(-1,min(1,dot(dd,td))))]);
-    else
-        RR=eye(3);if dot(dd,td)<0,RR(3,3)=-1;RR(1,1)=-1;end
-    end
-    for i=1:numel(X)
-        pt=RR*[X(i);Y(i);Z(i)];X(i)=pt(1)+x1;Y(i)=pt(2)+y1;Z(i)=pt(3)+z1;
-    end
-    surf(ax,X,Y,Z,'FaceColor',color,'EdgeColor','none','FaceAlpha',.85);
-end

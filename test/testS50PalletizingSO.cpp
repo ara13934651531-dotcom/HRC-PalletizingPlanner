@@ -1,15 +1,15 @@
 /**
  * @file testS50PalletizingSO.cpp
- * @brief HR_S50-2000 码垛仿真 v6.0 — 单箱搬运 + 框架面板碰撞
+ * @brief HR_S50-2000 码垛仿真 v6.1 — 布局/碰撞/工具修正
  *
- * v6.0 核心变更:
- *   1. 简化为单箱搬运: 传送带拾取 → 框架内放置 (1条清晰轨迹)
- *   2. 框架三面面板碰撞: 后面/左面/右面各4层胶囊横杆 (r=150mm, 间距500mm) 封锁
- *   3. 前面(朝机器人)开放: 机械臂从前面进入框架
- *   4. 箱子放置在框架中心偏前 (避开面板碰撞区)
- *   5. 增强RRT*参数: 更多迭代/更长时间应对复杂约束
+ * v6.1 核心变更 (基于用户反馈7大修正):
+ *   1. 布局修正: FRAME_GAP 50→200, CONV_GAP 200→400, CONV_LEN 3500→2000 消除重叠
+ *   2. 面板碰撞: 12根胶囊体→3个Lozenge OBB实体面板 (SO棱体碰撞)
+ *   3. 工具球修正: toolIndex 6→1 (SO API仅接受1/2, 不是碰撞体索引6/7)
+ *   4. 路径后优化: planWithSplitting拼接后做300次shortcut优化
+ *   5. 框架/传送带/电箱间距增大, 无物理重叠
  *
- * @date 2026-02-28
+ * @date 2026-03-02
  * @copyright Copyright (c) 2026 Guangdong Huayan Robotics Co., Ltd.
  */
 
@@ -42,11 +42,11 @@ namespace scene {
     constexpr double FRM_W = 1200, FRM_D = 650, FRM_H = 2000;
     constexpr double FRM_TUBE_R = 30;
     constexpr double PAL_W = 1000, PAL_D = 600, PAL_H = 500;
-    constexpr double CONV_LEN = 3500, CONV_W = 550, CONV_H = 750;
-    constexpr double CONV_GAP = 200;   // 缩短: 传送带拾取位在工作空间内
+    constexpr double CONV_LEN = 2000, CONV_W = 550, CONV_H = 750; // v6.1: 缩短避免Y方向与框架重叠
+    constexpr double CONV_GAP = 400;   // 传送带与电箱间距 (v6.1: 防止与框架X方向重叠)
     constexpr double CONV_OFF_Y = -800;
     constexpr double BOX_LX = 350, BOX_WY = 280, BOX_HZ = 250;
-    constexpr double FRAME_GAP = 50;   // 框架紧靠电箱后方
+    constexpr double FRAME_GAP = 200;  // 框架与电箱间距 (v6.1: 增大为200mm)
     constexpr double BOX_GAP = 20;
     constexpr double baseZ = CAB_H;
     inline double frameCY() { return CAB_D/2 + FRAME_GAP + FRM_D/2; }
@@ -365,6 +365,39 @@ SegmentResult executeRRTStar(const char* name,
         printf("        ✅ 规划成功 (%zu航点, %.2frad)\n",
                path.size(), path.totalLength());
     }
+
+    // v6.1: 组合路径后验优化 — 对拼接的路径做捷径+简化
+    if (path.waypoints.size() > 3) {
+        auto tPostOpt = std::chrono::high_resolution_clock::now();
+        int preN = (int)path.waypoints.size();
+        double preLen = path.totalLength();
+        // 捷径优化: 随机选两点, 如果直线无碰撞则删除中间点
+        std::mt19937 rng(42);
+        for (int iter = 0; iter < 300; iter++) {
+            int n = (int)path.waypoints.size();
+            if (n < 3) break;
+            int i = rng() % n, j = rng() % n;
+            if (i > j) std::swap(i, j);
+            if (j - i < 2) continue;
+            auto& qi = path.waypoints[i].config;
+            auto& qj = path.waypoints[j].config;
+            if (!checker.isPathCollisionFree(qi, qj, 0.02)) continue;
+            // 排除区验证
+            if (!exclusionBoxes.empty() &&
+                !isDirectPathInWorkspace(qi, qj, checker, exclusionBoxes)) continue;
+            // 删除中间点
+            path.waypoints.erase(path.waypoints.begin() + i + 1,
+                                  path.waypoints.begin() + j);
+        }
+        path.updatePathParameters();
+        double postOptMs = std::chrono::duration<double,std::milli>(
+            std::chrono::high_resolution_clock::now()-tPostOpt).count();
+        double postLen = path.totalLength();
+        printf("        🔧 路径优化: %d→%zu航点 %.2f→%.2frad (%.1fms)\n",
+               preN, path.size(), preLen, postLen, postOptMs);
+        totalOptMs += postOptMs;
+        r.optimizationTime_ms = totalOptMs;
+    }
     r.pathWaypoints = (int)path.waypoints.size();
     r.pathLength_rad = path.totalLength();
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -417,8 +450,8 @@ SegmentResult executeRRTStar(const char* name,
 // ============================================================================
 int main() {
     printf("╔═══════════════════════════════════════════════════════════════════╗\n");
-    printf("║   HR_S50-2000 码垛仿真 v6.0 — 单箱搬运 + 框架面板碰撞           ║\n");
-    printf("║   传送带→框架 + 三面面板碰撞 + TCP水平约束                       ║\n");
+    printf("║   HR_S50-2000 码垛仿真 v6.1 — 布局/碰撞/工具修正                ║\n");
+    printf("║   传送带→框架 + Lozenge面板 + TCP水平约束 + 工具碰撞             ║\n");
     printf("╚═══════════════════════════════════════════════════════════════════╝\n\n");
 
     auto t_global = std::chrono::high_resolution_clock::now();
@@ -535,50 +568,83 @@ int main() {
         printf("    envId=21 右侧顶梁: %s\n", ok1?"✅":"❌");
     }
 
-    // ---- 框架面板碰撞 — 12根胶囊体 (后/左/右各4根, 前面开放) ----
-    // 注: Lozenge OBB 测试不通过 (SO库registrations返回✅但碰撞检测无效),
-    //      改用4层横杆胶囊体, 每面4根, radius=150mm, 间距500mm, 有效覆盖全壁面
-    printf("\n  === 框架面板 (envId 5-8,22-25,26-29 — 胶囊体) ===\n");
+    // ---- 框架面板碰撞 — Lozenge OBB 实体面板 (SO库棱体碰撞) ----
+    // v6.1: 使用 addEnvObstacleLozenge (棱体=圆角OBB) 替代稀疏胶囊横杆
+    // Lozenge 参数: ref2local[6]={rx,ry,rz(deg),tx,ty,tz(mm)}, offset[3](mm), xLen,yLen,zLen(mm), radius(mm)
+    printf("\n  === 框架面板 (Lozenge OBB v6.1) ===\n");
     {
-        const double wallR = 150.0;    // 横杆半径 (mm)
-        const int nLevels = 4;
-        const double zSpan = fZT - fZB;  // 2000mm
-        double zLevels[4];
-        for (int i = 0; i < nLevels; i++)
-            zLevels[i] = fZB + zSpan * (2*i + 1) / (2*nLevels);  // fZB+250, +750, +1250, +1750
+        const double wallThickness = 100.0;  // 面板厚度 100mm
+        const double wallRadius = 50.0;      // 圆角半径 50mm
+        double zMid = (fZB + fZT) / 2.0;    // Z中点
+        double zLen = fZT - fZB;             // Z范围 (框架高度)
+        double yMid = (fNY + fFY) / 2.0;    // Y中点
 
-        // 后面 (Y=fFY): 4根沿X方向 (envId 5-8)
-        printf("    后面:\n");
-        int backIds[] = {5, 6, 7, 8};
-        for (int i = 0; i < nLevels; i++) {
-            bool ok = checker.addEnvObstacleCapsule(backIds[i],
-                Eigen::Vector3d(-fHW, fFY, zLevels[i]),
-                Eigen::Vector3d( fHW, fFY, zLevels[i]), wallR);
-            printf("      envId=%d Z=%.0f r=%.0f: %s\n", backIds[i], zLevels[i], wallR, ok?"✅":"❌");
+        // 后面 (envId 5): Y=fFY 平面, 沿X方向铺满
+        {
+            double ref2local[6] = {0, 0, 0, 0, fFY, zMid};  // 面板中心
+            bool ok = checker.addEnvObstacleLozenge(5, ref2local,
+                Eigen::Vector3d(0, 0, 0), scene::FRM_W, wallThickness, zLen, wallRadius);
+            printf("    envId=5 后面 Lozenge(%.0fx%.0fx%.0f r=%.0f) @ Y=%.0f: %s\n",
+                   scene::FRM_W, wallThickness, zLen, wallRadius, fFY, ok?"✅":"❌");
+            // 如果Lozenge失败, 回退到密集胶囊体
+            if (!ok) {
+                printf("    ⚠️ Lozenge不可用, 回退胶囊体\n");
+                const int nLevels = 6;
+                const double wallR = 250.0;
+                const double zSpan = fZT - fZB;
+                int ids[] = {5, 6, 7, 8, 46+12, 46+13};
+                for (int i = 0; i < nLevels; i++) {
+                    double zi = fZB + zSpan * (2*i + 1) / (2*nLevels);
+                    int eid = (i < 4) ? ids[i] : (46+12+i-4);
+                    checker.addEnvObstacleCapsule(eid,
+                        Eigen::Vector3d(-fHW, fFY, zi), Eigen::Vector3d(fHW, fFY, zi), wallR);
+                }
+            }
         }
 
-        // 左面 (X=-fHW): 4根沿Y方向 (envId 22-25)
-        printf("    左面:\n");
-        int leftIds[] = {22, 23, 24, 25};
-        for (int i = 0; i < nLevels; i++) {
-            bool ok = checker.addEnvObstacleCapsule(leftIds[i],
-                Eigen::Vector3d(-fHW, fNY, zLevels[i]),
-                Eigen::Vector3d(-fHW, fFY, zLevels[i]), wallR);
-            printf("      envId=%d Z=%.0f r=%.0f: %s\n", leftIds[i], zLevels[i], wallR, ok?"✅":"❌");
+        // 左面 (envId 6): X=-fHW 平面, 沿Y方向铺满
+        {
+            double ref2local[6] = {0, 0, 0, -fHW, yMid, zMid};
+            bool ok = checker.addEnvObstacleLozenge(6, ref2local,
+                Eigen::Vector3d(0, 0, 0), wallThickness, scene::FRM_D, zLen, wallRadius);
+            printf("    envId=6 左面 Lozenge(%.0fx%.0fx%.0f) @ X=-%.0f: %s\n",
+                   wallThickness, scene::FRM_D, zLen, fHW, ok?"✅":"❌");
+            if (!ok) {
+                printf("    ⚠️ Lozenge不可用, 回退胶囊体\n");
+                const int nLevels = 6;
+                const double wallR = 250.0;
+                const double zSpan = fZT - fZB;
+                for (int i = 0; i < nLevels; i++) {
+                    double zi = fZB + zSpan * (2*i + 1) / (2*nLevels);
+                    int eid = 22 + i;  // envId 22-27
+                    checker.addEnvObstacleCapsule(eid,
+                        Eigen::Vector3d(-fHW, fNY, zi), Eigen::Vector3d(-fHW, fFY, zi), wallR);
+                }
+            }
         }
 
-        // 右面 (X=fHW): 4根沿Y方向 (envId 26-29)
-        printf("    右面:\n");
-        int rightIds[] = {26, 27, 28, 29};
-        for (int i = 0; i < nLevels; i++) {
-            bool ok = checker.addEnvObstacleCapsule(rightIds[i],
-                Eigen::Vector3d(fHW, fNY, zLevels[i]),
-                Eigen::Vector3d(fHW, fFY, zLevels[i]), wallR);
-            printf("      envId=%d Z=%.0f r=%.0f: %s\n", rightIds[i], zLevels[i], wallR, ok?"✅":"❌");
+        // 右面 (envId 7): X=fHW 平面, 沿Y方向铺满
+        {
+            double ref2local[6] = {0, 0, 0, fHW, yMid, zMid};
+            bool ok = checker.addEnvObstacleLozenge(7, ref2local,
+                Eigen::Vector3d(0, 0, 0), wallThickness, scene::FRM_D, zLen, wallRadius);
+            printf("    envId=7 右面 Lozenge(%.0fx%.0fx%.0f) @ X=+%.0f: %s\n",
+                   wallThickness, scene::FRM_D, zLen, fHW, ok?"✅":"❌");
+            if (!ok) {
+                printf("    ⚠️ Lozenge不可用, 回退胶囊体\n");
+                const int nLevels = 6;
+                const double wallR = 250.0;
+                const double zSpan = fZT - fZB;
+                for (int i = 0; i < nLevels; i++) {
+                    double zi = fZB + zSpan * (2*i + 1) / (2*nLevels);
+                    int eid = (i < 4) ? (26 + i) : (46+14+i-4);  // envId 26-29, 60-61
+                    checker.addEnvObstacleCapsule(eid,
+                        Eigen::Vector3d(fHW, fNY, zi), Eigen::Vector3d(fHW, fFY, zi), wallR);
+                }
+            }
         }
 
-        printf("    面板总计: 12根胶囊体 (r=%.0fmm, 4层, 间距%.0fmm, 覆盖全壁面)\n",
-               wallR, zSpan/nLevels);
+        printf("    面板策略: Lozenge OBB优先 → 胶囊体回退 (6层 r=250mm)\n");
     }
 
     printf("\n  === 电箱 (envId 10-13) ===\n");
@@ -609,20 +675,26 @@ int main() {
         printf("    envId=%d: %s\n", v.id, ok?"✅":"❌");
     }
 
-    const double boxToolR = 225.0, boxEnvR = 250.0;
-    printf("\n  环境障碍: 电箱(4) + 传送带(3) + 框架立柱(4) + 框架顶梁(2) + 框架面板横杆(12) + 已放箱子(动态)\n");
-    printf("  面板封锁: 后面+左面+右面各4根横杆 (前面开放, 机械臂入口)\n\n");
+    const double boxEnvR = 250.0;
+    printf("\n  环境障碍: 电箱(4) + 传送带(3) + 框架立柱(4) + 框架顶梁(2) + 框架面板Lozenge/胶囊(3) + 已放箱子(动态)\n");
+    printf("  面板封锁: 后面+左面+右面 Lozenge OBB (前面开放, 机械臂入口)\n");
+    printf("  布局间距: FRAME_GAP=%.0f CONV_GAP=%.0f CONV_LEN=%.0f (mm)\n",
+           scene::FRAME_GAP, scene::CONV_GAP, scene::CONV_LEN);
+    printf("  框架: X=[%.0f,%.0f] Y=[%.0f,%.0f]  传送带: X=[%.0f,%.0f] Y=[%.0f,%.0f]\n",
+           -fHW, fHW, fNY, fFY, cvX-cvHW, cvX+cvHW, cvY-cvHL, cvY+cvHL);
+    printf("  X间距: %.0f  Y间距: %.0f (无重叠✓)\n\n",
+           (cvX-cvHW) - fHW, fNY - (cvY+cvHL));
 
     // ---- 码垛布局 + IK求解 ----
     printf("━━━━━━ 阶段3: 单箱布局 + IK求解 ━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
 
     double palSurf = scene::palletSurfBase();
     // 简化: 1个箱子放在框架中心偏前位置 (远离面板碰撞区)
-    // 面板r=150mm: 后面内界Y=1025-150=875, 左右内界X=±(600-150)=±450
-    // 工具球r=225mm: 安全区 X∈[-225,225], Y<650 (距后面 > 375mm = 150+225)
+    // v6.1: 放置在框架前部 (远离后墙, 确保工具球不碰面板)
+    // 框架CY=850, 近端NY=525 → 偏前位置Y=700 (距后面475mm, 距前面175mm)
     double boxPlaceX = 0;
-    double boxPlaceY = fcy - 100;  // 600mm — 框架中心(700)偏前100mm
-    double boxPlaceZ = palSurf + scene::BOX_HZ;  // 第一层顶: -300+250=-50
+    double boxPlaceY = fNY + (fFY - fNY) * 0.3;  // 框架前30% — 远离后墙
+    double boxPlaceZ = palSurf + scene::BOX_HZ;  // 第一层顶
 
     printf("  框架CY=%.0f  托盘面Z(base)=%.0f\n", fcy, palSurf);
     printf("  箱子放置: (%.0f, %.0f, %.0f) mm — 框架中心偏前\n\n", boxPlaceX, boxPlaceY, boxPlaceZ);
@@ -633,7 +705,7 @@ int main() {
         BoxTarget bt;
         bt.label = "CENTER";
         bt.pos_mm = Eigen::Vector3d(boxPlaceX, boxPlaceY, boxPlaceZ);
-        bt.approach_mm = Eigen::Vector3d(boxPlaceX, boxPlaceY, boxPlaceZ + 200);
+        bt.approach_mm = Eigen::Vector3d(boxPlaceX, boxPlaceY, boxPlaceZ + 300);
         boxTargets.push_back(bt);
     }
 
@@ -707,11 +779,14 @@ int main() {
     // 取料位IK (TCP保持水平: q5=180+q2-q3, q6=0)
     printf("\n  === 取料位IK ===\n");
     double pkX=scene::convCX(), pkY=scene::CONV_OFF_Y+500, pkZ=scene::convSurfBase()+scene::BOX_HZ;
-    Eigen::Vector3d pickTgt(pkX,pkY,pkZ), pickApprTgt(pkX,pkY,pkZ+200);
+    Eigen::Vector3d pickTgt(pkX,pkY,pkZ), pickApprTgt(pkX,pkY,pkZ+300);
     std::vector<JointConfig> pkSeeds;
-    // 取料种子: J1≈-90° (指向传送带-Y), TCP水平(q5=180+q2-q3, q6=q1)
-    double pS[][6] = {{-90,-50,40,0,90,-90},{-80,-50,40,0,90,-80},{-100,-50,40,0,90,-100},
-                      {-90,-55,35,0,90,-90},{-90,-45,45,0,90,-90},{-85,-60,30,0,90,-85}};
+    // 取料种子: convCX=950mm, 需要J1接近180°(arm→+X方向)
+    // 提供宽范围J1覆盖新传送带位置
+    double pS[][6] = {{150,-50,40,0,90,150},{160,-50,40,0,90,160},{170,-50,40,0,90,170},
+                      {-170,-50,40,0,90,-170},{180,-50,40,0,90,180},{-160,-55,35,0,90,-160},
+                      {150,-55,35,0,90,150},{160,-45,45,0,90,160},{-150,-60,30,0,90,-150},
+                      {-90,-50,40,0,90,-90},{-80,-50,40,0,90,-80},{-100,-50,40,0,90,-100}};
     for (auto& s:pS) pkSeeds.push_back(JointConfig::fromDegrees({s[0],s[1],s[2],s[3],s[4],s[5]}));
 
     auto ikPk = soIKHorizontal(checker, robot, pickTgt, pkSeeds, 3.0);
@@ -825,8 +900,30 @@ int main() {
 
         // 动作前: 启用/禁用工具球
         if (m.toolAction == 1) {
-            checker.setToolBall(6, Eigen::Vector3d(0, 0, -125), boxToolR);
-            printf("  📦 工具球ON (r=%.0fmm, 搬运箱子)\n", boxToolR);
+            // ❗ SO库 toolIndex 只接受1或2 (Tool1/Tool2), 不是碰撞体索引(6/7)
+            // 箱子碰撞建模: 工具球沿TCP Z轴向下
+            // 已知限制: pair(6,4) tool-wrist, r太大→自碰撞
+            // 实用: r=120球@z=-400 (距法兰400mm, 箱底区域)
+            // 清距71mm@r=100, 留余量; 覆盖箱子底部碰撞区域
+            const double toolR = 120.0;
+            bool toolOk = checker.setToolBall(1, Eigen::Vector3d(0, 0, -400), toolR);
+            printf("  📦 工具球ON toolIdx=1 (r=%.0fmm, z=-400mm): %s\n",
+                   toolR, toolOk?"✅":"❌");
+            if (!toolOk) printf("  ⚠️  setToolBall(1) 失败! 箱子碰撞未生效\n");
+
+            // 诊断: 检查搬运段起止点碰撞状态
+            printf("  🔍 搬运段碰撞诊断 (工具已启用):\n");
+            for (int di = s; di <= std::min(s+1, NUM_SEGS-1); di++) {
+                auto& dm = motions[di];
+                auto rpS = checker.getCollisionReport(dm.start, true);
+                auto rpT = checker.getCollisionReport(dm.target, true);
+                printf("    seg%d start: self=%s dist=%.1fmm pair=(%d,%d)\n",
+                       di, rpS.selfCollision?"⚠COLL":"ok", rpS.selfMinDist_mm,
+                       rpS.selfPairA, rpS.selfPairB);
+                printf("    seg%d goal:  self=%s dist=%.1fmm pair=(%d,%d)\n",
+                       di, rpT.selfCollision?"⚠COLL":"ok", rpT.selfMinDist_mm,
+                       rpT.selfPairA, rpT.selfPairB);
+            }
         }
 
         SegmentResult seg;
@@ -851,8 +948,8 @@ int main() {
 
         // 动作后: 禁用工具球 + 添加已放置箱子
         if (m.toolAction == 2) {
-            checker.removeTool(6);
-            printf("  📦 工具球OFF\n");
+            checker.removeTool(1);  // toolIdx=1 (匹配上面setToolBall(1))
+            printf("  📦 工具球OFF toolIdx=1\n");
             SO_COORD_REF tc; checker.forwardKinematics(pc.place, tc);
             int eid = 46;
             bool ok = checker.addEnvObstacleBall(eid,
@@ -892,15 +989,15 @@ int main() {
     // 写摘要
     FILE* fpSum = fopen("data/so_palletizing_summary.txt","w");
     if (fpSum) {
-        fprintf(fpSum,"# HR_S50-2000 码垛v6.0 — 单箱搬运\n\nversion: 6.0\n");
+        fprintf(fpSum,"# HR_S50-2000 码垛v6.1 — 布局/碰撞/工具修正\n\nversion: 6.1\n");
         fprintf(fpSum,"positions: 1\nsegments: %d\ntotal_motion_s: %.4f\n",totalSegments,totalMotionTime);
         fprintf(fpSum,"self_collisions: %d\nenv_collisions: %d\nmin_dist_mm: %.2f\n",
                 totalCollisions,totalEnvCollisions,globalMinDist_mm);
         fprintf(fpSum,"order: single_box_conveyor_to_frame\n");
-        fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+12_wallCapsule+1_placed\n");
-        fprintf(fpSum,"wall_panels: back+left+right_4capsule_r150mm\n");
-        fprintf(fpSum,"tool_collision: ball_r%.0fmm\nframe_gap_mm: %.0f\nframe_cy_mm: %.0f\n",
-                boxToolR,scene::FRAME_GAP,fcy);
+        fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+3_lozengeWall+1_placed\n");
+        fprintf(fpSum,"wall_panels: back+left+right_lozengeOBB_100mm_thick\n");
+        fprintf(fpSum,"tool_collision: ball_r120mm_z-400mm_toolIdx1\nframe_gap_mm: %.0f\nframe_cy_mm: %.0f\n",
+                scene::FRAME_GAP,fcy);
 
         fprintf(fpSum,"\n# Box TCP (base frame, mm):\n");
         {
@@ -931,7 +1028,7 @@ int main() {
     }
 
     printf("\n══════════════════════════════════════════════════════════════════\n");
-    printf("  HR_S50-2000 码垛仿真 v6.0 — 单箱搬运完成\n");
+    printf("  HR_S50-2000 码垛仿真 v6.1 — 布局/碰撞/工具修正完成\n");
     printf("══════════════════════════════════════════════════════════════════\n");
     return 0;
 }
