@@ -1,14 +1,18 @@
 /**
  * @file testS50PalletizingSO.cpp
- * @brief HR_S50-2000 码垛仿真 v6.5 — 侧绕搬运 + 场景优化 + 箱子碰撞强化
+ * @brief HR_S50-2000 码垛仿真 v6.5 — +X/+Y短弧搬运路径优化
  *
- * v6.4 核心变更:
+ * v6.5 核心变更:
+ *   1. J1短弧优化: 放料J1=-85°→275° (mod 360°), J1旋转116.5°替代243.5°
+ *      - 搬运路径经过+X/+Y象限, 不再从顶部越过
+ *   2. 2段对角搬运: 抬升与J1旋转并行, 3段→2段 (40%+时间节省)
+ *      - KEY INSIGHT: J1不影响|B|(TCP pitch), 对角运动不增加TCP偏差
+ *   3. 中转高度扫描: FK验证多种J2/J5, 选择满足|B|<15°的最低高度
+ *
+ * v6.4 变更:
  *   1. 场景布局优化: FRAME_GAP 200→500, CONV_GAP 400→600
- *      - 框架远离基座, 可观察机械臂完整运动范围
  *   2. 箱子放置位置: 框架-X,+Y角落 (左后角)
- *   3. 运动简化: 9段→6段, 移除HOME垂直位, planWithSplitting自动中转
- *      - 起点/终点=取料接近位 (传送带上方)
- *      - planWithSplitting自动在大距离搬运段分割路径
+ *   3. 运动简化: 起点/终点=取料接近位 (传送带上方)
  *   4. 箱子碰撞强化: Base+LowerArm硬约束, Elbow诊断, margin=40mm
  *
  * v6.3 变更: 独立箱子-机械臂碰撞检测 (BoxCollisionChecker)
@@ -28,7 +32,7 @@
  *   3. 工具球修正: toolIndex 6→1
  *   4. 路径后优化: 300次shortcut
  *
- * @date 2026-03-02
+ * @date 2026-03-03
  * @copyright Copyright (c) 2026 Guangdong Huayan Robotics Co., Ltd.
  */
 
@@ -477,8 +481,8 @@ SegmentResult executeRRTStar(const char* name,
 // ============================================================================
 int main() {
     printf("╔═══════════════════════════════════════════════════════════════════╗\n");
-    printf("║   HR_S50-2000 码垛仿真 v6.5 — 侧绕搬运 + 箱子碰撞强化          ║\n");
-    printf("║   传送带→框架 + 侧绕搬运 + Lozenge面板 + TCP水平约束            ║\n");
+    printf("║   HR_S50-2000 码垛仿真 v6.5 — +X/+Y短弧搬运路径优化            ║\n");
+    printf("║   J1短弧(116°) + 2段对角搬运 + 中转高度优化                     ║\n");
     printf("╚═══════════════════════════════════════════════════════════════════╝\n\n");
 
     auto t_global = std::chrono::high_resolution_clock::now();
@@ -856,105 +860,57 @@ int main() {
                PICK_POS.q[3]*180/M_PI, PICK_POS.q[4]*180/M_PI, PICK_POS.q[5]*180/M_PI);
         printf("    取料: %s(%.1fmm, B=%.1f C=%.1f Z↓dev=%.1f°)\n",
                ikPk.converged?"✅":"❌",ikPk.posError_mm, pkTcp.B, pkTcp.C, downDev(pkTcp));
-        printf("    接近: q=[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]deg\n",
-               PICK_APPROACH.q[0]*180/M_PI, PICK_APPROACH.q[1]*180/M_PI, PICK_APPROACH.q[2]*180/M_PI,
-               PICK_APPROACH.q[3]*180/M_PI, PICK_APPROACH.q[4]*180/M_PI, PICK_APPROACH.q[5]*180/M_PI);
         printf("    接近: %s(%.1fmm, B=%.1f C=%.1f Z↓dev=%.1f°)\n",
                ikPkA.converged?"✅":"❌",ikPkA.posError_mm, paTcp.B, paTcp.C, downDev(paTcp));
     }
 
-    // === v6.5: 搜索中转兼容IK解 (J4≈0, J6≈0) ===
-    // 目标: 找到取料接近位IK解, 其中J4和J6接近0
-    //   如果成功, 从取料接近到低高度中转的P2P过渡偏差会显著减小
-    //   使得侧绕(Z<2m)路径可行
-    printf("\n  === 搜索中转兼容取料IK (J4≈0 J6≈0) ===\n");
+    // === J1旋转方向优化: 选择最短弧 ===
+    // 取料J1≈158° → 放料J1≈-85° = 243.5° (长弧, 经过-X/-Y方向)
+    // 放料J1+360=275° → 158→275 = 116.5° (短弧, 经过+X/+Y方向!) 
+    // J1=-85° ≡ J1=275° (mod 360°): FK完全相同, 仅关节空间路径不同
+    printf("\n  === J1旋转方向优化 (短弧选择) ===\n");
     {
-        // 中转兼容种子: J4=0, J5=180+J2-J3, J6=0
-        // 覆盖多种J1/J2/J3组合
-        std::vector<JointConfig> altSeeds;
-        for (double j1 : {155.0, 158.0, 160.0, 163.0, 165.0, 170.0, 175.0, 180.0}) {
-            for (double j2 : {-50.0, -55.0, -60.0, -65.0, -70.0, -75.0, -80.0}) {
-                double j3 = j2 + 80.0;  // → J5=100
-                altSeeds.push_back(JointConfig::fromDegrees({j1, j2, j3, 0.0, 100.0, 0.0}));
-                // 也尝试J6=j1 (SO IK可能偏好这个分支)
-                altSeeds.push_back(JointConfig::fromDegrees({j1, j2, j3, 0.0, 90.0, 0.0}));
-            }
+        auto pickDeg_opt = PICK_APPROACH.toDegrees();
+        double pickJ1 = pickDeg_opt[0];  // ≈158.5°
+        auto& pc0 = placeConfigs[0];
+        auto placeDeg_opt = pc0.approach.toDegrees();
+        double origJ1 = placeDeg_opt[0]; // ≈-85°
+        double origDist = std::fabs(pickJ1 - origJ1);
+
+        double bestJ1 = origJ1, bestDist = origDist;
+        for (double shift : {360.0, -360.0}) {
+            double cand = origJ1 + shift;
+            if (cand < -360.0 || cand > 360.0) continue;
+            double d = std::fabs(pickJ1 - cand);
+            if (d < bestDist) { bestDist = d; bestJ1 = cand; }
         }
-        // 也加入标准种子和已found的pick解作为额外参考
-        for (auto& s : pkSeeds) altSeeds.push_back(s);
-        if (ikPk.converged) altSeeds.push_back(ikPk.config);
 
-        // 搜索: 取料位
-        auto ikPkAlt = soIKHorizontal(checker, robot, pickTgt, altSeeds, 3.0);
-        // 搜索: 取料接近位
-        auto altApSeeds = altSeeds;
-        if (ikPkAlt.converged) altApSeeds.insert(altApSeeds.begin(), ikPkAlt.config);
-        auto ikPkApAlt = soIKHorizontal(checker, robot, pickApprTgt, altApSeeds, 3.0);
-
-        // 评估J4/J6差距
-        auto origPkDeg = PICK_POS.toDegrees();
-        auto origPaDeg = PICK_APPROACH.toDegrees();
-        double origJ46 = std::fabs(origPaDeg[3]) + std::fabs(origPaDeg[5]);
-        printf("    原始取料IK: J4=%.1f° J6=%.1f° (|J4|+|J6|=%.1f°)\n",
-               origPaDeg[3], origPaDeg[5], origJ46);
-
-        if (ikPkAlt.converged && ikPkApAlt.converged) {
-            auto altPkDeg = ikPkAlt.config.toDegrees();
-            auto altPaDeg = ikPkApAlt.config.toDegrees();
-            double altJ46 = std::fabs(altPaDeg[3]) + std::fabs(altPaDeg[5]);
-            printf("    替代取料IK: J4=%.1f° J6=%.1f° (|J4|+|J6|=%.1f°) err=%.1fmm\n",
-                   altPaDeg[3], altPaDeg[5], altJ46, ikPkApAlt.posError_mm);
-            printf("    替代取料位: [%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]\n",
-                   altPkDeg[0],altPkDeg[1],altPkDeg[2],altPkDeg[3],altPkDeg[4],altPkDeg[5]);
-            printf("    替代接近位: [%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]\n",
-                   altPaDeg[0],altPaDeg[1],altPaDeg[2],altPaDeg[3],altPaDeg[4],altPaDeg[5]);
-
-            // 计算替代IK与低高度中转的过渡偏差
-            for (double candJ2 : {-45.0, -50.0, -55.0, -60.0}) {
-                double candJ3 = candJ2 + 80;
-                JointConfig transitTest = JointConfig::fromDegrees(
-                    {altPaDeg[0], candJ2, candJ3, 0, 100.0, 0});
-                double devMax = 0;
-                for (int i = 1; i < 30; i++) {
-                    double t = (double)i / 30;
-                    JointConfig qm = ikPkApAlt.config.interpolate(transitTest, t);
-                    SO_COORD_REF tc; checker.forwardKinematics(qm, tc);
-                    double dev = std::fabs(tc.B);
-                    if (dev > devMax) devMax = dev;
-                }
-                double worldZ = 0; // approximate from FK
-                {
-                    SO_COORD_REF tc; checker.forwardKinematics(transitTest, tc);
-                    worldZ = tc.Z + scene::baseZ;
-                }
-                printf("    替代→中转(J2=%.0f°): pickDev=%.1f° worldZ=%.0fmm %s\n",
-                       candJ2, devMax, worldZ, (devMax <= 30) ? "✅" : "⚠️");
-            }
-
-            // 如果替代IK比原始更接近中转(J4/J6更小), 则采用
-            if (altJ46 < origJ46 * 0.7 && ikPkApAlt.posError_mm < 3.0) {
-                printf("    ✅ 采用替代IK (J4/J6更小: %.1f° vs %.1f°)\n", altJ46, origJ46);
-                PICK_POS = ikPkAlt.config;
-                PICK_APPROACH = ikPkApAlt.config;
-            } else {
-                printf("    ⚠️ 替代IK无改善 (J4/J6: %.1f° vs %.1f°), 保持原始\n", altJ46, origJ46);
-            }
+        if (std::fabs(bestJ1 - origJ1) > 1.0) {
+            double shift_rad = (bestJ1 - origJ1) * M_PI / 180.0;
+            pc0.place.q[0] += shift_rad;
+            pc0.approach.q[0] += shift_rad;
+            printf("  放料J1: %.1f° → %.1f° (旋转: %.1f° → %.1f°, 节省%.0f%%)\n",
+                   origJ1, bestJ1, origDist, bestDist,
+                   100.0*(1.0 - bestDist/origDist));
         } else {
-            printf("    ❌ 替代IK求解失败\n");
+            printf("  J1已最优: %.1f° (旋转: %.1f°)\n", origJ1, bestDist);
         }
+        printf("  路径方向: 取J1=%.1f° → 放J1=%.1f° (%s, 经过+X/+Y象限)\n",
+               pickJ1, bestJ1,
+               bestJ1 > pickJ1 ? "J1递增" : "J1递减");
     }
 
-    // v6.5: TCP起止位于传送带/放料上方, 搬运经侧绕或高位中转
-    printf("  📌 v6.5: TCP起止位于传送带/放料上方, 搬运经侧绕路径\n");
+    // v6.5: J1短弧搬运路径 — 经过+X/+Y象限, 2段对角P2P
+    printf("  📌 v6.5: J1短弧+2段对角搬运, 经过+X/+Y象限\n");
 
     // ---- 单箱搬运执行 ----
-    printf("\n━━━━━━ 阶段4: 单箱搬运 (传送带→框架, v6.4简化) ━━━━━━━━━━\n\n");
+    printf("\n━━━━━━ 阶段4: 单箱搬运 (v6.5 +X/+Y短弧搬运) ━━━━━━━━━━━━━\n\n");
 
     FILE* fpCsv = fopen("data/so_palletizing_profile.csv","w");
     if(fpCsv) fprintf(fpCsv,"task,segment,step,time_s,q1,q2,q3,q4,q5,q6,"
                       "selfDist_mm,selfCollision,envCollision,tcpX_mm,tcpY_mm,tcpZ_mm\n");
     FILE* fpTraj = fopen("data/so_palletizing_trajectory.txt","w");
-    if(fpTraj) { fprintf(fpTraj,"# HR_S50-2000 码垛v6.5 — 单箱搬运 (8段侧绕/高位中转)\n");
+    if(fpTraj) { fprintf(fpTraj,"# HR_S50-2000 码垛v6.5 — 单箱搬运 (7段+X/+Y短弧)\n");
                  fprintf(fpTraj,"# task seg time q1..q6 v1..v6 dist tcpX tcpY tcpZ\n"); }
 
     double totalMotionTime=0; int totalCollisions=0, totalEnvCollisions=0;
@@ -970,215 +926,144 @@ int main() {
            pickTgt.x(), pickTgt.y(), pickTgt.z(),
            bt.pos_mm.x(), bt.pos_mm.y(), bt.pos_mm.z());
 
-    // v6.5: 搬运路径策略 — 侧绕 (低空) vs 高位中转
+    // v6.5: +X/+Y短弧搬运 — 2段对角P2P (J1旋转与升降并行)
     //
-    // 问题: v6.4高位中转 Z≈2272mm FK2 (世界3.07m), 路径长
-    // 目标: 从+X,+Y象限侧绕, Z<2m世界 (Z<1200mm FK2)
+    // v6.4问题: 搬运3段P2P经过顶部 (J1旋转243.5°, 绕过-X/-Y)
+    //   - 总搬运时间12.2s (抬升4.3s + 旋转3.8s + 降低4.1s)
+    //   - 路径从机械臂正上方越过, 距离长
     //
-    // 分析方法:
-    //   对不同臂高配置 [J1, J2, J3, 0, J5=180+J2-J3, 0]:
-    //     J5=180+J2-J3 保证TCP精确水平 (|B|=0°, J4=J6=0)
-    //     扫描J1从取料方向到放料方向, 检测碰撞
-    //   找到 世界Zmax < 2m 且 全J1通道无碰撞 且 P2P过渡偏差<30° 的最低臂高
+    // v6.5优化:
+    //   1. J1短弧: 放料J1+360° → J1旋转仅116.5° (经过+X/+Y象限)
+    //   2. 2段对角: J1旋转与升降并行 (S曲线各关节同时运动)
+    //      seg_up:   PICK_APPROACH → CARRY_HIGH (J1转到放料方向 + 升高)
+    //      seg_down: CARRY_HIGH → place_approach (仅降低, J1已到位)
+    //   3. KEY INSIGHT: J1是基座旋转, 不影响|B|(TCP pitch)
+    //      → 对角运动的TCP偏差 = 纯升降的TCP偏差 (已验证<30°)
+    //
+    // 为什么不用直接传输 (PICK→PLACE单段P2P):
+    //   工作高度臂展1200mm, J1旋转116°时臂端扫过框架附近 (Y=825mm)
+    //   → 必须先升高到框架上方, 再降低到放料位
 
+    // 取/放 接近配置 (J1已通过短弧优化)
     auto paDeg = PICK_APPROACH.toDegrees();  // 取料接近
-    auto plDeg = pc.approach.toDegrees();    // 放料接近
+    auto plDeg = pc.approach.toDegrees();    // 放料接近 (J1已优化为+275°)
 
-    double J1_pick = paDeg[0];   // ≈147.6° (替代IK)
-    double J1_place = plDeg[0];  // ≈-84.9°
+    // === 中转高度扫描: 寻找满足TCP水平+无碰撞的最低安全高度 ===
+    // 默认: J2=-90 (HOME臂型, Z≈2272mm, |B|=0°)
+    // 尝试: J2=-85,-80,...,-65 配合 J5=-J2 维持TCP水平
+    // ⚠️ 必须带工具球检测: pair(6,3)在低高度会碰撞 (J2=-75→dist=0!)
+    // 条件: |B|<10° + 无碰撞(含工具球) + Z>框架顶+200mm
+    printf("  === 中转高度扫描 (含工具球碰撞检测) ===\n");
+    double transitJ2 = -90.0, transitJ5 = 90.0;
+    double transitZ_mm = 2272.0;
+    {
+        // 临时启用工具球进行扫描 (搬运时工具球始终活跃)
+        bool toolTmpOk = checker.setToolBall(1, Eigen::Vector3d(0, 0, -400), 120.0);
+        printf("    临时工具球: %s\n", toolTmpOk?"ON":"FAIL");
 
-    // === J1方向选择: 顺时针过+Y (短路径) vs 逆时针过-Y (长路径) ===
-    // 取料J1=147.6° 放料J1=-84.9° → 差232.5° > 180°
-    // 包裹J1_place += 360°使路径从147.6°→275.1° (经+X,+Y, 仅127.5°)
-    // 而非147.6°→-84.9° (经-Y, 232.5°长路径)
-    if (J1_pick - J1_place > 180.0) {
-        double oldJ1 = J1_place;
-        J1_place += 360.0;
-        // 同步包裹放料IK配置的J1 (275.1° 与 -84.9° FK相同)
-        pc.approach.q[0] += 2.0 * M_PI;
-        pc.place.q[0]    += 2.0 * M_PI;
-        printf("  J1包裹: 放料J1 %.1f° → %.1f° (顺时针经+X,+Y象限)\n", oldJ1, J1_place);
-        printf("         路径: %.1f° → %.1f° (Δ=%.1f° 短路径)\n",
-               J1_pick, J1_place, J1_place - J1_pick);
-    }
+        double j1_test = (paDeg[0] + plDeg[0]) / 2.0;  // J1中间值用于测试
+        double frameTop = fZT;  // 框架顶Z (base frame, mm)
+        double minSafeZ = frameTop + 200.0;  // 安全高度: 框架顶+200mm
 
-    printf("\n  ══════ 搬运中转高度可行性分析 ══════\n");
-    printf("  J1: 取料=%.1f° → 放料=%.1f° (扫掠%.1f°)\n",
-           J1_pick, J1_place, J1_place - J1_pick);
-    printf("  目标: 世界Z < 2000mm 且 P2P取料过渡TCP偏差 < 30°\n");
-    printf("  约束: J5 = 180+J2-J3, J4=J6=0 → |B|≈0°\n\n");
+        struct HeightCandidate { double j2, j5, z, b_abs, selfDist; bool ok; };
+        std::vector<HeightCandidate> candidates;
 
-    // 临时启用工具球 (模拟搬运条件)
-    checker.setToolBall(1, Eigen::Vector3d(0, 0, -400), 120.0);
-
-    struct TransitCandidate {
-        double J2, J3;
-        double J5() const { return 180.0 + J2 - J3; }
-        // J1扫描结果
-        double worldZmax = 0;
-        double minSelfDist = 1e10;
-        int selfCollCount = 0, envCollCount = 0;
-        bool j1Clear = false;
-        // P2P过渡偏差 (取料侧: PICK_APPROACH → transit)
-        double pickTransDev = 0;  // 取料侧最大|B|偏差
-        // P2P过渡偏差 (放料侧: transit → place approach)
-        double placeTransDev = 0; // 放料侧最大|B|偏差
-    };
-
-    // 细粒度候选: J2从-90到-42 (步长3°), J3=J2+80 使 J5=100°
-    // HOME特例: J2=-90, J3=0, J5=90
-    std::vector<TransitCandidate> candidates;
-    candidates.push_back({-90, 0});  // HOME baseline
-    for (double j2 = -87; j2 <= -42; j2 += 3)
-        candidates.push_back({j2, j2 + 80});
-
-    printf("  %-5s %-4s %-4s  %-8s %-8s %-8s %-6s %-6s %s\n",
-           "J2°", "J3°", "J5°", "worldZ", "minSelf", "pickDev", "plcDev", "maxDev", "评估");
-    printf("  %s\n", std::string(85, '-').c_str());
-
-    int bestIdx = -1;  // 最优: Z<2m + dev<30° + no collision
-    int bestLowZ = -1; // 最低Z (不管deviation)
-    for (int ci = 0; ci < (int)candidates.size(); ci++) {
-        auto& c = candidates[ci];
-        c.minSelfDist = 1e10; c.selfCollCount = 0; c.envCollCount = 0;
-        double tcpZmax = -1e10;
-
-        // === 1. J1全通道碰撞扫描 ===
-        double j1Lo = std::min(J1_pick, J1_place);
-        double j1Hi = std::max(J1_pick, J1_place);
-        for (double J1 = j1Lo; J1 <= j1Hi + 0.1; J1 += 3.0) {
-            auto q = JointConfig::fromDegrees({J1, c.J2, c.J3, 0, c.J5(), 0});
-            if (!robot.isWithinLimits(q)) { c.envCollCount++; continue; }
-            SO_COORD_REF tcp; checker.forwardKinematics(q, tcp);
-            if (tcp.Z > tcpZmax) tcpZmax = tcp.Z;
-            auto rp = checker.getCollisionReport(q, false);
-            if (rp.selfMinDist_mm < c.minSelfDist) c.minSelfDist = rp.selfMinDist_mm;
-            if (rp.selfCollision) c.selfCollCount++;
-            if (rp.envCollision) c.envCollCount++;
-        }
-        c.worldZmax = tcpZmax + scene::baseZ;
-        c.j1Clear = (c.selfCollCount == 0 && c.envCollCount == 0);
-
-        // === 2. P2P过渡TCP偏差测试 ===
-        // 取料侧: PICK_APPROACH → [J1_pick, J2, J3, 0, J5, 0]
-        JointConfig transitPick = JointConfig::fromDegrees(
-            {J1_pick, c.J2, c.J3, 0, c.J5(), 0});
-        c.pickTransDev = 0;
-        for (int i = 1; i < 30; i++) {
-            double t = (double)i / 30;
-            JointConfig qm = PICK_APPROACH.interpolate(transitPick, t);
-            SO_COORD_REF tc; checker.forwardKinematics(qm, tc);
-            double dev = std::fabs(tc.B);
-            if (dev > c.pickTransDev) c.pickTransDev = dev;
+        for (double j2 = -65; j2 >= -90; j2 -= 5) {
+            double j5 = -j2;  // J5=-J2 维持TCP水平 (HOME: J2=-90,J5=90 → J2+J5=0)
+            JointConfig qTest = JointConfig::fromDegrees({j1_test, j2, 0, 0, j5, 0});
+            SO_COORD_REF tc; checker.forwardKinematics(qTest, tc);
+            auto rp = checker.getCollisionReport(qTest, false);
+            bool collFree = !rp.selfCollision && !rp.envCollision;
+            double Babs = std::fabs(tc.B);
+            // 严格条件: |B|<10° + 无碰撞 + Z安全 + 自碰撞距离>5mm
+            bool viable = (Babs < 10.0 && collFree && tc.Z > minSafeZ && rp.selfMinDist_mm > 5.0);
+            candidates.push_back({j2, j5, tc.Z, Babs, rp.selfMinDist_mm, viable});
+            printf("    J2=%4.0f° J5=%3.0f°: Z=%6.0fmm |B|=%4.1f° self=%.1fmm(%d,%d) %s%s\n",
+                   j2, j5, tc.Z, Babs, rp.selfMinDist_mm, rp.selfPairA, rp.selfPairB,
+                   collFree?"free":"COLL",
+                   viable?" ★VIABLE":"");
         }
 
-        // 放料侧: [J1_place, J2, J3, 0, J5, 0] → place_approach
-        JointConfig transitPlace = JointConfig::fromDegrees(
-            {J1_place, c.J2, c.J3, 0, c.J5(), 0});
-        c.placeTransDev = 0;
-        for (int i = 1; i < 30; i++) {
-            double t = (double)i / 30;
-            JointConfig qm = transitPlace.interpolate(pc.approach, t);
-            SO_COORD_REF tc; checker.forwardKinematics(qm, tc);
-            double dev = std::fabs(tc.B);
-            if (dev > c.placeTransDev) c.placeTransDev = dev;
-        }
+        // 移除临时工具球
+        checker.removeTool(1);
 
-        double maxDev = std::max(c.pickTransDev, c.placeTransDev);
-        const char* status;
-        if (c.j1Clear && c.worldZmax <= 2000 && maxDev <= 30)
-            status = "✅ 最优(Z<2m+dev<30°)";
-        else if (c.j1Clear && maxDev <= 30)
-            status = "✅ dev<30°(超2m)";
-        else if (c.j1Clear && c.worldZmax <= 2000)
-            status = "⚠️ Z<2m但dev>30°";
-        else if (c.j1Clear)
-            status = "⚠️ 超2m+dev>30°";
-        else
-            status = "❌ J1碰撞";
-        printf("  %5.0f %4.0f %4.0f  %7.0f %7.1f %7.1f° %5.1f° %5.1f° %s\n",
-               c.J2, c.J3, c.J5(), c.worldZmax, c.minSelfDist,
-               c.pickTransDev, c.placeTransDev, maxDev, status);
-
-        // 最低Z且无碰撞
-        if (c.j1Clear && (bestLowZ < 0 || c.worldZmax < candidates[bestLowZ].worldZmax))
-            bestLowZ = ci;
-        // 最优: Z<2m + dev<30°
-        if (c.j1Clear && c.worldZmax <= 2000 && maxDev <= 30) {
-            if (bestIdx < 0 || c.worldZmax < candidates[bestIdx].worldZmax)
-                bestIdx = ci;
-        }
-    }
-
-    // 移除临时工具球 (后面carry段会重新设置)
-    checker.removeTool(1);
-
-    // === 选择中转策略 ===
-    // 优先1: Z<2m + dev<30° + 无碰撞 (完美侧绕)
-    // 优先2: dev<30° + 无碰撞 (降低高度, 但超2m)
-    // 回退:  无碰撞 + 最低Z (接受dev>30°, 需要中间航点或放宽容差)
-    double transitJ2, transitJ3, transitJ5;
-    int selectedIdx;
-    if (bestIdx >= 0) {
-        selectedIdx = bestIdx;
-        auto& c = candidates[bestIdx];
-        transitJ2 = c.J2; transitJ3 = c.J3; transitJ5 = c.J5();
-        printf("\n  🎯 完美侧绕: J2=%.0f° J3=%.0f° → worldZ=%.0fmm, pickDev=%.1f°, plcDev=%.1f°\n",
-               transitJ2, transitJ3, c.worldZmax, c.pickTransDev, c.placeTransDev);
-    } else {
-        // 无完美方案 — 选择dev<30°的最低Z
-        int bestDev30 = -1;
-        for (int i = 0; i < (int)candidates.size(); i++) {
-            if (!candidates[i].j1Clear) continue;
-            double mx = std::max(candidates[i].pickTransDev, candidates[i].placeTransDev);
-            if (mx <= 30) {
-                if (bestDev30 < 0 || candidates[i].worldZmax < candidates[bestDev30].worldZmax)
-                    bestDev30 = i;
+        // 选择Z最低的可行高度 (最低=最优)
+        for (auto& c : candidates) {
+            if (c.ok && c.z < transitZ_mm) {
+                transitJ2 = c.j2; transitJ5 = c.j5; transitZ_mm = c.z;
             }
         }
-        if (bestDev30 >= 0) {
-            selectedIdx = bestDev30;
-            auto& c = candidates[bestDev30];
-            transitJ2 = c.J2; transitJ3 = c.J3; transitJ5 = c.J5();
-            printf("\n  ⚠️ dev<30°最低: J2=%.0f° J3=%.0f° → worldZ=%.0fmm (超2m, 但偏差可控)\n",
-                   transitJ2, transitJ3, c.worldZmax);
-        } else if (bestLowZ >= 0) {
-            selectedIdx = bestLowZ;
-            auto& c = candidates[bestLowZ];
-            transitJ2 = c.J2; transitJ3 = c.J3; transitJ5 = c.J5();
-            printf("\n  ⚠️ 无dev<30°方案, 选最低Z: J2=%.0f° J3=%.0f° → worldZ=%.0fmm, dev=%.1f°\n",
-                   transitJ2, transitJ3, c.worldZmax,
-                   std::max(c.pickTransDev, c.placeTransDev));
-        } else {
-            selectedIdx = 0;
-            transitJ2 = -90; transitJ3 = 0; transitJ5 = 90;
-            printf("\n  ❌ 无碰撞通道, 回退HOME高位\n");
-        }
+        printf("  → 最佳中转: J2=%.0f° J5=%.0f° Z=%.0fmm (框架顶+%.0fmm)\n",
+               transitJ2, transitJ5, transitZ_mm, transitZ_mm - frameTop);
     }
 
-    // 中转配置: [J1_pick/place, transitJ2, transitJ3, 0, transitJ5, 0]
-    JointConfig CARRY_TRANSIT_PICK = JointConfig::fromDegrees(
-        {J1_pick, transitJ2, transitJ3, 0, transitJ5, 0});
-    JointConfig CARRY_TRANSIT_PLACE = JointConfig::fromDegrees(
-        {J1_place, transitJ2, transitJ3, 0, transitJ5, 0});
+    // 高位中转: 仅配置CARRY_HIGH (放料J1方向, 选定高度)
+    // v6.5: 只需一个HIGH点 (在放料J1方向), 不再需要HIGH_PICK
+    // 2段对角: PICK_APPROACH → CARRY_HIGH → place_approach
+    //   seg_up:   J1从取料→放料 + 升高 (并行, S曲线)
+    //   seg_down: J1不变 + 降低 (仅纵向运动)
+    // J4=0,J6=0: 确保B=0 (TCP精确朝下)
+    JointConfig CARRY_HIGH = JointConfig::fromDegrees(
+        {(double)plDeg[0], transitJ2, 0.0, 0.0, transitJ5, 0.0});
 
-    // 验证中转配置
-    printf("\n  搬运中转验证:\n");
+    // 验证高位中转配置
+    printf("\n  搬运路径验证 (+X/+Y短弧):\n");
     {
-        auto report_transit = [&](const char* label, const JointConfig& q) {
+        auto report_wp = [&](const char* label, const JointConfig& q) {
             auto rp = checker.getCollisionReport(q, true);
             SO_COORD_REF tc; checker.forwardKinematics(q, tc);
             auto qdeg = q.toDegrees();
             printf("    %s: q=[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]deg\n",
                    label, qdeg[0], qdeg[1], qdeg[2], qdeg[3], qdeg[4], qdeg[5]);
-            printf("      TCP=(%.0f,%.0f,%.0f)mm worldZ=%.0fmm A=%.1f B=%.1f C=%.1f\n",
-                   tc.X, tc.Y, tc.Z, tc.Z + scene::baseZ, tc.A, tc.B, tc.C);
+            printf("      TCP=(%.0f,%.0f,%.0f)mm A=%.1f B=%.1f C=%.1f\n",
+                   tc.X, tc.Y, tc.Z, tc.A, tc.B, tc.C);
             printf("      self=%s(%.1fmm) env=%s |B|=%.1f°\n",
                    rp.selfCollision?"⚠COLL":"ok", rp.selfMinDist_mm,
                    rp.envCollision?"⚠ENV":"ok", std::fabs(tc.B));
         };
-        report_transit("中转(取)", CARRY_TRANSIT_PICK);
-        report_transit("中转(放)", CARRY_TRANSIT_PLACE);
+        report_wp("取料接近", PICK_APPROACH);
+        report_wp("中转高位", CARRY_HIGH);
+        report_wp("放料接近", pc.approach);
+
+        // 验证2段对角P2P的TCP偏差 (J1不影响B, 所以只需检查J2/J3/J5变化)
+        printf("\n  TCP偏差预验证 (20点采样):\n");
+        auto calcB = [&](const JointConfig& q) -> double {
+            SO_COORD_REF tc; checker.forwardKinematics(q, tc);
+            return std::fabs(tc.B);
+        };
+        double maxUp = 0, maxDown = 0;
+        for (int i = 1; i < 20; i++) {
+            double t = (double)i / 20;
+            double devUp = calcB(PICK_APPROACH.interpolate(CARRY_HIGH, t));
+            double devDn = calcB(CARRY_HIGH.interpolate(pc.approach, t));
+            if (devUp > maxUp) maxUp = devUp;
+            if (devDn > maxDown) maxDown = devDn;
+        }
+        printf("    对角上升段: max|B|=%.1f° %s\n", maxUp, maxUp<=30?"✅":"⚠️>30°");
+        printf("    降低段:     max|B|=%.1f° %s\n", maxDown, maxDown<=30?"✅":"⚠️>30°");
+
+        // 验证沿途碰撞 (40点采样)
+        printf("  碰撞路径验证:\n");
+        int collUp = 0, collDown = 0;
+        for (int i = 0; i <= 40; i++) {
+            double t = (double)i / 40;
+            if (!checker.isCollisionFree(PICK_APPROACH.interpolate(CARRY_HIGH, t))) collUp++;
+            if (!checker.isCollisionFree(CARRY_HIGH.interpolate(pc.approach, t))) collDown++;
+        }
+        printf("    对角上升段: %d/%d碰撞点 %s\n", collUp, 41, collUp==0?"✅":"⚠️");
+        printf("    降低段:     %d/%d碰撞点 %s\n", collDown, 41, collDown==0?"✅":"⚠️");
+
+        // TCP位置沿途追踪 (展示+X/+Y象限路径)
+        printf("  TCP轨迹追踪 (对角上升段, 5点):\n");
+        for (int i = 0; i <= 4; i++) {
+            double t = (double)i / 4;
+            JointConfig q = PICK_APPROACH.interpolate(CARRY_HIGH, t);
+            SO_COORD_REF tc; checker.forwardKinematics(q, tc);
+            printf("    t=%.2f: TCP=(%.0f,%.0f,%.0f)mm |B|=%.1f° %s象限\n",
+                   t, tc.X, tc.Y, tc.Z, std::fabs(tc.B),
+                   (tc.X>0 && tc.Y>0)?"Q1(+X,+Y)":(tc.X<0 && tc.Y>0)?"Q2(-X,+Y)":
+                   (tc.X<0 && tc.Y<0)?"Q3(-X,-Y)":"Q4(+X,-Y)");
+        }
     }
 
     struct MotionSeg {
@@ -1188,17 +1073,17 @@ int main() {
         int toolAction;  // 0=无, 1=启用工具球, 2=禁用工具球+添加放置障碍
         bool freeTcp;    // true=使用Free-TCP规划器
     };
+    // v6.5: 7段运动 (2段对角搬运替代3段顺序搬运)
     MotionSeg motions[] = {
-        {"取料接近→取料",        PICK_APPROACH,      PICK_POS,            false, 0, false},
-        {"取料→取料抬升",        PICK_POS,           PICK_APPROACH,       false, 1, false},  // ★启用工具球+箱子碰撞
-        {"搬运:抬升→中转(取)",   PICK_APPROACH,      CARRY_TRANSIT_PICK,  false, 0, false},  // P2P升高
-        {"搬运:侧绕旋转",        CARRY_TRANSIT_PICK, CARRY_TRANSIT_PLACE, false, 0, false},  // P2P J1旋转
-        {"搬运:中转(放)→降低",   CARRY_TRANSIT_PLACE,pc.approach,         false, 0, false},  // P2P降低
-        {"放料接近→放料",        pc.approach,         pc.place,           false, 0, false},
-        {"放料→放料抬升",        pc.place,            pc.approach,        false, 2, false},  // ★禁用工具球
-        {"放料抬升→取料接近",    pc.approach,         PICK_APPROACH,      true,  0, true},   // RRT* Free-TCP返回
+        {"取料接近→取料",         PICK_APPROACH,  PICK_POS,      false, 0, false},
+        {"取料→取料抬升",         PICK_POS,       PICK_APPROACH, false, 1, false},  // ★启用工具球+箱子碰撞
+        {"搬运:对角上升+旋转",    PICK_APPROACH,  CARRY_HIGH,    false, 0, false},  // ★对角: J1旋转+升高并行
+        {"搬运:降低→放料接近",    CARRY_HIGH,     pc.approach,   false, 0, false},  // 降低到放料位
+        {"放料接近→放料",         pc.approach,    pc.place,      false, 0, false},
+        {"放料→放料抬升",         pc.place,       pc.approach,   false, 2, false},  // ★禁用工具球
+        {"放料抬升→取料接近",     pc.approach,    PICK_APPROACH, true,  0, true},   // RRT* Free-TCP返回
     };
-    const int NUM_SEGS = 8;
+    const int NUM_SEGS = 7;
 
     for (int s = 0; s < NUM_SEGS; s++) {
         auto& m = motions[s];
@@ -1242,8 +1127,8 @@ int main() {
                    planConfig.boxCollision.safetyMargin);
 
             // 诊断: 检查搬运段起止点碰撞状态 (含箱子碰撞)
-            printf("  🔍 搬运段碰撞诊断 (seg %d-%d):\n", s, std::min(s+5, NUM_SEGS-1));
-            for (int di = s; di <= std::min(s+5, NUM_SEGS-1); di++) {
+            printf("  🔍 搬运段碰撞诊断 (seg %d-%d):\n", s, std::min(s+4, NUM_SEGS-1));
+            for (int di = s; di <= std::min(s+4, NUM_SEGS-1); di++) {
                 auto& dm = motions[di];
                 auto rpS = checker.getCollisionReport(dm.start, true);
                 auto rpT = checker.getCollisionReport(dm.target, true);
@@ -1291,7 +1176,7 @@ int main() {
         // ⚠️ FK2 Euler (A,B,C) 不是标准ZYX — C随J1变化, 不代表物理倾斜
         // 正确度量: |B| = TCP切面偏离水平的角度 (B=0时TCP精确朝下)
         // 与PathPlannerSO的TCP-Horizontal检查一致 (仅检查B)
-        bool isCarryP2P = (!m.useRRT && s >= 2 && s <= 4);  // 搬运P2P子段
+        bool isCarryP2P = (!m.useRRT && s >= 2 && s <= 3);  // 搬运P2P子段 (2段对角)
         if ((m.useRRT || isCarryP2P) && seg.success) {
             auto calcDev = [&](const JointConfig& q) {
                 SO_COORD_REF tc; checker.forwardKinematics(q, tc);
@@ -1370,7 +1255,7 @@ int main() {
     // 写摘要
     FILE* fpSum = fopen("data/so_palletizing_summary.txt","w");
     if (fpSum) {
-        fprintf(fpSum,"# HR_S50-2000 码垛v6.5 — 侧绕搬运+箱子碰撞强化\n\nversion: 6.5\n");
+        fprintf(fpSum,"# HR_S50-2000 码垛v6.5 — +X/+Y短弧搬运路径优化\n\nversion: 6.5\n");
         fprintf(fpSum,"positions: 1\nsegments: %d\ntotal_motion_s: %.4f\n",totalSegments,totalMotionTime);
         fprintf(fpSum,"self_collisions: %d\nenv_collisions: %d\nmin_dist_mm: %.2f\n",
                 totalCollisions,totalEnvCollisions,globalMinDist_mm);
@@ -1378,9 +1263,7 @@ int main() {
         fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+3_lozengeWall+1_placed\n");
         fprintf(fpSum,"wall_panels: back+left+right_lozengeOBB_100mm_thick\n");
         fprintf(fpSum,"tool_collision: ball_z-400_r120_toolIdx1_SOlimit_pair64\n");
-        fprintf(fpSum,"carry_strategy: side_pass_J2%.0f_J3%.0f_J5%.0f_worldZmax%.0fmm\n",
-                transitJ2, transitJ3, transitJ5,
-                (bestIdx >= 0) ? candidates[bestIdx].worldZmax : 3072.0);
+        fprintf(fpSum,"carry_strategy: short_arc_2diag_J1opt_XpYp_transit\n");
         fprintf(fpSum,"box_collision: base_lowerarm_hard_elbow_diag_margin40mm\n");
         fprintf(fpSum,"frame_gap_mm: %.0f\nconv_gap_mm: %.0f\nframe_cy_mm: %.0f\n",
                 scene::FRAME_GAP, scene::CONV_GAP, fcy);
@@ -1416,7 +1299,7 @@ int main() {
     }
 
     printf("\n══════════════════════════════════════════════════════════════════\n");
-    printf("  HR_S50-2000 码垛仿真 v6.5 — 侧绕搬运 + 箱子碰撞强化\n");
+    printf("  HR_S50-2000 码垛仿真 v6.5 — +X/+Y短弧搬运路径优化\n");
     printf("══════════════════════════════════════════════════════════════════\n");
     return 0;
 }

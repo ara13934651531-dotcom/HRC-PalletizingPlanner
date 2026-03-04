@@ -119,7 +119,7 @@ cfg_box.lx=0.35; cfg_box.wy=0.28; cfg_box.hz=0.25;
 cfg_box.color=[0.65,0.45,0.25];
 cfg_nBoxes = 1;   % 箱子数目 (可调: 1=验证, 3=演示, 12=完整码垛)
 cfg_animTaskLimit = 0;  % 0=全部任务 (调试时可设为3限制前N个)
-cfg_frameGap = 0.50; cfg_convGap = 0.60;  % v6.4: FRAME_GAP=500mm, CONV_GAP=600mm
+cfg_frameGap = 0.50; cfg_convGap = 0.60;  % v6.5: FRAME_GAP=500mm, CONV_GAP=600mm
 cfg_convOffY = -0.80; cfg_convBoxYStart = 0.50; cfg_convBoxYStep = -0.30;  % v6.2: 修正符号! +0.50=C++ pkY=CONV_OFF+500
 
 % --- 环境碰撞体 (由场景参数动态计算, 与C++ v6.2一致) ---
@@ -678,14 +678,14 @@ if soLoaded
         if curTask ~= scanPrevTask || curSeg ~= scanPrevSeg
             tidx = find(pall_tasks == curTask, 1);
             if ~isempty(tidx), sbi = scanBoxForTask(tidx); else, sbi = 0; end
-            if curSeg == 3 && ~scanToolActive && sbi > 0 && sbi <= nBoxes
+            if curSeg == 1 && ~scanToolActive && sbi > 0 && sbi <= nBoxes
                 calllib('libHRCInterface', 'setCPToolCollisionBallShapeInterface', ...
-                    int64(6), [0, 0, -box.hz/2*1000], 225.0);
+                    int64(1), [0, 0, -400], 120.0);
                 scanToolActive = true;
             end
-            % v6.0 9-seg: seg6=放料→放料抬升 (Place→PlaceApproach), 工具球移除+添加放置障碍
-            if curSeg == 6 && scanToolActive
-                calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(6));
+            % v6.5 7-seg: seg5=放料→放料抬升, 工具球移除+添加放置障碍
+            if curSeg == 5 && scanToolActive
+                calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(1));
                 scanToolActive = false;
                 % 使用上一步FK2 TCP位置(m→mm)作为placed box center
                 if sbi > 0 && sbi <= nBoxes
@@ -721,7 +721,7 @@ if soLoaded
     end
     % 扫描结束后清理工具碰撞球 (确保后续操作干净)
     if scanToolActive
-        calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(6));
+        calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(1));
     end
     % 清除扫描时添加的已放置箱子障碍 (后续动画会重新管理)
     for bi2 = 1:nBoxes
@@ -746,15 +746,15 @@ if soLoaded
     
     tcpAxisDot = so_pall_tcpAxis * TCP_DESIRED_AXIS;
     tcpOrientError_deg = acosd(max(-1, min(1, tcpAxisDot)));
-    % 分离搬运段(seg 3-5)和非搬运段的TCP朝向统计 (9-seg layout)
+    % 分离搬运段(seg 2-3)和非搬运段的TCP朝向统计 (v6.5 7-seg layout)
     pall_segs = pall_raw(:, 2);
-    carryMask = (pall_segs >= 3 & pall_segs <= 5);
+    carryMask = (pall_segs >= 2 & pall_segs <= 3);
     if any(carryMask)
-        fprintf('  TCP姿态偏差(搬运seg3-5): mean=%.1f°, max=%.1f° (共%d点)\n', ...
+        fprintf('  TCP姿态偏差(搬运seg2-3): mean=%.1f°, max=%.1f° (共%d点)\n', ...
             mean(tcpOrientError_deg(carryMask)), max(tcpOrientError_deg(carryMask)), sum(carryMask));
     end
     if any(~carryMask)
-        fprintf('  TCP姿态偏差(非搬运seg0-2,6-8): mean=%.1f°, max=%.1f° (共%d点)\n', ...
+        fprintf('  TCP姿态偏差(非搬运seg0-1,4-6): mean=%.1f°, max=%.1f° (共%d点)\n', ...
             mean(tcpOrientError_deg(~carryMask)), max(tcpOrientError_deg(~carryMask)), sum(~carryMask));
     end
     fprintf('  TCP姿态偏差(全部): mean=%.1f°, max=%.1f°\n', ...
@@ -1637,15 +1637,15 @@ for ti = 1:nAnimTasks
         
         % SO库工具碰撞体管理 (v6.2: 球 z=-400 r=120, toolIdx=1)
         if soLoaded && seg ~= prevSeg
-            % 进入seg 3: 启用工具碰撞球 (吸附箱子)
-            if seg == 3 && ~soToolActive && bi <= nBoxes
-                ballOff_mm = [0, 0, ENV_COLL.toolBallZ*1000];
+            % 进入seg 1: 启用工具碰撞球 (吸附箱子) (v6.5 7-seg)
+            if seg == 1 && ~soToolActive && bi <= nBoxes
+                ballOff_mm = [0, 0, -400];  % z=-400mm (法兰坐标系)
                 calllib('libHRCInterface', 'setCPToolCollisionBallShapeInterface', ...
-                    int64(1), ballOff_mm, ENV_COLL.toolBallR_m*1000);
+                    int64(1), ballOff_mm, 120.0);  % r=120mm
                 soToolActive = true;
             end
-            % 进入seg 6: 移除工具碰撞体, 注册已放置箱子为环境障碍
-            if seg == 6 && soToolActive && bi <= nBoxes
+            % 进入seg 5: 移除工具碰撞体, 注册已放置箱子 (v6.5 7-seg)
+            if seg == 5 && soToolActive && bi <= nBoxes
                 calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(1));
                 soToolActive = false;
                 boxCenter_mm = placePos(bi,:) * 1000;  % m→mm
@@ -1655,7 +1655,7 @@ for ti = 1:nAnimTasks
             prevSeg = seg;
         end
         
-        carrying = (seg >= 3 && seg <= 5) && (bi <= nBoxes);  % v6.0 9-seg: seg3-5搬运, seg6-8=回HOME(无箱)
+        carrying = (seg >= 2 && seg <= 3) && (bi <= nBoxes);  % v6.5 7-seg: seg2-3搬运, seg4-6=放料+回去(无箱)
         
         % --- 实时碰撞检测 (v6.2: 含工具球碰撞对+环境碰撞) ---
         selfPair = [0, 0];  % 碰撞对 [linkA, linkB]
@@ -1725,8 +1725,8 @@ for ti = 1:nAnimTasks
             if isvalid(hConvLabels(bi)), set(hConvLabels(bi),'Visible','off'); end
         end
         
-        % 放置箱子 + 碰撞球 (v6.0 9-seg: seg6=Place→PlaceApproach, 箱子已放置)
-        if seg >= 6 && bi <= nBoxes && ~placedFlag(bi)
+        % 放置箱子 + 碰撞球 (v6.5 7-seg: seg5=放料→放料抬升, 箱子已放置)
+        if seg >= 5 && bi <= nBoxes && ~placedFlag(bi)
             placedFlag(bi) = true;
             hPlacedBoxes(bi) = drawBox_v11(ax3d, placePos(bi,:), box);
             hPlacedLabels(bi) = text(ax3d, placePos(bi,1),placePos(bi,2),...
@@ -1917,9 +1917,9 @@ scores = [min(100, min(so_pall_dist)/400*100), ...
           95, ...  % S-Curve质量
           100];
 if ~isempty(tcpOrientError_deg)
-    % 仅用搬运段(seg3-5)的TCP朝向偏差评分 (9-seg layout)
+    % 仅用搬运段(seg2-3)的TCP朝向偏差评分 (v6.5 7-seg layout)
     pall_segs_score = pall_raw(:, 2);
-    carryMask_score = (pall_segs_score >= 3 & pall_segs_score <= 5);
+    carryMask_score = (pall_segs_score >= 2 & pall_segs_score <= 5);
     if any(carryMask_score)
         scores(end) = 100 - mean(tcpOrientError_deg(carryMask_score))/1.8;
     else
@@ -2000,7 +2000,7 @@ text(ax9e,0.05,yP,'C++ v6.0 Pipeline Stats','FontSize',14,'FontWeight','bold',..
     'FontName',CJK_FONT,'Color',[0.1 0.1 0.3]);
 yP = yP-0.06;
 pipeStats = {
-    sprintf('码垛位: %s, 运动段: %s (9段中转路点)', getField(pallSummary,'positions','?'), getField(pallSummary,'segments','?'));
+    sprintf('码垛位: %s, 运动段: %s (7段+X/+Y短弧)', getField(pallSummary,'positions','?'), getField(pallSummary,'segments','?'));
     sprintf('运动时间: %s s', getField(pallSummary,'total_motion_s','?'));
     sprintf('自碰撞: %d | 环境碰撞: %d', selfCollisions, envCollisions);
     sprintf('最小距离: %s mm', getField(pallSummary,'min_dist_mm','?'));

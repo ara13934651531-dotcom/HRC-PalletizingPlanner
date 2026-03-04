@@ -1,17 +1,17 @@
-# HR_S50-2000 码垛v6.5 — 侧绕搬运+箱子碰撞强化
+# HR_S50-2000 码垛v6.5 — +X/+Y短弧搬运路径优化
 
 version: 6.5
 positions: 1
-segments: 8
-total_motion_s: 23.8662
-self_collisions: 126
+segments: 7
+total_motion_s: 19.9602
+self_collisions: 0
 env_collisions: 0
-min_dist_mm: 0.00
+min_dist_mm: 11.83
 order: single_box_conveyor_to_frame
 env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+3_lozengeWall+1_placed
 wall_panels: back+left+right_lozengeOBB_100mm_thick
 tool_collision: ball_z-400_r120_toolIdx1_SOlimit_pair64
-carry_strategy: side_pass_J2-42_J338_J5100_worldZmax1616mm
+carry_strategy: short_arc_2diag_J1opt_XpYp_transit
 box_collision: base_lowerarm_hard_elbow_diag_margin40mm
 frame_gap_mm: 500
 conv_gap_mm: 600
@@ -27,18 +27,18 @@ ik_place_0: 275.09 -32.23 101.08 -132.90 92.23 -4.58
 ik_appr_0: 275.09 -49.77 106.26 -120.55 92.23 -4.58
 
 # Pick (deg):
-ik_pick: 147.61 -49.35 91.18 -8.04 -37.35 -28.01
-ik_pick_appr: 147.61 -60.14 87.03 6.91 -37.35 -28.01
+ik_pick: 158.49 -59.18 113.52 -106.58 147.23 132.65
+ik_pick_appr: 158.49 -73.84 110.07 -88.47 147.23 132.65
 pick_tcp_mm: 1150.0 -300.0 265.0
 
 # Timing:
-init_ms: 0.303
-ik_ms: 0.070
+init_ms: 0.386
+ik_ms: 0.074
 planning_total_ms: 0.000
-param_total_ms: 0.872
-collision_runtime_ms: 25.594
-elapsed_s: 0.073
+param_total_ms: 0.679
+collision_runtime_ms: 20.532
+elapsed_s: 0.028
 
-coll_init_ms: 0.290
-coll_total_avg_us: 28.055
-coll_calls: 1353
+coll_init_ms: 0.374
+coll_total_avg_us: 25.705
+coll_calls: 610
