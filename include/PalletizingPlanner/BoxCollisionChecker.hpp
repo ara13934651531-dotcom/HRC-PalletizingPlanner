@@ -47,6 +47,32 @@ struct BoxCollisionConfig {
     double offsetX = 0.0;   ///< X方向偏移 (mm)
     double offsetY = 0.0;   ///< Y方向偏移 (mm)
     double offsetZ = 0.0;   ///< Z方向偏移 (mm), 正值=箱子向上偏移
+
+    // ═══ 箱子-环境碰撞检测 (TCP旋转避障) ═══
+    // 当TCP绕Z轴旋转(yaw)时, 箱子OBB随之旋转, 改变box-pillar碰撞状态。
+    // RRT*规划器采样不同J6值, 探索不同yaw角使箱子能穿过窄通道。
+    // 环境障碍物以胶囊体列表形式提供 (框架立柱/顶梁/电箱边等)。
+    struct EnvCapsule {
+        double p1[3], p2[3];   ///< 胶囊端点 (mm, 基座坐标系)
+        double radius;         ///< 胶囊半径 (mm)
+    };
+    static constexpr int MAX_ENV_OBSTACLES = 32;
+    EnvCapsule envObstacles[MAX_ENV_OBSTACLES] = {};
+    int numEnvObstacles = 0;           ///< 有效环境障碍物数量
+    double envSafetyMargin = 30.0;     ///< 箱子-环境安全裕度 (mm)
+
+    /// 添加环境胶囊障碍物 (供搬运段使用)
+    bool addEnvCapsule(double x1, double y1, double z1,
+                       double x2, double y2, double z2, double r) {
+        if (numEnvObstacles >= MAX_ENV_OBSTACLES) return false;
+        auto& e = envObstacles[numEnvObstacles++];
+        e.p1[0]=x1; e.p1[1]=y1; e.p1[2]=z1;
+        e.p2[0]=x2; e.p2[1]=y2; e.p2[2]=z2;
+        e.radius=r;
+        return true;
+    }
+    /// 清除所有环境障碍物
+    void clearEnvObstacles() { numEnvObstacles = 0; }
 };
 
 // ============================================================================
@@ -66,6 +92,12 @@ struct BoxCollisionReport {
 
     /// 各碰撞体的最小距离 (mm)
     double colliderDist[5] = {1e10, 1e10, 1e10, 1e10, 1e10};
+
+    /// 箱子-环境碰撞 (TCP旋转避障)
+    bool   envCollision       = false;   ///< 箱子是否与环境碰撞
+    double envMinDistance_mm   = 1e10;    ///< 箱子-环境最小距离 (mm)
+    int    envClosestObstacle  = -1;      ///< 最近环境障碍物索引
+    int    envClosestSamplePt  = -1;      ///< 最近采样点索引
 
     /// 碰撞体名称 (用于日志)
     static const char* colliderName(int idx) {
@@ -206,6 +238,7 @@ public:
         Vec3 pts[26];
         generateBoxSamplePoints(tcpPos, R, cfg, pts);
 
+        // ── 箱子-机械臂碰撞检测 ──
         for (int c = 0; c < nColliders; c++) {
             const auto& col = colliders[c];
             if (col.radius < 1.0) continue;             // 跳过无效碰撞体
@@ -224,6 +257,20 @@ public:
                 if (d < cfg.safetyMargin) return false;  // 穿透或距离不足
             }
         }
+
+        // ── 箱子-环境碰撞检测 (TCP旋转避障核心) ──
+        // 当TCP绕Z轴旋转(yaw)时, 26个OBB采样点位置随之变化,
+        // 使得箱子可能从碰撞状态变为无碰撞 (箱子旋转后能穿过窄缝)
+        for (int e = 0; e < cfg.numEnvObstacles; e++) {
+            const auto& obs = cfg.envObstacles[e];
+            Vec3 ep1(obs.p1[0], obs.p1[1], obs.p1[2]);
+            Vec3 ep2(obs.p2[0], obs.p2[1], obs.p2[2]);
+            for (int i = 0; i < 26; i++) {
+                double d = pointToSegmentDist(pts[i], ep1, ep2) - obs.radius;
+                if (d < cfg.envSafetyMargin) return false;
+            }
+        }
+
         return true;
     }
 
@@ -289,6 +336,25 @@ public:
         report.criticalMinDist_mm = criticalMin;
         report.criticalClosest   = criticalIdx;
         report.collision = (criticalMin < cfg.safetyMargin);
+
+        // ── 箱子-环境碰撞检测 ──
+        for (int e = 0; e < cfg.numEnvObstacles; e++) {
+            const auto& obs = cfg.envObstacles[e];
+            Vec3 ep1(obs.p1[0], obs.p1[1], obs.p1[2]);
+            Vec3 ep2(obs.p2[0], obs.p2[1], obs.p2[2]);
+            for (int i = 0; i < 26; i++) {
+                double d = pointToSegmentDist(pts[i], ep1, ep2) - obs.radius;
+                if (d < report.envMinDistance_mm) {
+                    report.envMinDistance_mm = d;
+                    report.envClosestObstacle = e;
+                    report.envClosestSamplePt = i;
+                }
+            }
+        }
+        report.envCollision = (report.envMinDistance_mm < cfg.envSafetyMargin);
+        // 环境碰撞也影响总碰撞判定
+        if (report.envCollision) report.collision = true;
+
         return report;
     }
 

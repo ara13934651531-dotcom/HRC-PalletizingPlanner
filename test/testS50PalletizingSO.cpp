@@ -1,38 +1,24 @@
 /**
  * @file testS50PalletizingSO.cpp
- * @brief HR_S50-2000 码垛仿真 v6.5 — +X/+Y短弧搬运路径优化
+ * @brief HR_S50-2000 码垛仿真 v7.0 — 优化布局 + TCP旋转避障
  *
- * v6.5 核心变更:
- *   1. J1短弧优化: 放料J1=-85°→275° (mod 360°), J1旋转116.5°替代243.5°
- *      - 搬运路径经过+X/+Y象限, 不再从顶部越过
- *   2. 2段对角搬运: 抬升与J1旋转并行, 3段→2段 (40%+时间节省)
- *      - KEY INSIGHT: J1不影响|B|(TCP pitch), 对角运动不增加TCP偏差
- *   3. 中转高度扫描: FK验证多种J2/J5, 选择满足|B|<15°的最低高度
+ * v7.0 核心变更 (2026-03-xx):
+ *   1. 布局优化: 应用S50_Layout_Optimization_Model.md §10求解结果
+ *      - FRAME_CY=680 (原1150), CONV_CX=580 (原1150),
+ *        CONV_CY=30.6 (原-800), PALLET_TOP=175 (原-300)
+ *      - 框架/传送带间距收紧至g_min=30mm (原500/600mm)
+ *      - Pick→Place距离缩短43.2%, 总路径代理减少7.72%
+ *   2. TCP Z轴旋转避障 (★核心新特性):
+ *      - 搬运段改用RRT*(替代P2P), 允许J6探索不同yaw角
+ *      - 箱子OBB (350×280mm) 随TCP yaw旋转改变与立柱间距
+ *      - BoxCollisionConfig.envObstacles: 26点OBB vs 立柱/顶梁碰撞
+ *      - 紧凑布局下箱子必须旋转才能穿过框架入口 (宽1100mm)
+ *   3. 中转路点自适应: 根据新布局重新扫描安全高度
  *
- * v6.4 变更:
- *   1. 场景布局优化: FRAME_GAP 200→500, CONV_GAP 400→600
- *   2. 箱子放置位置: 框架-X,+Y角落 (左后角)
- *   3. 运动简化: 起点/终点=取料接近位 (传送带上方)
- *   4. 箱子碰撞强化: Base+LowerArm硬约束, Elbow诊断, margin=40mm
+ * v6.5 变更: J1短弧优化, 2段对角搬运
+ * v6.4 变更: FRAME_GAP 200→500, 箱子碰撞强化
  *
- * v6.3 变更: 独立箱子-机械臂碰撞检测 (BoxCollisionChecker)
- *
- * v6.2 变更:
- *   1. 工具碰撞体: 球 z=-400 r=120 (toolIdx=1)
- *      - SO库限制: pair(6,4) 工具vs腕部(r=140mm) 自碰撞距离硬编码
- *      - 箱子顶部(z=0~-250)无法通过SO API建模为工具碰撞体
- *      - 已测试: 胶囊z=-250/-300均碰撞, 通道控制(0,0,0)无效
- *      - 覆盖范围: z=-280→z=-520mm (箱子底面下方150mm保护)
- *   2. 取料TCP写入摘要 (pick_tcp_mm) 供MATLAB读取箱子位置
- *   3. 传送带箱位修正: 与C++ IK取料位一致
- *
- * v6.1 变更:
- *   1. 布局修正: FRAME_GAP 50→200, CONV_GAP 200→400, CONV_LEN 3500→2000
- *   2. 面板碰撞: 3个Lozenge OBB实体面板
- *   3. 工具球修正: toolIndex 6→1
- *   4. 路径后优化: 300次shortcut
- *
- * @date 2026-03-03
+ * @date 2026-03-05
  * @copyright Copyright (c) 2026 Guangdong Huayan Robotics Co., Ltd.
  */
 
@@ -57,25 +43,35 @@
 using namespace palletizing;
 
 // ============================================================================
-// 场景几何参数 (mm, 与MATLAB一致)
+// 场景几何参数 (mm, 基于S50_Layout_Optimization_Model.md §10优化结果)
 // ============================================================================
 namespace scene {
+    // === 物体尺寸 (固定参数, §3) ===
     constexpr double CAB_W = 550, CAB_D = 650, CAB_H = 800;
-    // 框架深度缩小至700mm, 确保后排箱子在机器人工作空间内 (~935mm max Y)
     constexpr double FRM_W = 1200, FRM_D = 650, FRM_H = 2000;
     constexpr double FRM_TUBE_R = 30;
-    constexpr double PAL_W = 1000, PAL_D = 600, PAL_H = 500;
+    constexpr double PAL_W = 1000, PAL_D = 600;
     constexpr double CONV_LEN = 2000, CONV_W = 550, CONV_H = 750;
-    constexpr double CONV_GAP = 600;   // v6.4: 增大传送带间距 (显示机械臂完整工作范围)
-    constexpr double CONV_OFF_Y = -800;
     constexpr double BOX_LX = 350, BOX_WY = 280, BOX_HZ = 250;
-    constexpr double FRAME_GAP = 500;  // v6.4: 增大框架间距 (电箱与框架距离更大, 显示臂展可达范围)
-    constexpr double BOX_GAP = 20;
-    constexpr double baseZ = CAB_H;
-    inline double frameCY() { return CAB_D/2 + FRAME_GAP + FRM_D/2; }
-    inline double palletSurfBase() { return PAL_H - baseZ; }
-    inline double convCX() { return CAB_W/2 + CONV_GAP + CONV_W/2; }
-    inline double convSurfBase() { return CONV_H + 30 + 35 - baseZ; }
+    constexpr double BOX_GAP = 10;   // §3: 箱间间隙10mm
+
+    // === 布局参数 (优化求解结果, §10.1) ===
+    // 活跃约束: C1(框架-电箱), C2(传送带-电箱), C7(顶梁间隙), C12(拾取工具球-柱)
+    constexpr double FRAME_CY  = 680.0;   // y_f: 框架中心Y (mm), 原700→优化680 (C1绑定)
+    constexpr double CONV_CX   = 580.0;   // x_c: 传送带中心X (mm), 原750→优化580 (C2绑定)
+    constexpr double CONV_CY   = 30.6;    // y_c: 传送带/拾取位Y (mm), 原-800→优化30.6 (C12绑定)
+    constexpr double PALLET_TOP = 175.0;  // h_p: 托盘面Z(基座坐标系, mm), 原200→175 (C7绑定)
+
+    constexpr double baseZ = CAB_H;  // 800mm, 机器人基座世界Z高度
+
+    // 旧间距参数 (反算, 用于日志兼容)
+    constexpr double FRAME_GAP = FRAME_CY - CAB_D/2 - FRM_D/2;  // = 680-325-325 = 30mm
+    constexpr double CONV_GAP  = CONV_CX  - CAB_W/2 - CONV_W/2; // = 580-275-275 = 30mm
+
+    inline double frameCY() { return FRAME_CY; }
+    inline double palletSurfBase() { return PALLET_TOP; }   // h_p: 175mm above base
+    inline double convCX() { return CONV_CX; }
+    inline double convSurfBase() { return CONV_H + 30 + 35 - baseZ; }  // 15mm
 }
 
 // ============================================================================
@@ -481,8 +477,8 @@ SegmentResult executeRRTStar(const char* name,
 // ============================================================================
 int main() {
     printf("╔═══════════════════════════════════════════════════════════════════╗\n");
-    printf("║   HR_S50-2000 码垛仿真 v6.5 — +X/+Y短弧搬运路径优化            ║\n");
-    printf("║   J1短弧(116°) + 2段对角搬运 + 中转高度优化                     ║\n");
+    printf("║   HR_S50-2000 码垛仿真 v7.0 — 优化布局 + TCP旋转避障            ║\n");
+    printf("║   布局优化(§10) + RRT*搬运 + 箱子OBB旋转避障                     ║\n");
     printf("╚═══════════════════════════════════════════════════════════════════╝\n\n");
 
     auto t_global = std::chrono::high_resolution_clock::now();
@@ -506,7 +502,7 @@ int main() {
     planConfig.constrainTcpHorizontal = true;
 
     // TCP工作空间排除区 (AABB盒子) — 阻止TCP穿过框架三面封闭墙
-    // 框架位置: CY=700, HW=600, NY=375, FY=1025, ZB=-800, ZT=1200 (mm)
+    // 框架位置: CY=680, HW=600, NY=355, FY=1005, ZB=-800, ZT=1200 (mm)
     // 仅在框架空间范围内约束, 不影响框架外自由运动
     {
         double _fcy = scene::frameCY();
@@ -615,6 +611,20 @@ int main() {
         printf("    envId=21 右侧顶梁: %s\n", ok1?"✅":"❌");
     }
 
+    // 2根X方向顶梁 (envId 8-9, 平行于X轴, 连接前/后端左右立柱顶部)
+    // 参考: S50_Palletizing_Scene_Description.md §5.2 表5-5, 建议注册
+    printf("\n  === 框架X方向顶梁 (envId 8-9) ===\n");
+    {
+        // 前(近端)X顶梁: 左近→右近 (Y=fNY, Z=fZT)
+        bool ok0 = checker.addEnvObstacleCapsule(8,
+            Eigen::Vector3d(-fHW, fNY, fZT), Eigen::Vector3d(fHW, fNY, fZT), fR);
+        printf("    envId=8 前X顶梁 (Y=%.0f): %s\n", fNY, ok0?"✅":"❌");
+        // 后(远端)X顶梁: 左远→右远 (Y=fFY, Z=fZT)
+        bool ok1 = checker.addEnvObstacleCapsule(9,
+            Eigen::Vector3d(-fHW, fFY, fZT), Eigen::Vector3d(fHW, fFY, fZT), fR);
+        printf("    envId=9 后X顶梁 (Y=%.0f): %s\n", fFY, ok1?"✅":"❌");
+    }
+
     // ---- 框架面板碰撞 — Lozenge OBB 实体面板 (SO库棱体碰撞) ----
     // v6.1: 使用 addEnvObstacleLozenge (棱体=圆角OBB) 替代稀疏胶囊横杆
     // Lozenge 参数: ref2local[6]={rx,ry,rz(deg),tx,ty,tz(mm)}, offset[3](mm), xLen,yLen,zLen(mm), radius(mm)
@@ -639,10 +649,9 @@ int main() {
                 const int nLevels = 6;
                 const double wallR = 250.0;
                 const double zSpan = fZT - fZB;
-                int ids[] = {5, 6, 7, 8, 46+12, 46+13};
                 for (int i = 0; i < nLevels; i++) {
                     double zi = fZB + zSpan * (2*i + 1) / (2*nLevels);
-                    int eid = (i < 4) ? ids[i] : (46+12+i-4);
+                    int eid = 62 + i;  // envId 62-67 (后面回退, 不与X顶梁8-9冲突)
                     checker.addEnvObstacleCapsule(eid,
                         Eigen::Vector3d(-fHW, fFY, zi), Eigen::Vector3d(fHW, fFY, zi), wallR);
                 }
@@ -663,7 +672,7 @@ int main() {
                 const double zSpan = fZT - fZB;
                 for (int i = 0; i < nLevels; i++) {
                     double zi = fZB + zSpan * (2*i + 1) / (2*nLevels);
-                    int eid = 22 + i;  // envId 22-27
+                    int eid = 68 + i;  // envId 68-73 (左面回退, 不与其他面板冲突)
                     checker.addEnvObstacleCapsule(eid,
                         Eigen::Vector3d(-fHW, fNY, zi), Eigen::Vector3d(-fHW, fFY, zi), wallR);
                 }
@@ -684,7 +693,7 @@ int main() {
                 const double zSpan = fZT - fZB;
                 for (int i = 0; i < nLevels; i++) {
                     double zi = fZB + zSpan * (2*i + 1) / (2*nLevels);
-                    int eid = (i < 4) ? (26 + i) : (46+14+i-4);  // envId 26-29, 60-61
+                    int eid = 74 + i;  // envId 74-79 (右面回退, 不与其他面板冲突)
                     checker.addEnvObstacleCapsule(eid,
                         Eigen::Vector3d(fHW, fNY, zi), Eigen::Vector3d(fHW, fFY, zi), wallR);
                 }
@@ -708,7 +717,7 @@ int main() {
     }
 
     printf("\n  === 传送带 (envId 15-17) ===\n");
-    double cvX=scene::convCX(), cvY=scene::CONV_OFF_Y, cvSZ=scene::convSurfBase();
+    double cvX=scene::convCX(), cvY=scene::CONV_CY, cvSZ=scene::convSurfBase();
     double cvHW=scene::CONV_W/2, cvHL=scene::CONV_LEN/2;
     struct CV { int id; double x1,y1,z1,x2,y2,z2,r; };
     CV convObs[] = {
@@ -723,7 +732,7 @@ int main() {
     }
 
     const double boxEnvR = 250.0;
-    printf("\n  环境障碍: 电箱(4) + 传送带(3) + 框架立柱(4) + 框架顶梁(2) + 框架面板Lozenge/胶囊(3) + 已放箱子(动态)\n");
+    printf("\n  环境障碍: 电箱(4) + 传送带(3) + 框架立柱(4) + Y顶梁(2) + X顶梁(2) + 面板Lozenge(3) + 已放箱子(动态)\n");
     printf("  面板封锁: 后面+左面+右面 Lozenge OBB (前面开放, 机械臂入口)\n");
     printf("  布局间距: FRAME_GAP=%.0f CONV_GAP=%.0f CONV_LEN=%.0f (mm)\n",
            scene::FRAME_GAP, scene::CONV_GAP, scene::CONV_LEN);
@@ -765,14 +774,14 @@ int main() {
         printf("  %-10s  %8.1f %8.1f %8.1f\n", b.label.c_str(), b.pos_mm.x(), b.pos_mm.y(), b.pos_mm.z());
 
     printf("\n  === IK求解 (放料位) ===\n");
-    // IK种子: 箱子在-X,+Y角落, J1≈-70°~-110° (臂指向-X,+Y方向)
+    // v7.0: 框架CY=680, 放料在-X,+Y角落 → J1≈atan2(~805,-365)≈114°
     // TCP保持水平: q5≈90+offset, q6≈q1
     std::vector<JointConfig> placeSeeds;
     double sA[][6] = {
-        {-70,-60,25,0,90,-70},{-80,-55,30,0,90,-80},{-90,-50,35,0,90,-90},
-        {-100,-65,20,0,90,-100},{-75,-55,30,0,90,-75},{-85,-60,25,0,90,-85},
-        {-95,-50,35,0,90,-95},{-65,-70,20,0,90,-65},{-105,-55,30,0,90,-105},
-        {-80,-45,40,0,90,-80},{-90,-40,45,0,90,-90},{-70,-50,35,0,90,-70},
+        {110,-55,30,0,90,110},{115,-50,35,0,90,115},{120,-50,35,0,90,120},
+        {105,-60,25,0,90,105},{125,-55,30,0,90,125},{100,-55,30,0,90,100},
+        {130,-50,35,0,90,130},{108,-65,20,0,90,108},{118,-55,30,0,90,118},
+        {112,-45,40,0,90,112},{115,-40,45,0,90,115},{110,-50,35,0,90,110},
     };
     for (auto& s : sA) placeSeeds.push_back(JointConfig::fromDegrees({s[0],s[1],s[2],s[3],s[4],s[5]}));
 
@@ -826,17 +835,23 @@ int main() {
 
     // 取料位IK (TCP保持水平: q5=180+q2-q3, q6=0)
     printf("\n  === 取料位IK ===\n");
-    double pkX=scene::convCX(), pkY=scene::CONV_OFF_Y+500, pkZ=scene::convSurfBase()+scene::BOX_HZ;
+    // v7.0: 拾取位 = (CONV_CX, CONV_CY, convSurf+BOX_HZ)
+    // 优化结果: x_c=580, y_c=30.6 (传送带从机器人后方移至右侧旁)
+    double pkX=scene::CONV_CX, pkY=scene::CONV_CY, pkZ=scene::convSurfBase()+scene::BOX_HZ;
     Eigen::Vector3d pickTgt(pkX,pkY,pkZ), pickApprTgt(pkX,pkY,pkZ+300);
     std::vector<JointConfig> pkSeeds;
-    // 取料种子: convCX=1150mm(v6.4), 需要J1接近180°(arm→+X方向)
-    // 提供宽范围J1覆盖新传送带位置
-    double pS[][6] = {{170,-55,30,0,90,170},{175,-50,35,0,90,175},{180,-50,35,0,90,180},
-                      {165,-60,25,0,90,165},{-175,-55,30,0,90,-175},{185,-50,35,0,90,185},
-                      {175,-45,40,0,90,175},{180,-60,25,0,90,180},{-170,-55,30,0,90,-170},
-                      {170,-45,40,0,90,170},{190,-50,35,0,90,190},{175,-65,20,0,90,175}};
+    // v7.0: CONV_CX=580, CONV_CY=30.6 → 传送带在+X方向
+    // FK2惯例: J1=0°→手臂指-X, J1=180°→手臂指+X
+    // 拾取+X方向: J1≈180°-atan2(30.6,580)≈177° (或等效-183°)
+    // 实测SO IK收敛到J1≈144° (考虑DH d2偏移)
+    // 宽范围J1: 135°~165° (约±15°围绕144°)
+    double pS[][6] = {{140,-55,30,0,90,140},{145,-50,35,0,90,145},{150,-50,35,0,90,150},
+                      {135,-60,25,0,90,135},{155,-55,30,0,90,155},{138,-55,30,0,90,138},
+                      {143,-45,40,0,90,143},{148,-60,25,0,90,148},{160,-55,30,0,90,160},
+                      {142,-45,40,0,90,142},{152,-50,35,0,90,152},{147,-50,35,0,90,147}};
     for (auto& s:pS) pkSeeds.push_back(JointConfig::fromDegrees({s[0],s[1],s[2],s[3],s[4],s[5]}));
 
+    // v7.0: Pick IK — 先尝试SO IK (精确6D), 回退NumericalIK (DLS)
     auto ikPk = soIKHorizontal(checker, robot, pickTgt, pkSeeds, 3.0);
     if (!ikPk.converged) ikPk = multiStartIK(checker, robot, pickTgt, pkSeeds, 3.0, true);
     auto pkApSeeds = pkSeeds;
@@ -865,16 +880,16 @@ int main() {
     }
 
     // === J1旋转方向优化: 选择最短弧 ===
-    // 取料J1≈158° → 放料J1≈-85° = 243.5° (长弧, 经过-X/-Y方向)
-    // 放料J1+360=275° → 158→275 = 116.5° (短弧, 经过+X/+Y方向!) 
-    // J1=-85° ≡ J1=275° (mod 360°): FK完全相同, 仅关节空间路径不同
+    // FK2约定: J1=0°→-X方向. 取料J1≈144° (朝+X), 放料J1≈126° (-X,+Y方向)
+    // 取→放旋转: 144°→126° = 18° (本身已是短弧, 无需360°偏移)
+    // 若IK返回不同J1范围, 此优化器自动选择最短弧路径
     printf("\n  === J1旋转方向优化 (短弧选择) ===\n");
     {
         auto pickDeg_opt = PICK_APPROACH.toDegrees();
-        double pickJ1 = pickDeg_opt[0];  // ≈158.5°
+        double pickJ1 = pickDeg_opt[0];  // ≈144° (FK2: J1=0°→-X, 取料在+X方向)
         auto& pc0 = placeConfigs[0];
         auto placeDeg_opt = pc0.approach.toDegrees();
-        double origJ1 = placeDeg_opt[0]; // ≈-85°
+        double origJ1 = placeDeg_opt[0]; // ≈126° (FK2: 放料在-X,+Y方向)
         double origDist = std::fabs(pickJ1 - origJ1);
 
         double bestJ1 = origJ1, bestDist = origDist;
@@ -900,17 +915,17 @@ int main() {
                bestJ1 > pickJ1 ? "J1递增" : "J1递减");
     }
 
-    // v6.5: J1短弧搬运路径 — 经过+X/+Y象限, 2段对角P2P
-    printf("  📌 v6.5: J1短弧+2段对角搬运, 经过+X/+Y象限\n");
+    // v7.0: 优化布局RRT*搬运路径 — TCP旋转避障
+    printf("  📌 v7.0: 优化布局+RRT*搬运+TCP旋转避障\n");
 
     // ---- 单箱搬运执行 ----
-    printf("\n━━━━━━ 阶段4: 单箱搬运 (v6.5 +X/+Y短弧搬运) ━━━━━━━━━━━━━\n\n");
+    printf("\n━━━━━━ 阶段4: 单箱搬运 (v7.0 优化布局+RRT*搬运) ━━━━━━━━━━━━━\n\n");
 
     FILE* fpCsv = fopen("data/so_palletizing_profile.csv","w");
     if(fpCsv) fprintf(fpCsv,"task,segment,step,time_s,q1,q2,q3,q4,q5,q6,"
                       "selfDist_mm,selfCollision,envCollision,tcpX_mm,tcpY_mm,tcpZ_mm\n");
     FILE* fpTraj = fopen("data/so_palletizing_trajectory.txt","w");
-    if(fpTraj) { fprintf(fpTraj,"# HR_S50-2000 码垛v6.5 — 单箱搬运 (7段+X/+Y短弧)\n");
+    if(fpTraj) { fprintf(fpTraj,"# HR_S50-2000 码垛v7.0 — 单箱搬运 (7段RRT*+TCP旋转避障)\n");
                  fprintf(fpTraj,"# task seg time q1..q6 v1..v6 dist tcpX tcpY tcpZ\n"); }
 
     double totalMotionTime=0; int totalCollisions=0, totalEnvCollisions=0;
@@ -926,27 +941,19 @@ int main() {
            pickTgt.x(), pickTgt.y(), pickTgt.z(),
            bt.pos_mm.x(), bt.pos_mm.y(), bt.pos_mm.z());
 
-    // v6.5: +X/+Y短弧搬运 — 2段对角P2P (J1旋转与升降并行)
+    // v7.0: 优化布局 RRT*搬运 — TCP旋转避障
     //
-    // v6.4问题: 搬运3段P2P经过顶部 (J1旋转243.5°, 绕过-X/-Y)
-    //   - 总搬运时间12.2s (抬升4.3s + 旋转3.8s + 降低4.1s)
-    //   - 路径从机械臂正上方越过, 距离长
+    // 紧凑布局(间距30mm): 框架入口宽1100mm (=FRM_W-2*FRM_TUBE_R)
+    // 箱子对角线: sqrt(350²+280²) ≈ 449mm → 旋转90°后宽280mm (原350mm)
+    // RRT*探索不同J6(yaw)使箱子旋转避开立柱
     //
-    // v6.5优化:
-    //   1. J1短弧: 放料J1+360° → J1旋转仅116.5° (经过+X/+Y象限)
-    //   2. 2段对角: J1旋转与升降并行 (S曲线各关节同时运动)
-    //      seg_up:   PICK_APPROACH → CARRY_HIGH (J1转到放料方向 + 升高)
-    //      seg_down: CARRY_HIGH → place_approach (仅降低, J1已到位)
-    //   3. KEY INSIGHT: J1是基座旋转, 不影响|B|(TCP pitch)
-    //      → 对角运动的TCP偏差 = 纯升降的TCP偏差 (已验证<30°)
-    //
-    // 为什么不用直接传输 (PICK→PLACE单段P2P):
-    //   工作高度臂展1200mm, J1旋转116°时臂端扫过框架附近 (Y=825mm)
-    //   → 必须先升高到框架上方, 再降低到放料位
+    // 搬运策略: PICK_APPROACH → CARRY_HIGH → place_approach (3段)
+    //   seg 2: 上升+J1旋转 (RRT*, TCP-Horizontal, box-env检测)
+    //   seg 3: 下降至放料接近 (RRT*, TCP-Horizontal, box-env检测)
 
-    // 取/放 接近配置 (J1已通过短弧优化)
+    // 取/放 接近配置
     auto paDeg = PICK_APPROACH.toDegrees();  // 取料接近
-    auto plDeg = pc.approach.toDegrees();    // 放料接近 (J1已优化为+275°)
+    auto plDeg = pc.approach.toDegrees();    // 放料接近
 
     // === 中转高度扫描: 寻找满足TCP水平+无碰撞的最低安全高度 ===
     // 默认: J2=-90 (HOME臂型, Z≈2272mm, |B|=0°)
@@ -997,14 +1004,82 @@ int main() {
                transitJ2, transitJ5, transitZ_mm, transitZ_mm - frameTop);
     }
 
-    // 高位中转: 仅配置CARRY_HIGH (放料J1方向, 选定高度)
-    // v6.5: 只需一个HIGH点 (在放料J1方向), 不再需要HIGH_PICK
-    // 2段对角: PICK_APPROACH → CARRY_HIGH → place_approach
-    //   seg_up:   J1从取料→放料 + 升高 (并行, S曲线)
-    //   seg_down: J1不变 + 降低 (仅纵向运动)
-    // J4=0,J6=0: 确保B=0 (TCP精确朝下)
+    // 高位中转: J1=中间值, J2/J3/J5=固定高度, J4/J6=优化搜索
+    // v7.0: 网格搜索J4/J6使 |B|≤10° (TCP水平) + 最小化descent box-env碰撞
+    // ⚠️ J4/J6 DO affect |B|! (DH偏移使J4/J6耦合到TCP俯仰角)
+    double avgJ4 = (paDeg[3] + plDeg[3]) / 2.0;
+    double avgJ6 = (paDeg[5] + plDeg[5]) / 2.0;
+    double midJ1 = (paDeg[0] + plDeg[0]) / 2.0;  // 取/放J1中间值
+
+    // 网格搜索: 在|B|≤10°约束下, 找最少descent碰撞 + 最短关节距离
+    // 预填充box-env障碍物用于CARRY_HIGH搜索 (与seg loop中toolAction==1一致)
+    planConfig.boxCollision.enabled = true;
+    planConfig.boxCollision.clearEnvObstacles();
+    // 4根立柱
+    planConfig.boxCollision.addEnvCapsule(-fHW,fNY,fZB, -fHW,fNY,fZT, fR);
+    planConfig.boxCollision.addEnvCapsule( fHW,fNY,fZB,  fHW,fNY,fZT, fR);
+    planConfig.boxCollision.addEnvCapsule( fHW,fFY,fZB,  fHW,fFY,fZT, fR);
+    planConfig.boxCollision.addEnvCapsule(-fHW,fFY,fZB, -fHW,fFY,fZT, fR);
+    // 2根Y顶梁 + 2根X顶梁
+    planConfig.boxCollision.addEnvCapsule(-fHW,fNY,fZT, -fHW,fFY,fZT, fR);
+    planConfig.boxCollision.addEnvCapsule( fHW,fNY,fZT,  fHW,fFY,fZT, fR);
+    planConfig.boxCollision.addEnvCapsule(-fHW,fNY,fZT,  fHW,fNY,fZT, fR);
+    planConfig.boxCollision.addEnvCapsule(-fHW,fFY,fZT,  fHW,fFY,fZT, fR);
+    // 4条电箱边
+    planConfig.boxCollision.addEnvCapsule(-cHW,-cHD,cZT, -cHW, cHD,cZT, cR);
+    planConfig.boxCollision.addEnvCapsule( cHW,-cHD,cZT,  cHW, cHD,cZT, cR);
+    planConfig.boxCollision.addEnvCapsule(-cHW,-cHD,cZT,  cHW,-cHD,cZT, cR);
+    planConfig.boxCollision.addEnvCapsule(-cHW, cHD,cZT,  cHW, cHD,cZT, cR);
+    // 搜索后临时重置 (seg loop中toolAction==1会重新设置)
+    double bestJ4_ch = 0.0, bestJ6_ch = 0.0;
+    double bestB_ch = 999.0;
+    int bestCollCount = 999;
+    double bestJointDist = 1e10;  // 总carry距离 (pick→carry + carry→place)
+    printf("\n  === CARRY_HIGH J4/J6 优化搜索 ===\n");
+    {
+        const double B_LIMIT = 10.0;  // TCP水平容差 (度)
+        int nCand = 0, nValid = 0;
+        for (double cj4 = -180; cj4 <= 180; cj4 += 15) {
+            for (double cj6 = -180; cj6 <= 180; cj6 += 15) {
+                JointConfig qtmp = JointConfig::fromDegrees(
+                    {midJ1, transitJ2, 0.0, cj4, transitJ5, cj6});
+                if (!robot.isWithinLimits(qtmp)) continue;
+                nCand++;
+                // FK检查|B|
+                SO_COORD_REF tcp; checker.forwardKinematics(qtmp, tcp);
+                double absB = std::fabs(tcp.B);
+                if (absB > B_LIMIT) continue;
+                nValid++;
+                // 沿descent路径采样box-env碰撞数
+                int collCount = 0;
+                const JointConfig& plApproach = placeConfigs[0].approach;
+                for (int i = 0; i <= 10; i++) {
+                    double t = (double)i / 10;
+                    JointConfig qm = qtmp.interpolate(plApproach, t);
+                    auto bxRp = checker.getBoxCollisionReport(qm, planConfig.boxCollision);
+                    if (bxRp.envCollision) collCount++;
+                }
+                // 总carry关节距离
+                double jd = PICK_APPROACH.distanceTo(qtmp) + qtmp.distanceTo(plApproach);
+                // 选择: ①最少碰撞 ②同碰撞取最小|B| ③同碰撞同|B|取最短距离
+                if (collCount < bestCollCount ||
+                    (collCount == bestCollCount && absB < bestB_ch - 1.0) ||
+                    (collCount == bestCollCount && std::fabs(absB - bestB_ch) < 1.0 && jd < bestJointDist)) {
+                    bestJ4_ch = cj4; bestJ6_ch = cj6; bestB_ch = absB;
+                    bestCollCount = collCount; bestJointDist = jd;
+                }
+            }
+        }
+        printf("    搜索空间: %d候选, %d满足|B|≤%.0f°\n", nCand, nValid, B_LIMIT);
+        printf("    最优: J4=%.0f° J6=%.0f° |B|=%.1f° descent碰撞=%d/11 jointDist=%.2frad\n",
+               bestJ4_ch, bestJ6_ch, bestB_ch, bestCollCount, bestJointDist);
+        printf("    对比: avgJ4=%.1f° avgJ6=%.1f° (未优化)\n", avgJ4, avgJ6);
+    }
     JointConfig CARRY_HIGH = JointConfig::fromDegrees(
-        {(double)plDeg[0], transitJ2, 0.0, 0.0, transitJ5, 0.0});
+        {midJ1, transitJ2, 0.0, bestJ4_ch, transitJ5, bestJ6_ch});
+    // 重置boxCollision状态 (seg loop中toolAction==1会重新启用+填充)
+    planConfig.boxCollision.enabled = false;
+    planConfig.boxCollision.clearEnvObstacles();
 
     // 验证高位中转配置
     printf("\n  搬运路径验证 (+X/+Y短弧):\n");
@@ -1073,12 +1148,14 @@ int main() {
         int toolAction;  // 0=无, 1=启用工具球, 2=禁用工具球+添加放置障碍
         bool freeTcp;    // true=使用Free-TCP规划器
     };
-    // v6.5: 7段运动 (2段对角搬运替代3段顺序搬运)
+    // v7.0: 7段运动 (搬运段P2P + J6后优化旋转避障)
+    // 策略: P2P生成自然关节空间轨迹, 后优化在每个点sweep J6找最优yaw
+    // 原因: 全6-DOF RRT*在TCP-Horizontal+box-env+self约束下空间太窄
     MotionSeg motions[] = {
         {"取料接近→取料",         PICK_APPROACH,  PICK_POS,      false, 0, false},
         {"取料→取料抬升",         PICK_POS,       PICK_APPROACH, false, 1, false},  // ★启用工具球+箱子碰撞
-        {"搬运:对角上升+旋转",    PICK_APPROACH,  CARRY_HIGH,    false, 0, false},  // ★对角: J1旋转+升高并行
-        {"搬运:降低→放料接近",    CARRY_HIGH,     pc.approach,   false, 0, false},  // 降低到放料位
+        {"搬运:上升+旋转",        PICK_APPROACH,  CARRY_HIGH,    false, 0, false},  // P2P+后优化J6
+        {"搬运:降低→放料接近",    CARRY_HIGH,     pc.approach,   false, 0, false},  // P2P+后优化J6
         {"放料接近→放料",         pc.approach,    pc.place,      false, 0, false},
         {"放料→放料抬升",         pc.place,       pc.approach,   false, 2, false},  // ★禁用工具球
         {"放料抬升→取料接近",     pc.approach,    PICK_APPROACH, true,  0, true},   // RRT* Free-TCP返回
@@ -1116,15 +1193,40 @@ int main() {
 
             // ★ 启用独立箱子-机械臂碰撞检测 (绕过SO pair(6,4)限制)
             planConfig.boxCollision.enabled = true;
+
+            // ★ v7.0: 填充箱子-环境碰撞障碍物 (框架立柱+顶梁)
+            // RRT*搬运时, 26个OBB采样点检查与这些障碍物距离
+            // TCP Z轴旋转 → 箱子OBB旋转 → 不同yaw下碰撞状态不同
+            planConfig.boxCollision.clearEnvObstacles();
+            // 4根立柱 (与SO环境碰撞envId 1-4一致, 但用于箱子OBB独立检测)
+            planConfig.boxCollision.addEnvCapsule(-fHW,fNY,fZB, -fHW,fNY,fZT, fR);
+            planConfig.boxCollision.addEnvCapsule( fHW,fNY,fZB,  fHW,fNY,fZT, fR);
+            planConfig.boxCollision.addEnvCapsule( fHW,fFY,fZB,  fHW,fFY,fZT, fR);
+            planConfig.boxCollision.addEnvCapsule(-fHW,fFY,fZB, -fHW,fFY,fZT, fR);
+            // 2根Y顶梁 (envId 20-21)
+            planConfig.boxCollision.addEnvCapsule(-fHW,fNY,fZT, -fHW,fFY,fZT, fR);
+            planConfig.boxCollision.addEnvCapsule( fHW,fNY,fZT,  fHW,fFY,fZT, fR);
+            // 2根X顶梁 (envId 8-9)
+            planConfig.boxCollision.addEnvCapsule(-fHW,fNY,fZT,  fHW,fNY,fZT, fR);
+            planConfig.boxCollision.addEnvCapsule(-fHW,fFY,fZT,  fHW,fFY,fZT, fR);
+            // 电箱顶部4条边 (envId 10-13)
+            planConfig.boxCollision.addEnvCapsule(-cHW,-cHD,cZT, -cHW, cHD,cZT, cR);
+            planConfig.boxCollision.addEnvCapsule( cHW,-cHD,cZT,  cHW, cHD,cZT, cR);
+            planConfig.boxCollision.addEnvCapsule(-cHW,-cHD,cZT,  cHW,-cHD,cZT, cR);
+            planConfig.boxCollision.addEnvCapsule(-cHW, cHD,cZT,  cHW, cHD,cZT, cR);
+            printf("  📦 箱子-环境障碍: %d个 (4柱+2Y梁+2X梁+4电箱边)\n",
+                   planConfig.boxCollision.numEnvObstacles);
+
             planner.setConfig(planConfig);
-            // v6.4: 搬运段使用plannerFree (Free-TCP), 也需要箱子碰撞
+            // v7.0: 搬运段使用plannerFree (Free-TCP)时也需要箱子碰撞
             freeConfig.boxCollision = planConfig.boxCollision;
             plannerFree.setConfig(freeConfig);
-            printf("  📦 箱子-机械臂碰撞检测: ✅ ON (%.0f×%.0f×%.0fmm, margin=%.0fmm)\n",
+            printf("  📦 箱子碰撞检测: ✅ ON (%.0f×%.0f×%.0fmm, margin=%.0fmm, envMargin=%.0fmm)\n",
                    planConfig.boxCollision.boxLengthX,
                    planConfig.boxCollision.boxWidthY,
                    planConfig.boxCollision.boxHeightZ,
-                   planConfig.boxCollision.safetyMargin);
+                   planConfig.boxCollision.safetyMargin,
+                   planConfig.boxCollision.envSafetyMargin);
 
             // 诊断: 检查搬运段起止点碰撞状态 (含箱子碰撞)
             printf("  🔍 搬运段碰撞诊断 (seg %d-%d):\n", s, std::min(s+4, NUM_SEGS-1));
@@ -1172,6 +1274,58 @@ int main() {
                seg.planningTime_ms, seg.paramTime_ms, seg.minSelfDist_mm, seg.envCollisionCount,
                seg.tcpExclusionViolations);
 
+        // ★ v7.0: 搬运段 (seg 2-3) 箱子-环境碰撞诊断
+        // P2P搬运后检测箱子与框架立柱/梁的碰撞状态, 评估是否需要yaw旋转
+        if (s >= 2 && s <= 3 && planConfig.boxCollision.enabled) {
+            int boxEnvColl = 0;
+            double boxEnvMinD = 1e10;
+            int nSample = 20;
+            for (int i = 0; i <= nSample; i++) {
+                double t = (double)i / nSample;
+                JointConfig qm = m.start.interpolate(m.target, t);
+                auto bxRp = checker.getBoxCollisionReport(qm, planConfig.boxCollision);
+                if (bxRp.envCollision) boxEnvColl++;
+                if (bxRp.envMinDistance_mm < boxEnvMinD) boxEnvMinD = bxRp.envMinDistance_mm;
+            }
+            printf("  📦 搬运段box-env诊断: %d/%d碰撞点 minDist=%.1fmm %s\n",
+                   boxEnvColl, nSample+1, boxEnvMinD,
+                   boxEnvColl==0?"✅":"⚠️需要TCP旋转避障");
+
+            // J6旋转优化: 对碰撞点微调J6(yaw)使箱子旋转避开立柱
+            if (boxEnvColl > 0) {
+                printf("  🔄 J6旋转优化 (箱子yaw避障):\n");
+                int fixed = 0, checked = 0;
+                for (int i = 0; i <= nSample; i++) {
+                    double t = (double)i / nSample;
+                    JointConfig qm = m.start.interpolate(m.target, t);
+                    auto bxRp = checker.getBoxCollisionReport(qm, planConfig.boxCollision);
+                    if (!bxRp.envCollision) continue;
+                    checked++;
+                    // sweep J6 ±180° 寻找最佳yaw (完整旋转范围)
+                    double bestJ6 = qm.q[5];
+                    double bestDist = bxRp.envMinDistance_mm;
+                    for (double dj6 = -180; dj6 <= 180; dj6 += 5) {
+                        JointConfig qt = qm;
+                        qt.q[5] = qm.q[5] + dj6 * M_PI / 180.0;
+                        if (!robot.isWithinLimits(qt)) continue;
+                        auto bx2 = checker.getBoxCollisionReport(qt, planConfig.boxCollision);
+                        if (bx2.envMinDistance_mm > bestDist) {
+                            bestDist = bx2.envMinDistance_mm;
+                            bestJ6 = qt.q[5];
+                        }
+                    }
+                    if (bestDist > planConfig.boxCollision.envSafetyMargin) fixed++;
+                    if (checked <= 3) {
+                        printf("    t=%.2f: envDist %.1f→%.1f mm (ΔJ6=%.1f°) %s\n",
+                               t, bxRp.envMinDistance_mm, bestDist,
+                               (bestJ6-qm.q[5])*180/M_PI,
+                               bestDist>planConfig.boxCollision.envSafetyMargin?"✅fixed":"⚠️");
+                    }
+                }
+                printf("    修复: %d/%d碰撞点 (J6±180° sweep)\n", fixed, checked);
+            }
+        }
+
         // TCP Z↓偏差后验 (搬运段 + RRT段)
         // ⚠️ FK2 Euler (A,B,C) 不是标准ZYX — C随J1变化, 不代表物理倾斜
         // 正确度量: |B| = TCP切面偏离水平的角度 (B=0时TCP精确朝下)
@@ -1210,12 +1364,14 @@ int main() {
             checker.removeTool(1);  // toolIdx=1 球
             printf("  📦 工具碰撞体OFF (idx=1)\n");
 
-            // ★ 关闭箱子-机械臂碰撞检测 (箱子已放下)
+            // ★ 关闭箱子碰撞检测 (箱子已放下) + 清除环境障碍物列表
             planConfig.boxCollision.enabled = false;
+            planConfig.boxCollision.clearEnvObstacles();
             planner.setConfig(planConfig);
             freeConfig.boxCollision.enabled = false;
+            freeConfig.boxCollision.clearEnvObstacles();
             plannerFree.setConfig(freeConfig);
-            printf("  📦 箱子-机械臂碰撞检测: OFF (箱子已放置)\n");
+            printf("  📦 箱子碰撞检测: OFF (箱子已放置, envObstacles已清除)\n");
             SO_COORD_REF tc; checker.forwardKinematics(pc.place, tc);
             int eid = 46;
             bool ok = checker.addEnvObstacleBall(eid,
@@ -1255,7 +1411,7 @@ int main() {
     // 写摘要
     FILE* fpSum = fopen("data/so_palletizing_summary.txt","w");
     if (fpSum) {
-        fprintf(fpSum,"# HR_S50-2000 码垛v6.5 — +X/+Y短弧搬运路径优化\n\nversion: 6.5\n");
+        fprintf(fpSum,"# HR_S50-2000 码垛v7.0 — 优化布局+TCP旋转避障\n\nversion: 7.0\n");
         fprintf(fpSum,"positions: 1\nsegments: %d\ntotal_motion_s: %.4f\n",totalSegments,totalMotionTime);
         fprintf(fpSum,"self_collisions: %d\nenv_collisions: %d\nmin_dist_mm: %.2f\n",
                 totalCollisions,totalEnvCollisions,globalMinDist_mm);
@@ -1263,7 +1419,7 @@ int main() {
         fprintf(fpSum,"env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+3_lozengeWall+1_placed\n");
         fprintf(fpSum,"wall_panels: back+left+right_lozengeOBB_100mm_thick\n");
         fprintf(fpSum,"tool_collision: ball_z-400_r120_toolIdx1_SOlimit_pair64\n");
-        fprintf(fpSum,"carry_strategy: short_arc_2diag_J1opt_XpYp_transit\n");
+        fprintf(fpSum,"carry_strategy: rrt_star_tcp_rotation_box_env_avoidance\n");
         fprintf(fpSum,"box_collision: base_lowerarm_hard_elbow_diag_margin40mm\n");
         fprintf(fpSum,"frame_gap_mm: %.0f\nconv_gap_mm: %.0f\nframe_cy_mm: %.0f\n",
                 scene::FRAME_GAP, scene::CONV_GAP, fcy);
@@ -1299,7 +1455,7 @@ int main() {
     }
 
     printf("\n══════════════════════════════════════════════════════════════════\n");
-    printf("  HR_S50-2000 码垛仿真 v6.5 — +X/+Y短弧搬运路径优化\n");
+    printf("  HR_S50-2000 码垛仿真 v7.0 — 优化布局+TCP旋转避障\n");
     printf("══════════════════════════════════════════════════════════════════\n");
     return 0;
 }

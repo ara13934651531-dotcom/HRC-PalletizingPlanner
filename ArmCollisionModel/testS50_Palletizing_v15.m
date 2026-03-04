@@ -1,5 +1,15 @@
 function testS50_Palletizing_v15()
-%% testS50_Palletizing_v15 - HR_S50-2000 v6.0 面板碰撞 + 中转路点 + 3D仿真
+%% testS50_Palletizing_v15 - HR_S50-2000 v7.0 优化布局 + TCP旋转避障 + 3D仿真
+%  v17.0 — 基于 v16.2 + 参数优化布局(§10) + TCP Z轴旋转避障:
+%
+%  v17.0 修改清单:
+%    1. 场景布局应用 S50_Layout_Optimization_Model.md §10 全局最优解:
+%       - y_f=680mm (框架CY), x_c=580mm (传送带CX), y_c=30.6mm (传送带CY), h_p=175mm (托盘面)
+%       - FRAME_GAP=30mm, CONV_GAP=30mm (紧凑布局, 取放距离减少43.2%%)
+%    2. 传送带从-Y方向移至+X方向 (优化布局结果)
+%    3. 托盘平台高度升至975mm (优化h_p=175mm base + 800mm基座)
+%    4. 箱子取料位在传送带中心 (cfg_convBoxYStart=0)
+%
 %  v16.0 — 基于 v15.4 + 真实DH FK碰撞体渲染:
 %
 %  v16.0 修复清单:
@@ -59,8 +69,8 @@ function testS50_Palletizing_v15()
 %    libHRCInterface.so — 实时碰撞检测 (HansAlgorithmExport)
 %
 %  @file   testS50_Palletizing_v15.m
-%  @brief  HR_S50-2000 v6.0 面板碰撞 + 中转路点 + 完整环境碰撞可视化
-%  @date   2026-02-24
+%  @brief  HR_S50-2000 v7.0 优化布局 + TCP旋转避障 + 完整环境碰撞可视化
+%  @date   2026-02-25
 %  Copyright (c) 2026 Guangdong Huayan Robotics Co., Ltd.
 
 close all; clc;
@@ -110,7 +120,7 @@ cfg_cab.widthX=0.55; cfg_cab.depthY=0.65; cfg_cab.heightZ=0.80;
 cfg_cab.color=[0.95,0.95,0.93];
 cfg_frame.widthX=1.20; cfg_frame.depthY=0.65; cfg_frame.height=2.00;  % 深度650mm匹配C++
 cfg_frame.tubeR=0.030; cfg_frame.color=[0.25,0.55,0.85];
-cfg_pallet.widthX=1.00; cfg_pallet.depthY=0.60; cfg_pallet.heightZ=0.50;  % PAL_H=500mm
+cfg_pallet.widthX=1.00; cfg_pallet.depthY=0.60; cfg_pallet.heightZ=0.975;  % v7.0: 优化h_p=175mm(base)+800mm(基座)=975mm(世界)
 cfg_pallet.color=[0.20,0.45,0.80];
 cfg_conv.lengthY=2.00; cfg_conv.widthX=0.55; cfg_conv.heightZ=0.75;  % v6.1: CONV_LEN=2000mm
 cfg_conv.beltH=0.035; cfg_conv.rollerR=0.030; cfg_conv.nRollers=10;  % v6.1: 缩短传送带减少滚筒
@@ -119,8 +129,8 @@ cfg_box.lx=0.35; cfg_box.wy=0.28; cfg_box.hz=0.25;
 cfg_box.color=[0.65,0.45,0.25];
 cfg_nBoxes = 1;   % 箱子数目 (可调: 1=验证, 3=演示, 12=完整码垛)
 cfg_animTaskLimit = 0;  % 0=全部任务 (调试时可设为3限制前N个)
-cfg_frameGap = 0.50; cfg_convGap = 0.60;  % v6.5: FRAME_GAP=500mm, CONV_GAP=600mm
-cfg_convOffY = -0.80; cfg_convBoxYStart = 0.50; cfg_convBoxYStep = -0.30;  % v6.2: 修正符号! +0.50=C++ pkY=CONV_OFF+500
+cfg_frameGap = 0.030; cfg_convGap = 0.030;  % v7.0: 优化布局 FRAME_GAP=30mm, CONV_GAP=30mm (§10)
+cfg_convOffY = 0.0306; cfg_convBoxYStart = 0.00; cfg_convBoxYStep = -0.30;  % v7.0: CONV_CY=30.6mm, 箱子在传送带中心
 
 % --- 环境碰撞体 (由场景参数动态计算, 与C++ v6.2一致) ---
 % 注: 坐标为机器人基座坐标系(m), 下方初始化时根据scene参数计算
@@ -210,6 +220,12 @@ ENV_COLL.frameTopBars = [  % [x1,y1,z1, x2,y2,z2, r]
     -frmHW, frmNY, frmZT, -frmHW, frmFY, frmZT, frmR;   % 左侧顶梁 (Y平行)
      frmHW, frmNY, frmZT,  frmHW, frmFY, frmZT, frmR;   % 右侧顶梁 (Y平行)
 ];
+% 框架X方向顶梁 (envId 8-9, 平行于X轴, 前后端)
+% 参考 S50_Palletizing_Scene_Description.md §5.2 表5-5 建议注册
+ENV_COLL.frameTopBarsX = [  % [x1,y1,z1, x2,y2,z2, r]
+    -frmHW, frmNY, frmZT,  frmHW, frmNY, frmZT, frmR;   % 前(近端)X顶梁
+    -frmHW, frmFY, frmZT,  frmHW, frmFY, frmZT, frmR;   % 后(远端)X顶梁
+];
 % 框架面板碰撞 — v6.1: Lozenge OBB 实体面板 (后/左/右各1面)
 % C++ 使用 addEnvObstacleLozengeInterface, MATLAB 仅用于可视化
 % 面板参数: 100mm厚, r=50mm, envId=5/6/7
@@ -246,12 +262,12 @@ ENV_COLL.conveyor = [  % [x1,y1,z1, x2,y2,z2, r]
     cvX+cvHW, cvY-cvHL, -0.2,  cvX+cvHW, cvY+cvHL, -0.2, ENV_COLL.convR_m;
     cvX,      cvY-cvHL, cvSZ-0.02, cvX,  cvY+cvHL, cvSZ-0.02, cvHW;
 ];
-fprintf('  ENV_COLL: frame(4col+2topY+3wallLoz)=[%.3f,%.3f]->[%.3f,%.3f] cab(4) conv(3)\n', ...
+fprintf('  ENV_COLL: frame(4col+2topY+2topX+3wallLoz)=[%.3f,%.3f]->[%.3f,%.3f] cab(4) conv(3)\n', ...
     frmNY, frmFY, frmZB, frmZT);
 
 fprintf('\n');
 fprintf([char(9556) repmat(char(9552),1,72) char(9559) '\n']);
-fprintf([char(9553) '  HR_S50-2000 v16.2 -- Box Collision Capsule + Pick Pos Fix       ' char(9553) '\n']);
+fprintf([char(9553) '  HR_S50-2000 v17.0 -- 优化布局 + TCP旋转避障 + BoxOBB             ' char(9553) '\n']);
 fprintf([char(9562) repmat(char(9552),1,72) char(9565) '\n\n']);
 fprintf('Font: %s | Headless: %d | nBoxes: %d\n', CJK_FONT, isHeadless, nBoxes);
 fprintf('Collision .so: %s\n', SO_PATH);
@@ -373,6 +389,18 @@ try
         fprintf('    框架顶梁 envId=%d: %s\n', envId, soStat{(result==0)+1});
     end
     
+    % 框架X方向顶梁 (envId 8-9, 参考Scene Description §5.2)
+    for ci = 1:size(ENV_COLL.frameTopBarsX, 1)
+        tb = ENV_COLL.frameTopBarsX(ci,:);
+        startPt = [tb(1), tb(2), tb(3)] * 1000;
+        endPt   = [tb(4), tb(5), tb(6)] * 1000;
+        r_mm    = tb(7) * 1000;
+        envId   = int64(7 + ci);  % envId 8,9
+        result  = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', envId, startPt, endPt, r_mm);
+        envRegOK = envRegOK + (result == 0);
+        fprintf('    框架X顶梁 envId=%d: %s\n', envId, soStat{(result==0)+1});
+    end
+    
     % 电箱 (envId 10-13, 胶囊体)
     for ci = 1:size(ENV_COLL.cabinet, 1)
         cc = ENV_COLL.cabinet(ci,:);
@@ -419,7 +447,7 @@ try
     
     % 验证障碍物数量
     expectedTotal = size(ENV_COLL.frameColumns,1)+size(ENV_COLL.frameTopBars,1)+ ...
-        size(ENV_COLL.cabinet,1)+size(ENV_COLL.conveyor,1)+3;  % 3 Lozenge面板
+        size(ENV_COLL.frameTopBarsX,1)+size(ENV_COLL.cabinet,1)+size(ENV_COLL.conveyor,1)+3;  % +3 Lozenge面板
     envCount = calllib('libHRCInterface', 'getEnvObstacleCountInterface');
     fprintf('    注册成功: %d/%d, SO报告障碍物: %d\n', envRegOK, expectedTotal, envCount);
     
@@ -988,6 +1016,13 @@ for ci = 1:size(ENV_COLL.frameTopBars, 1)
     p2 = [tb(4), tb(5), tb(6)] + [baseX, baseY, baseZ];
     drawCylinder3D(ax3a, p1, p2, tb(7), [0.9 0.7 0.1], 0.22);
 end
+% 框架X方向顶梁 (橙色半透明, envId 8-9)
+for ci = 1:size(ENV_COLL.frameTopBarsX, 1)
+    tb = ENV_COLL.frameTopBarsX(ci,:);
+    p1 = [tb(1), tb(2), tb(3)] + [baseX, baseY, baseZ];
+    p2 = [tb(4), tb(5), tb(6)] + [baseX, baseY, baseZ];
+    drawCylinder3D(ax3a, p1, p2, tb(7), [0.95 0.55 0.1], 0.22);
+end
 
 % 绘制环境碰撞体: 电气柜 (橙色半透明, 无端盖球)
 for ci = 1:size(ENV_COLL.cabinet, 1)
@@ -1185,6 +1220,12 @@ for vi = 1:min(4, length(keyPoses))
         p1_w = [tb(1)+baseX, tb(2)+baseY, tb(3)+baseZ];
         p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
         drawCylinder3D(ax, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.12);
+    end
+    for eci = 1:size(ENV_COLL.frameTopBarsX, 1)
+        tb = ENV_COLL.frameTopBarsX(eci,:);
+        p1_w = [tb(1)+baseX, tb(2)+baseY, tb(3)+baseZ];
+        p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
+        drawCylinder3D(ax, p1_w, p2_w, tb(7), [0.95 0.55 0.1], 0.12);
     end
     for eci = 1:size(ENV_COLL.cabinet, 1)
         cc = ENV_COLL.cabinet(eci,:);
@@ -1430,6 +1471,12 @@ for eci = 1:size(ENV_COLL.frameTopBars, 1)
     p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
     drawCylinder3D(ax7a, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.10);
 end
+for eci = 1:size(ENV_COLL.frameTopBarsX, 1)
+    tb = ENV_COLL.frameTopBarsX(eci,:);
+    p1_w = [tb(1)+baseX, tb(2)+baseY, tb(3)+baseZ];
+    p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
+    drawCylinder3D(ax7a, p1_w, p2_w, tb(7), [0.95 0.55 0.1], 0.10);
+end
 for eci = 1:size(ENV_COLL.cabinet, 1)
     cc = ENV_COLL.cabinet(eci,:);
     p1_w = [cc(1)+baseX, cc(2)+baseY, cc(3)+baseZ];
@@ -1526,6 +1573,13 @@ for eci = 1:size(ENV_COLL.frameTopBars, 1)
     p1_w = [tb(1)+baseX, tb(2)+baseY, tb(3)+baseZ];
     p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
     drawCylinder3D(ax3d, p1_w, p2_w, tb(7), [0.9 0.7 0.1], 0.15);
+end
+% 环境碰撞体: 框架X方向顶梁 (橙色半透明, envId 8-9)
+for eci = 1:size(ENV_COLL.frameTopBarsX, 1)
+    tb = ENV_COLL.frameTopBarsX(eci,:);
+    p1_w = [tb(1)+baseX, tb(2)+baseY, tb(3)+baseZ];
+    p2_w = [tb(4)+baseX, tb(5)+baseY, tb(6)+baseZ];
+    drawCylinder3D(ax3d, p1_w, p2_w, tb(7), [0.95 0.55 0.1], 0.15);
 end
 % 环境碰撞体: 电气柜 (橙色半透明, 无端盖球)
 for eci = 1:size(ENV_COLL.cabinet, 1)
