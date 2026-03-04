@@ -1,6 +1,6 @@
 function testS50_Palletizing_v15()
-%% testS50_Palletizing_v15 - HR_S50-2000 v7.0 优化布局 + TCP旋转避障 + 3D仿真
-%  v17.0 — 基于 v16.2 + 参数优化布局(§10) + TCP Z轴旋转避障:
+%% testS50_Palletizing_v15 - HR_S50-2000 v8.0 4箱码垛 + TCP旋转避障 + 3D仿真
+%  v8.0 — 基于 v7.0 + 4箱码垛 + 多航点搬运 + J6/J5实际修正:
 %
 %  v17.0 修改清单:
 %    1. 场景布局应用 S50_Layout_Optimization_Model.md §10 全局最优解:
@@ -127,7 +127,7 @@ cfg_conv.beltH=0.035; cfg_conv.rollerR=0.030; cfg_conv.nRollers=10;  % v6.1: 缩
 cfg_conv.color=[0.30,0.30,0.32];
 cfg_box.lx=0.35; cfg_box.wy=0.28; cfg_box.hz=0.25;
 cfg_box.color=[0.65,0.45,0.25];
-cfg_nBoxes = 1;   % 箱子数目 (可调: 1=验证, 3=演示, 12=完整码垛)
+cfg_nBoxes = 4;   % 箱子数目 v8.0: 4箱首层码垛 (可调: 1=验证, 4=首层, 12=完整)
 cfg_animTaskLimit = 0;  % 0=全部任务 (调试时可设为3限制前N个)
 cfg_frameGap = 0.030; cfg_convGap = 0.030;  % v7.0: 优化布局 FRAME_GAP=30mm, CONV_GAP=30mm (§10)
 cfg_convOffY = 0.0306; cfg_convBoxYStart = 0.00; cfg_convBoxYStep = -0.30;  % v7.0: CONV_CY=30.6mm, 箱子在传送带中心
@@ -267,7 +267,7 @@ fprintf('  ENV_COLL: frame(4col+2topY+2topX+3wallLoz)=[%.3f,%.3f]->[%.3f,%.3f] c
 
 fprintf('\n');
 fprintf([char(9556) repmat(char(9552),1,72) char(9559) '\n']);
-fprintf([char(9553) '  HR_S50-2000 v17.0 -- 优化布局 + TCP旋转避障 + BoxOBB             ' char(9553) '\n']);
+fprintf([char(9553) '  HR_S50-2000 v8.0 -- 4箱码垛 + TCP旋转避障 + 多航点搬运          ' char(9553) '\n']);
 fprintf([char(9562) repmat(char(9552),1,72) char(9565) '\n\n']);
 fprintf('Font: %s | Headless: %d | nBoxes: %d\n', CJK_FONT, isHeadless, nBoxes);
 fprintf('Collision .so: %s\n', SO_PATH);
