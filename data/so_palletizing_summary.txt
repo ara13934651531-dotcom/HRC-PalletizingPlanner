@@ -1,46 +1,44 @@
-# HR_S50-2000 palletizing v8.0 -- 4-box + TCP rotation avoidance
+# HR_S50-2000 码垛v8.0 — v3.1安全优先+收缩通过
 
 version: 8.0
-positions: 4
-segments: 28
-total_motion_s: 264.3970
+positions: 1
+segments: 7
+total_motion_s: 20.9191
 self_collisions: 0
 env_collisions: 0
-min_dist_mm: 11.83
-order: BK-L_BK-R_FR-L_FR-R_column_first
-env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+3_lozengeWall+dynamic
-carry_strategy: optimized_multiWP_J6yaw_J5tilt_correction
-box_collision: 26pt_OBB_envCapsule_margin40mm
-frame_gap_mm: 30
-conv_gap_mm: 30
-frame_cy_mm: 680
+min_dist_mm: 500.84
+order: single_box_conveyor_to_frame
+env_obstacles: 4_cabinet+3_conveyor+4_pillar+2_topbar+3_lozengeWall+1_placed
+wall_panels: back+left+right_lozengeOBB_100mm_thick
+tool_collision: boxCollision_OBB_noSOtool_lowZpallet
+carry_strategy: rrt_star_side_pass_shrink_through
+box_collision: base_lowerarm_hard_elbow_diag_margin40mm
+frame_gap_mm: 404
+conv_gap_mm: 427
+frame_cy_mm: 1054
 
-box_0_label: BK-L
-box_0_tcp_mm: -180.0 825.0 425.0
-ik_place_0: -95.81 -83.34 141.72 -118.15 87.07 5.02
+# Box TCP (base frame, mm):
+box_0_tcp_mm: -370.0 1184.4 -350.0
 
-box_1_label: BK-R
-box_1_tcp_mm: 180.0 825.0 425.0
-ik_place_1: -117.70 -63.19 112.88 12.91 256.41 -155.63
+# IK place (deg):
+ik_place_0: 275.39 -16.42 72.74 39.59 89.44 5.37
 
-box_2_label: FR-L
-box_2_tcp_mm: -180.0 535.0 425.0
-ik_place_2: -100.13 -112.09 160.40 -97.53 83.34 7.65
+# IK approach (deg):
+ik_appr_0: 275.39 -32.03 80.65 47.29 89.44 5.37
 
-box_3_label: FR-R
-box_3_tcp_mm: 180.0 535.0 425.0
-ik_place_3: -129.30 -78.48 132.88 1.46 245.33 -148.38
+# Pick (deg):
+ik_pick: 174.53 -59.40 105.10 44.85 84.31 264.50
+ik_pick_appr: 174.53 -71.24 99.89 61.90 84.31 264.50
+pick_tcp_mm: 977.2 176.7 265.0
 
-ik_pick: -190.04 -58.76 135.25 39.08 202.31 -62.66
-ik_pick_appr: -190.04 -83.33 135.13 63.77 202.31 -62.66
-pick_tcp_mm: 580.0 30.6 265.0
+# Timing:
+init_ms: 0.248
+ik_ms: 0.015
+planning_total_ms: 12294.957
+param_total_ms: 0.489
+collision_runtime_ms: 6.920
+elapsed_s: 12.318
 
-init_ms: 0.349
-ik_ms: 0.231
-planning_total_ms: 0.000
-param_total_ms: 9.052
-collision_runtime_ms: 263.309
-elapsed_s: 0.558
-coll_init_ms: 0.338
-coll_total_avg_us: 23.425
-coll_calls: 11277
+coll_init_ms: 0.245
+coll_total_avg_us: 8.938
+coll_calls: 557

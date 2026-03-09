@@ -45,11 +45,18 @@ ArmCollisionModel/deprecated/
 # 弃用测试
 test/deprecated/
 
+# 归档 (已移除的冗余文件)
+ArmCollisionModel/archive/
+ArmCollisionModel/helpers/archive/
+
 # 大型二进制归档
 *.zip
 
 # 实验性目录
 ArmCollisionModelaa/
+
+# Python 虚拟环境
+.venv/
 
 # 可视化输出
 *.png
@@ -63,3 +70,4 @@ ArmCollisionModelaa/
 !docs/images/*.gif
 !ArmCollisionModel/pic/S50_palletizing_v15/*.png
 !ArmCollisionModel/pic/S50_palletizing_v15/*.gif
+!data/sim3d/*.png

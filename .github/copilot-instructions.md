@@ -187,18 +187,20 @@ CMake >= 3.14, C++17, 仅Linux x86_64。SO栈链接: `stdc++` -> `m` -> `pthread
 
 ## 环境碰撞模型
 
-### 框架 (Frame) — 4根立柱 + 2根顶梁 + 3面Lozenge OBB墙面板
+### 框架 (Frame) — 4根立柱 + 3根顶梁 + 3面Lozenge OBB墙面板
 
-框架近端面（朝向机器人）是**开放**的（无顶横梁，便于机械臂进出）。碰撞建模：
+框架近端面（朝向机器人）是**完全开放**的（无顶横梁，便于机械臂进出）。碰撞建模：
 - 4根垂直立柱 (4个角, 胶囊体, r=50mm)
 - 2根Y方向顶梁 (沉Y轴, 连接同侧近端→远端立柱顶部, 胶囊体, r=50mm)
-- 2根X方向顶梁 (沉X轴, 连接前/后端左右立柱顶部, 胶囊体, r=50mm, envId 8-9)
+- 1根X方向后顶梁 (沉X轴, 连接远端左右立柱顶部, 胶囊体, r=50mm, envId 9)
+- **❗ 近端面无X顶横梁** (bar_FX 不存在, envId 8 不注册)
+- **3面Lozenge OBB实心墙面板** (后墙+左墙+右墙, envId 5/6/7, r=50mm)
 - **3面Lozenge OBB实心墙面板** (后墙+左墙+右墙, envId 5/6/7, r=50mm)
   - 使用 `addEnvObstacleLozengeInterface` (OBB面碰撞, 非胶囊)
   - 参数: ref2local[6]={rx,ry,rz(deg), tx,ty,tz(mm)}, offset[3], xLen, yLen, zLen, radius
   - 后墙: XZ平面, 100mm厚; 左/右墙: YZ平面, 100mm厚
   - **若Lozenge注册失败**: 回退为6层胶囊堆叠 (r=250mm, envId 62-67/68-73/74-79)
-- 近端面有X顶梁 (结构棁, 入口在下方开放), 远端面有Lozenge OBB墙面板
+- **近端面完全开放** (无X顶梁, 无墙面板), 远端面有X后顶梁+Lozenge OBB墙面板
 
 ### 箱子碰撞
 
@@ -225,7 +227,7 @@ CMake >= 3.14, C++17, 仅Linux x86_64。SO栈链接: `stdc++` -> `m` -> `pthread
 |----|------|------|----------|
 | 1-4 | 4根立柱 | 胶囊 | 50 |
 | 20-21 | 2根顶梁 (Y方向) | 胶囊 | 50 |
-| 8-9 | 2根顶梁 (X方向, 前/后端) | 胶囊 | 50 |
+| 9 | 1根后顶梁 (X方向, 远端) | 胶囊 | 50 |
 
 ### 动态碰撞体
 
@@ -236,7 +238,6 @@ CMake >= 3.14, C++17, 仅Linux x86_64。SO栈链接: `stdc++` -> `m` -> `pthread
 | 5 | 后墙面板 (Lozenge OBB) | OBB | 50 | 框架远端面 |
 | 6 | 左墙面板 (Lozenge OBB) | OBB | 50 | 框架左侧面 |
 | 7 | 右墙面板 (Lozenge OBB) | OBB | 50 | 框架右侧面 |
-| 8 | 前X顶梁 (bar_FX) | 胶囊 | 50 | 框架近端面顶部 |
 | 9 | 后X顶梁 (bar_BX) | 胶囊 | 50 | 框架远端面顶部 |
 | 46-57 | 已放置箱子 | 球 | 250 | 每放一箱添加一个 |
 | 1 (tool) | 搬运工具球 | 球 | 120 | toolIdx=1, z=-400mm, 搬运中启用 |
@@ -762,6 +763,9 @@ target_link_libraries(testMyTest stdc++ m pthread dl)
 | 14 | 墙面碰撞 | 胶囊条近似 (有缝隙) | Lozenge OBB实心面板 (addEnvObstacleLozengeInterface) |
 | 15 | 场景布局重叠 | 框架和传送带重叠 | FRAME_GAP≥200mm, CONV_GAP≥400mm, 运行时验证 |
 | 16 | 路径优化缺失 | planWithSplitting无后优化 | 添加300次post-split shortcut优化 |
+| 17 | 前X顶梁 | 注册envId=8 (前X顶梁) | **不注册** — 近端面完全开放, bar_FX不存在 |
+| 18 | 托盘渲染高度 | heightZ=1.0 (从地面到顶面实心块) | **heightZ=0.200** (200mm物理厚度, surfZ独立设置) |
+| 19 | 初始箱子数量 | cfg_nBoxes=12 (与C++不匹配) | **cfg_nBoxes=1** (与C++单箱规划一致) |
 
 ## ⚠️ v6.1 关键修复 (2026-02-24)
 

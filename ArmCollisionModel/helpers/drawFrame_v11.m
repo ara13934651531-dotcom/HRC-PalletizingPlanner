@@ -6,9 +6,9 @@ function drawFrame_v11(ax, f, cylN)
     % 4根立柱
     for i=1:4, drawTube_v11(ax,c(i,1),c(i,2),0,c(i,1),c(i,2),h,r,f.color,cylN); end
     rb = r*0.8;  % 横梁半径
-    % 近端面 (Y-neg): 底边 + 顶边 (顶边为结构梁, 入口在下方开放)
+    % 近端面 (Y-neg): 仅底边 — v19.0: 前X顶梁已移除, 框架近端面完全开放
     drawTube_v11(ax,c(1,1),c(1,2),0.05,c(2,1),c(2,2),0.05,rb,f.color,cylN);
-    drawTube_v11(ax,c(1,1),c(1,2),h-0.05,c(2,1),c(2,2),h-0.05,rb,f.color,cylN);  % 前X顶梁
+    % (前X顶梁已删除 — 框架入口无顶横梁, 便于机械臂进出)
     % 远端面 (Y-pos): 底边 + 顶边
     drawTube_v11(ax,c(3,1),c(3,2),0.05,c(4,1),c(4,2),0.05,rb,f.color,cylN);
     drawTube_v11(ax,c(3,1),c(3,2),h-0.05,c(4,1),c(4,2),h-0.05,rb,f.color,cylN);

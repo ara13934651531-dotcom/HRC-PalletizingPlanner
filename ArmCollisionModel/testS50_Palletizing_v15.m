@@ -1,14 +1,25 @@
 function testS50_Palletizing_v15()
-%% testS50_Palletizing_v15 - HR_S50-2000 v8.0 4箱码垛 + TCP旋转避障 + 3D仿真
-%  v8.0 — 基于 v7.0 + 4箱码垛 + 多航点搬运 + J6/J5实际修正:
+%% testS50_Palletizing_v15 - HR_S50-2000 v3.1安全优先布局 + TCP旋转避障 + 3D仿真
+%  v18.0 — 基于 v17.0 + v3.1安全优先优化布局 + TCP Z轴旋转避障OBB分析:
 %
-%  v17.0 修改清单:
-%    1. 场景布局应用 S50_Layout_Optimization_Model.md §10 全局最优解:
-%       - y_f=680mm (框架CY), x_c=580mm (传送带CX), y_c=30.6mm (传送带CY), h_p=175mm (托盘面)
-%       - FRAME_GAP=30mm, CONV_GAP=30mm (紧凑布局, 取放距离减少43.2%%)
+%  v18.0 修改清单:
+%    1. 场景布局升级至 S50_Layout_Optimization_Model_v3.md §10 v3.1安全优先最优解:
+%       - y_f=1054.4mm (框架CY), x_c=977.2mm (传送带CX),
+%         y_c=176.7mm (传送带CY), h_p=200mm (托盘面, 固定)
+%       - FRAME_GAP=404.4mm, CONV_GAP=427.2mm (安全优先布局, 安全得分+75.4%%)
+%    2. 新增TCP Z轴旋转避障OBB分析:
+%       - 搬运段(seg2-5)分析箱子旋转后的OBB与环境碰撞间隙
+%       - optimizeBoxRotation.m: 扫描J6角度寻找最大间隙
+%       - boxOBBClearance.m: 旋转箱子OBB与胶囊/球障碍物距离计算
+%       - drawRotatedBox.m: 渲染旋转箱子
+%    3. 动画中携带箱子根据TCP yaw旋转, 可视化旋转避障效果
+%    4. 新增Figure 10: TCP旋转避障分析 (旋转角/间隙/热图/临界姿态)
+%    5. 托盘平台高度升至1000mm (v3.1 h_p=200mm base + 800mm基座)
+%
+%  v17.0 修改清单 (保留):
+%    1. 场景布局应用 v2.0 全局最优解 (已被v3.1替代)
 %    2. 传送带从-Y方向移至+X方向 (优化布局结果)
-%    3. 托盘平台高度升至975mm (优化h_p=175mm base + 800mm基座)
-%    4. 箱子取料位在传送带中心 (cfg_convBoxYStart=0)
+%    3. 箱子取料位在传送带中心 (cfg_convBoxYStart=0)
 %
 %  v16.0 — 基于 v15.4 + 真实DH FK碰撞体渲染:
 %
@@ -120,17 +131,24 @@ cfg_cab.widthX=0.55; cfg_cab.depthY=0.65; cfg_cab.heightZ=0.80;
 cfg_cab.color=[0.95,0.95,0.93];
 cfg_frame.widthX=1.20; cfg_frame.depthY=0.65; cfg_frame.height=2.00;  % 深度650mm匹配C++
 cfg_frame.tubeR=0.030; cfg_frame.color=[0.25,0.55,0.85];
-cfg_pallet.widthX=1.00; cfg_pallet.depthY=0.60; cfg_pallet.heightZ=0.975;  % v7.0: 优化h_p=175mm(base)+800mm(基座)=975mm(世界)
+cfg_pallet.widthX=1.00; cfg_pallet.depthY=0.60; cfg_pallet.heightZ=0.200;  % v19.0: 托盘厚度200mm (物理尺寸), surfZ在场景计算中独立设置
 cfg_pallet.color=[0.20,0.45,0.80];
 cfg_conv.lengthY=2.00; cfg_conv.widthX=0.55; cfg_conv.heightZ=0.75;  % v6.1: CONV_LEN=2000mm
 cfg_conv.beltH=0.035; cfg_conv.rollerR=0.030; cfg_conv.nRollers=10;  % v6.1: 缩短传送带减少滚筒
 cfg_conv.color=[0.30,0.30,0.32];
 cfg_box.lx=0.35; cfg_box.wy=0.28; cfg_box.hz=0.25;
 cfg_box.color=[0.65,0.45,0.25];
-cfg_nBoxes = 4;   % 箱子数目 v8.0: 4箱首层码垛 (可调: 1=验证, 4=首层, 12=完整)
+cfg_nBoxes = 1;    % 箱子数目 (可调: 1=验证, 3=演示, 12=完整码垛) — v19.0: 默认1 (与C++单箱一致)
 cfg_animTaskLimit = 0;  % 0=全部任务 (调试时可设为3限制前N个)
-cfg_frameGap = 0.030; cfg_convGap = 0.030;  % v7.0: 优化布局 FRAME_GAP=30mm, CONV_GAP=30mm (§10)
-cfg_convOffY = 0.0306; cfg_convBoxYStart = 0.00; cfg_convBoxYStep = -0.30;  % v7.0: CONV_CY=30.6mm, 箱子在传送带中心
+cfg_frameGap = 0.4044; cfg_convGap = 0.4272;  % v3.1: 安全优先布局 FRAME_GAP=404.4mm, CONV_GAP=427.2mm
+cfg_convOffY = 0.1767; cfg_convBoxYStart = 0.00; cfg_convBoxYStep = -0.30;  % v3.1: CONV_CY=176.7mm, 箱子在传送带中心
+
+% --- TCP Z轴旋转避障参数 ---
+cfg_tcpRot.enabled = true;        % 启用TCP旋转避障分析
+cfg_tcpRot.sweepRange = [-pi/2, pi/2]; % J6搜索范围 (rad)
+cfg_tcpRot.sweepSteps = 72;       % 扫描分辨率 (每5°一个采样)
+cfg_tcpRot.showOBB = true;        % 动画中显示箱子OBB轮廓
+cfg_tcpRot.highlightThreshold_m = 0.05; % 间隙<此值时高亮警告 (m)
 
 % --- 环境碰撞体 (由场景参数动态计算, 与C++ v6.2一致) ---
 % 注: 坐标为机器人基座坐标系(m), 下方初始化时根据scene参数计算
@@ -198,7 +216,8 @@ frame.cy = cab.depthY/2 + cfg_frameGap + frame.depthY/2;
 conv.cx = cab.widthX/2 + cfg_convGap + conv.widthX/2;
 conv.cy = cfg_convOffY;
 convSurfZ   = conv.heightZ + conv.rollerR + conv.beltH;
-palletSurfZ = pallet.heightZ;
+palletSurfZ = cfg_pallet.heightZ;  % v19.2: 托盘底面在地面(Z=0), 面Z(世界) = 高度200mm = 0.2m
+pallet.surfZ = palletSurfZ;  % 传递给drawPallet_v11用于正确Z定位
 Tbase = eye(4); Tbase(1,4)=baseX; Tbase(2,4)=baseY; Tbase(3,4)=baseZ;
 
 % === 动态计算环境碰撞体坐标 (机器人基坐标系, m, 与C++ v6.0一致) ===
@@ -222,9 +241,9 @@ ENV_COLL.frameTopBars = [  % [x1,y1,z1, x2,y2,z2, r]
 ];
 % 框架X方向顶梁 (envId 8-9, 平行于X轴, 前后端)
 % 参考 S50_Palletizing_Scene_Description.md §5.2 表5-5 建议注册
-ENV_COLL.frameTopBarsX = [  % [x1,y1,z1, x2,y2,z2, r]
-    -frmHW, frmNY, frmZT,  frmHW, frmNY, frmZT, frmR;   % 前(近端)X顶梁
-    -frmHW, frmFY, frmZT,  frmHW, frmFY, frmZT, frmR;   % 后(远端)X顶梁
+% v19.0: 前(近端)X顶梁已移除 — 框架近端面完全开放, 无顶部横梁 (便于机械臂进出)
+ENV_COLL.frameTopBarsX = [  % [x1,y1,z1, x2,y2,z2, r] — 仅后(远端)X顶梁
+    -frmHW, frmFY, frmZT,  frmHW, frmFY, frmZT, frmR;   % 后(远端)X顶梁 (envId 9)
 ];
 % 框架面板碰撞 — v6.1: Lozenge OBB 实体面板 (后/左/右各1面)
 % C++ 使用 addEnvObstacleLozengeInterface, MATLAB 仅用于可视化
@@ -267,9 +286,9 @@ fprintf('  ENV_COLL: frame(4col+2topY+2topX+3wallLoz)=[%.3f,%.3f]->[%.3f,%.3f] c
 
 fprintf('\n');
 fprintf([char(9556) repmat(char(9552),1,72) char(9559) '\n']);
-fprintf([char(9553) '  HR_S50-2000 v8.0 -- 4箱码垛 + TCP旋转避障 + 多航点搬运          ' char(9553) '\n']);
+fprintf([char(9553) '  HR_S50-2000 v18.0 -- v3.1安全优先布局 + TCP旋转避障OBB          ' char(9553) '\n']);
 fprintf([char(9562) repmat(char(9552),1,72) char(9565) '\n\n']);
-fprintf('Font: %s | Headless: %d | nBoxes: %d\n', CJK_FONT, isHeadless, nBoxes);
+fprintf('Font: %s | Headless: %d | nBoxes: %d | TCPRot: %d\n', CJK_FONT, isHeadless, nBoxes, cfg_tcpRot.enabled);
 fprintf('Collision .so: %s\n', SO_PATH);
 
 timing = struct();
@@ -389,16 +408,16 @@ try
         fprintf('    框架顶梁 envId=%d: %s\n', envId, soStat{(result==0)+1});
     end
     
-    % 框架X方向顶梁 (envId 8-9, 参考Scene Description §5.2)
+    % 框架X方向顶梁 — v19.0: 仅后(远端) envId=9, 前X顶梁已移除(近端面完全开放)
     for ci = 1:size(ENV_COLL.frameTopBarsX, 1)
         tb = ENV_COLL.frameTopBarsX(ci,:);
         startPt = [tb(1), tb(2), tb(3)] * 1000;
         endPt   = [tb(4), tb(5), tb(6)] * 1000;
         r_mm    = tb(7) * 1000;
-        envId   = int64(7 + ci);  % envId 8,9
+        envId   = int64(9);  % v19.0: 仅后端 envId=9 (前端envId=8已移除)
         result  = calllib('libHRCInterface', 'addEnvObstacleCapsuleInterface', envId, startPt, endPt, r_mm);
         envRegOK = envRegOK + (result == 0);
-        fprintf('    框架X顶梁 envId=%d: %s\n', envId, soStat{(result==0)+1});
+        fprintf('    框架X顶梁(后端) envId=%d: %s\n', envId, soStat{(result==0)+1});
     end
     
     % 电箱 (envId 10-13, 胶囊体)
@@ -707,13 +726,13 @@ if soLoaded
             tidx = find(pall_tasks == curTask, 1);
             if ~isempty(tidx), sbi = scanBoxForTask(tidx); else, sbi = 0; end
             if curSeg == 1 && ~scanToolActive && sbi > 0 && sbi <= nBoxes
-                calllib('libHRCInterface', 'setCPToolCollisionBallShapeInterface', ...
-                    int64(1), [0, 0, -400], 120.0);
+                % v8.2: 跳过SO工具球注册 (低Z托盘构型pair(6,3)必碰撞)
+                % 箱子碰撞由独立boxCollision系统处理 (与C++一致)
                 scanToolActive = true;
             end
             % v6.5 7-seg: seg5=放料→放料抬升, 工具球移除+添加放置障碍
             if curSeg == 5 && scanToolActive
-                calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(1));
+                % v8.2: 未SO工具球, 无需removeTool
                 scanToolActive = false;
                 % 使用上一步FK2 TCP位置(m→mm)作为placed box center
                 if sbi > 0 && sbi <= nBoxes
@@ -816,6 +835,11 @@ elseif hasColl
 end
 
 startTime = tic;
+
+%% TCP旋转避障分析: 初始化结构 (分析在placePos计算后执行)
+tcpRotResult = struct();
+tcpRotResult.enabled = cfg_tcpRot.enabled;
+tcpRotResult.nCarryPts = 0;
 
 %% ╔══════════════════════════════════════════════════════════════════════╗
 %% ║  Figure 1: 碰撞场景 STL 姿态 (如有碰撞数据)                        ║
@@ -1182,6 +1206,187 @@ if placePosFound, ppSrc = 'C++ IK'; else, ppSrc = 'computed'; end
 fprintf('  placePos: source=%s, range Y=[%.3f,%.3f] Z=[%.3f,%.3f]\n', ...
     ppSrc, min(placePos(:,2)), max(placePos(:,2)), ...
     min(placePos(:,3)), max(placePos(:,3)));
+
+%% ╔══════════════════════════════════════════════════════════════════════╗
+%% ║         TCP Z轴旋转避障分析 (v18.0: 箱子OBB间隙优化)               ║
+%% ╚══════════════════════════════════════════════════════════════════════╝
+% 在placePos计算后执行, 因为分析需要已放置箱子位置作为动态障碍物
+fprintf('\n--- TCP Z-Axis Rotation Avoidance Analysis ---\n');
+
+if cfg_tcpRot.enabled && ~isempty(pall_raw)
+    tTcpRot = tic;
+    
+    % 构建环境障碍物列表 (用于boxOBBClearance, m为单位)
+    rotObstacles = [];
+    
+    % 框架立柱 (主要碰撞风险)
+    for ci = 1:size(ENV_COLL.frameColumns, 1)
+        fc = ENV_COLL.frameColumns(ci,:);
+        obs = struct('type','capsule', ...
+            'p1',[fc(1), fc(2), fc(3)], 'p2',[fc(1), fc(2), fc(4)], ...
+            'radius', fc(5), 'name', sprintf('col%d', ci), ...
+            'point',[0,0,0], 'normal',[0,0], 'center',[0,0,0]);
+        rotObstacles = [rotObstacles, obs]; %#ok<AGROW>
+    end
+    
+    % 框架X方向顶梁
+    for ci = 1:size(ENV_COLL.frameTopBarsX, 1)
+        tb = ENV_COLL.frameTopBarsX(ci,:);
+        obs = struct('type','capsule', ...
+            'p1',[tb(1),tb(2),tb(3)], 'p2',[tb(4),tb(5),tb(6)], ...
+            'radius', tb(7), 'name', sprintf('barX%d', ci), ...
+            'point',[0,0,0], 'normal',[0,0], 'center',[0,0,0]);
+        rotObstacles = [rotObstacles, obs]; %#ok<AGROW>
+    end
+    
+    % 框架墙面板 (简化为半平面约束)
+    wBack = ENV_COLL.wallPanels.back;
+    obs = struct('type','plane', 'point',[wBack.cx, wBack.cy - wBack.hwy, 0], ...
+        'normal',[0, -1], 'radius',0, 'name','wallBack', ...
+        'p1',[0,0,0], 'p2',[0,0,0], 'center',[0,0,0]);
+    rotObstacles = [rotObstacles, obs];
+    wLeft = ENV_COLL.wallPanels.left;
+    obs = struct('type','plane', 'point',[wLeft.cx + wLeft.hwx, wLeft.cy, 0], ...
+        'normal',[1, 0], 'radius',0, 'name','wallLeft', ...
+        'p1',[0,0,0], 'p2',[0,0,0], 'center',[0,0,0]);
+    rotObstacles = [rotObstacles, obs];
+    wRight = ENV_COLL.wallPanels.right;
+    obs = struct('type','plane', 'point',[wRight.cx - wRight.hwx, wRight.cy, 0], ...
+        'normal',[-1, 0], 'radius',0, 'name','wallRight', ...
+        'p1',[0,0,0], 'p2',[0,0,0], 'center',[0,0,0]);
+    rotObstacles = [rotObstacles, obs];
+    
+    % 识别搬运段数据点
+    pall_tasks_all = unique(pall_raw(:,1));
+    pall_segs_rot = pall_raw(:,2);
+    carryMask_rot = (pall_segs_rot >= 1 & pall_segs_rot <= 3);
+    carryIdx = find(carryMask_rot);
+    nCarryPts = length(carryIdx);
+    
+    fprintf('  搬运段数据点: %d / %d (%.1f%%)\n', nCarryPts, size(pall_raw,1), ...
+        nCarryPts/size(pall_raw,1)*100);
+    
+    if nCarryPts > 0
+        carryTcpXYZ_mm = pall_raw(carryIdx, 17:19);
+        carryQ_deg = pall_raw(carryIdx, 4:9);
+        carryTasks = pall_raw(carryIdx, 1);
+        carrySegs = pall_raw(carryIdx, 2);
+        carryTcp_m = carryTcpXYZ_mm / 1000 + [baseX, baseY, baseZ];
+        
+        % TCP yaw角估算
+        carryYaw_rad = zeros(nCarryPts, 1);
+        if soLoaded
+            for pi_r = 1:min(nCarryPts, 5000)
+                q_d = carryQ_deg(pi_r, :);
+                velArr = zeros(1,6); accArr = zeros(1,6);
+                calllib('libHRCInterface','updateACAreaConstrainPackageInterface', q_d, velArr, accArr);
+                tcpCoord = libstruct('MC_COORD_REF');
+                tcpCoord.X=0; tcpCoord.Y=0; tcpCoord.Z=0;
+                tcpCoord.A=0; tcpCoord.B=0; tcpCoord.C=0;
+                [~, ~, tcpCoord] = calllib('libHRCInterface','forwardKinematics2', q_d, tcpCoord);
+                carryYaw_rad(pi_r) = deg2rad(tcpCoord.A);
+                timing.fkCalls = timing.fkCalls + 1;
+            end
+            if nCarryPts > 5000
+                for pi_r = 5001:nCarryPts
+                    carryYaw_rad(pi_r) = deg2rad(carryQ_deg(pi_r,1) + carryQ_deg(pi_r,4) + carryQ_deg(pi_r,6));
+                end
+            end
+        else
+            for pi_r = 1:nCarryPts
+                carryYaw_rad(pi_r) = deg2rad(carryQ_deg(pi_r,1) + carryQ_deg(pi_r,4) + carryQ_deg(pi_r,6));
+            end
+        end
+        
+        % 逐点OBB间隙计算 (子采样)
+        analyzeStride = max(1, round(nCarryPts / 500));
+        analyzeIdx = 1:analyzeStride:nCarryPts;
+        nAnalyze = length(analyzeIdx);
+        
+        clearance_current = zeros(nAnalyze, 1);
+        clearance_optimal = zeros(nAnalyze, 1);
+        yaw_current = zeros(nAnalyze, 1);
+        yaw_optimal = zeros(nAnalyze, 1);
+        clearance_gain = zeros(nAnalyze, 1);
+        
+        boxRotObstacles_base = rotObstacles;
+        prevTask = -1;
+        dynamicObs = [];
+        
+        for ai = 1:nAnalyze
+            idx = analyzeIdx(ai);
+            tcp_m = carryTcp_m(idx, :);
+            yaw = carryYaw_rad(idx);
+            task = carryTasks(idx);
+            
+            if task ~= prevTask
+                dynamicObs = [];
+                boxesDone = task - pall_tasks_all(1);
+                for bd = 1:min(boxesDone, nBoxes)
+                    if bd <= size(placePos,1)
+                        bObs = struct('type','ball', ...
+                            'center', placePos(bd, :), ...
+                            'radius', ENV_COLL.boxR_m, ...
+                            'name', sprintf('box%d', bd), ...
+                            'p1',[0,0,0], 'p2',[0,0,0], ...
+                            'point',[0,0,0], 'normal',[0,0]);
+                        dynamicObs = [dynamicObs, bObs]; %#ok<AGROW>
+                    end
+                end
+                prevTask = task;
+            end
+            
+            allObs = [boxRotObstacles_base, dynamicObs];
+            boxCenter_m = [tcp_m(1), tcp_m(2), tcp_m(3) - box.hz/2];
+            [clearance_current(ai), ~] = boxOBBClearance(boxCenter_m, box, yaw, allObs);
+            yaw_current(ai) = yaw;
+            
+            [bestYaw, bestClearance, ~] = optimizeBoxRotation(boxCenter_m, box, allObs, ...
+                cfg_tcpRot.sweepRange, cfg_tcpRot.sweepSteps);
+            clearance_optimal(ai) = bestClearance;
+            yaw_optimal(ai) = bestYaw;
+            clearance_gain(ai) = bestClearance - clearance_current(ai);
+        end
+        
+        nCritical = sum(clearance_current < cfg_tcpRot.highlightThreshold_m);
+        nImproved = sum(clearance_gain > 0.01);
+        avgGain_mm = mean(clearance_gain) * 1000;
+        maxGain_mm = max(clearance_gain) * 1000;
+        
+        fprintf('  OBB分析: %d个采样点 (stride=%d)\n', nAnalyze, analyzeStride);
+        fprintf('  当前间隙: min=%.1fmm, mean=%.1fmm\n', min(clearance_current)*1000, mean(clearance_current)*1000);
+        fprintf('  最优间隙: min=%.1fmm, mean=%.1fmm\n', min(clearance_optimal)*1000, mean(clearance_optimal)*1000);
+        fprintf('  旋转增益: avg=%.1fmm, max=%.1fmm\n', avgGain_mm, maxGain_mm);
+        fprintf('  临界点(<%.0fmm): %d (%d可通过旋转改善)\n', ...
+            cfg_tcpRot.highlightThreshold_m*1000, nCritical, nImproved);
+        
+        tcpRotResult.nCarryPts = nCarryPts;
+        tcpRotResult.nAnalyze = nAnalyze;
+        tcpRotResult.analyzeIdx = analyzeIdx;
+        tcpRotResult.carryIdx = carryIdx;
+        tcpRotResult.carryTcp_m = carryTcp_m;
+        tcpRotResult.carryYaw_rad = carryYaw_rad;
+        tcpRotResult.carryTasks = carryTasks;
+        tcpRotResult.carrySegs = carrySegs;
+        tcpRotResult.clearance_current = clearance_current;
+        tcpRotResult.clearance_optimal = clearance_optimal;
+        tcpRotResult.yaw_current = yaw_current;
+        tcpRotResult.yaw_optimal = yaw_optimal;
+        tcpRotResult.clearance_gain = clearance_gain;
+        tcpRotResult.nCritical = nCritical;
+        tcpRotResult.avgGain_mm = avgGain_mm;
+        tcpRotResult.maxGain_mm = maxGain_mm;
+        tcpRotResult.obstacles = rotObstacles;
+    else
+        fprintf('  无搬运段数据点, 跳过OBB分析\n');
+    end
+    
+    timing.tcpAnalysis_ms = toc(tTcpRot) * 1000;
+    fprintf('  TCP旋转分析耗时: %.1f ms\n', timing.tcpAnalysis_ms);
+else
+    fprintf('  TCP旋转避障分析已禁用\n');
+    timing.tcpAnalysis_ms = 0;
+end
 
 keyPoses = round(linspace(1, nTasks, min(4, nTasks)));
 viewAngles = [135 25; 180 30; 90 20; 45 35];
@@ -1689,18 +1894,16 @@ for ti = 1:nAnimTasks
         vel = rows(ri, 10:15);
         seg = rows(ri, 2);
         
-        % SO库工具碰撞体管理 (v6.2: 球 z=-400 r=120, toolIdx=1)
+        % SO库工具碰撞体管理 (v8.2: 跳过SO工具球, 用boxCollision)
         if soLoaded && seg ~= prevSeg
-            % 进入seg 1: 启用工具碰撞球 (吸附箱子) (v6.5 7-seg)
+            % 进入seg 1: v8.2跳过SO工具球 (低Z托盘pair(6,3)不兼容)
             if seg == 1 && ~soToolActive && bi <= nBoxes
-                ballOff_mm = [0, 0, -400];  % z=-400mm (法兰坐标系)
-                calllib('libHRCInterface', 'setCPToolCollisionBallShapeInterface', ...
-                    int64(1), ballOff_mm, 120.0);  % r=120mm
+                % 不注册SO工具球, 全部由独立boxCollision系统处理
                 soToolActive = true;
             end
-            % 进入seg 5: 移除工具碰撞体, 注册已放置箱子 (v6.5 7-seg)
+            % 进入seg 5: 移除搬运状态, 注册已放置箱子 (v6.5 7-seg)
             if seg == 5 && soToolActive && bi <= nBoxes
-                calllib('libHRCInterface', 'removeCPToolCollisonInterface', int64(1));
+                % v8.2: 未SO工具球, 无需removeTool
                 soToolActive = false;
                 boxCenter_mm = placePos(bi,:) * 1000;  % m→mm
                 calllib('libHRCInterface', 'addEnvObstacleBallInterface', ...
@@ -1758,13 +1961,47 @@ for ti = 1:nAnimTasks
         hToolCollSphere = gobjects(0);
         
         if carrying
-            hCarryBox = drawBox_v11(ax3d, [tcp(1),tcp(2),tcp(3)-box.hz/2], box);
+            % v18.0: 计算TCP yaw用于旋转箱子可视化
+            animYaw = 0;
+            if cfg_tcpRot.enabled
+                if soLoaded
+                    tcpCoordAnim = libstruct('MC_COORD_REF');
+                    tcpCoordAnim.X=0; tcpCoordAnim.Y=0; tcpCoordAnim.Z=0;
+                    tcpCoordAnim.A=0; tcpCoordAnim.B=0; tcpCoordAnim.C=0;
+                    [~, ~, tcpCoordAnim] = calllib('libHRCInterface','forwardKinematics2', q_deg, tcpCoordAnim);
+                    animYaw = deg2rad(tcpCoordAnim.A);
+                    timing.fkCalls = timing.fkCalls + 1;
+                else
+                    animYaw = deg2rad(q_deg(1) + q_deg(4) + q_deg(6));  % 近似
+                end
+            end
+            
+            % 绘制旋转箱子 (v18.0: 使用TCP yaw)
+            boxCenter_anim = [tcp(1), tcp(2), tcp(3) - box.hz/2];
+            hCarryBox = drawRotatedBox(ax3d, boxCenter_anim, box, animYaw);
+            
             % v6.2: 工具碰撞球可视化 (球 z=-400 r=120)
             [Xs,Ys,Zs] = sphere(12);
             bc = [tcp(1), tcp(2), tcp(3) + ENV_COLL.toolBallZ];
             hToolCollSphere(end+1) = surf(ax3d, Xs*ENV_COLL.toolBallR_m+bc(1), ...
                 Ys*ENV_COLL.toolBallR_m+bc(2), Zs*ENV_COLL.toolBallR_m+bc(3), ...
                 'FaceColor',[0.2 0.8 0.3],'FaceAlpha',0.10,'EdgeColor','none');
+            
+            % v18.0: 箱子OBB轮廓线 (顶视投影)
+            if cfg_tcpRot.showOBB
+                hx_b = box.lx/2; hy_b = box.wy/2;
+                cYaw = cos(animYaw); sYaw = sin(animYaw);
+                obbCorners = [
+                    cYaw*(-hx_b)-sYaw*(-hy_b)+tcp(1), sYaw*(-hx_b)+cYaw*(-hy_b)+tcp(2);
+                    cYaw*(+hx_b)-sYaw*(-hy_b)+tcp(1), sYaw*(+hx_b)+cYaw*(-hy_b)+tcp(2);
+                    cYaw*(+hx_b)-sYaw*(+hy_b)+tcp(1), sYaw*(+hx_b)+cYaw*(+hy_b)+tcp(2);
+                    cYaw*(-hx_b)-sYaw*(+hy_b)+tcp(1), sYaw*(-hx_b)+cYaw*(+hy_b)+tcp(2);
+                    cYaw*(-hx_b)-sYaw*(-hy_b)+tcp(1), sYaw*(-hx_b)+cYaw*(-hy_b)+tcp(2);
+                ];
+                obbZ = (tcp(3) - box.hz/2) * ones(5,1);
+                hToolCollSphere(end+1) = plot3(ax3d, obbCorners(:,1), obbCorners(:,2), obbZ, ...
+                    '-', 'Color', [1 0.2 0.2 0.8], 'LineWidth', 2.0);
+            end
         end
         
         % 传送带箱子可见性
@@ -1837,7 +2074,13 @@ for ti = 1:nAnimTasks
         else, dColor=[0.9 0.1 0.1]; end  % 红色: 自碰撞警告
         titleEnv = animEnvCollisions;
         if envCollFrame, envStr = sprintf('env=COLL!'); else, envStr = sprintf('env=%d',titleEnv); end
-        set(hTitle,'String',sprintf('v15 | Task %d/%d Seg%d | self=%.0fmm %s',ti,nTasks,seg,dist,envStr));
+        if carrying && cfg_tcpRot.enabled
+            set(hTitle,'String',sprintf('v18 | T%d/%d Seg%d | self=%.0fmm %s | yaw=%.0f°', ...
+                ti,nTasks,seg,dist,envStr,rad2deg(animYaw)));
+        else
+            set(hTitle,'String',sprintf('v18 | T%d/%d Seg%d | self=%.0fmm %s', ...
+                ti,nTasks,seg,dist,envStr));
+        end
         
         cla(ax_info);
         drawInfoPanel_v15(ax_info, ti, nTasks, q_deg, vel, tcp, dist, rows(ri,3), ...
@@ -1981,7 +2224,14 @@ if ~isempty(tcpOrientError_deg)
     end
 end
 scores = max(0, min(scores, 100));
-cats = {'Self\nSafety','Env\nSafety','Avg\nMargin','S-Curve','TCP\nOrient'};
+% v18.0: 添加旋转避障评分 (OBB间隙评分: min间隙/100mm * 100, 满分=间隙>=100mm)
+if tcpRotResult.enabled && tcpRotResult.nCarryPts > 0
+    rotScore = min(100, min(tcpRotResult.clearance_current)*1000 / 100 * 100);
+    scores = [scores, rotScore];
+    cats = {'Self\nSafety','Env\nSafety','Avg\nMargin','S-Curve','TCP\nOrient','Rot\nAvoid'};
+else
+    cats = {'Self\nSafety','Env\nSafety','Avg\nMargin','S-Curve','TCP\nOrient'};
+end
 b9 = bar(ax9a, scores, 'FaceColor','flat');
 for si = 1:length(scores)
     if scores(si)>=80, b9.CData(si,:)=[0.3 0.8 0.4];
@@ -2110,16 +2360,219 @@ if ~isempty(tcpOrientError_deg)
     sysInfo{end+1} = sprintf('TCP姿态(全部): mean=%.1f° max=%.1f°', ...
         mean(tcpOrientError_deg), max(tcpOrientError_deg));
 end
+% v18.0: TCP旋转避障统计
+if tcpRotResult.enabled && tcpRotResult.nCarryPts > 0
+    sysInfo{end+1} = '';
+    sysInfo{end+1} = sprintf('TCP旋转避障: %d采样, gain=%.1fmm', ...
+        tcpRotResult.nAnalyze, tcpRotResult.avgGain_mm);
+    sysInfo{end+1} = sprintf('  临界点: %d, 可改善: %d', ...
+        tcpRotResult.nCritical, sum(tcpRotResult.clearance_gain > 0.001));
+end
 for si = 1:length(sysInfo)
     if isempty(sysInfo{si}), yP=yP-0.02; continue; end
     text(ax9f,0.05,yP,sysInfo{si},'FontSize',10,'FontName',CJK_FONT,'Color',[0.2 0.2 0.2]);
     yP=yP-0.04;
 end
 
-sgtitle(fig9,sprintf('HR\\_S50-2000 v15 仪表盘 (v6.0 面板碰撞 + 中转路点 + %d箱)', nBoxes),...
+sgtitle(fig9,sprintf('HR\\_S50-2000 v18 仪表盘 (v3.1安全优先布局 + TCP旋转 + %d箱)', nBoxes),...
     'FontSize',15,'FontWeight','bold','FontName',CJK_FONT,'Color',[0.1 0.1 0.3]);
-saveFig(fig9, outputDir, '09_dashboard_v15');
+saveFig(fig9, outputDir, '09_dashboard_v18');
 timing.rendering_ms = timing.rendering_ms + toc(tFig)*1000;
+
+%% ╔══════════════════════════════════════════════════════════════════════╗
+%% ║  Figure 10: TCP Z轴旋转避障分析 (v18.0)                            ║
+%% ╚══════════════════════════════════════════════════════════════════════╝
+if tcpRotResult.enabled && tcpRotResult.nCarryPts > 0
+    fprintf('>>> Fig 10: TCP rotation avoidance analysis...\n');
+    tFig = tic;
+  try
+    fig10 = figure('Position',[20 20 1920 1080],'Color','w','Name','TCP Rotation Avoidance v18');
+    
+    nAn = tcpRotResult.nAnalyze;
+    xAn = 1:nAn;  % 采样点序号
+    
+    % 10a: TCP yaw角度对比 (当前 vs 最优)
+    ax10a = subplot(2,3,1,'Parent',fig10);
+    plot(ax10a, xAn, rad2deg(tcpRotResult.yaw_current), '-', 'Color',[0.2 0.5 0.9], 'LineWidth',1.5); hold(ax10a,'on');
+    plot(ax10a, xAn, rad2deg(tcpRotResult.yaw_optimal), '--', 'Color',[0.9 0.3 0.2], 'LineWidth',1.5);
+    legend(ax10a, '当前J6 yaw', '最优yaw (max间隙)', 'Location','best','FontName',CJK_FONT);
+    xlabel(ax10a,'搬运段采样点','FontSize',10,'FontName',CJK_FONT);
+    ylabel(ax10a,'TCP Yaw (deg)','FontSize',10,'FontName',CJK_FONT);
+    title(ax10a,'TCP Z轴旋转角度','FontSize',12,'FontWeight','bold','FontName',CJK_FONT);
+    grid(ax10a,'on');
+    
+    % 10b: OBB间隙对比 (当前 vs 最优)
+    ax10b = subplot(2,3,2,'Parent',fig10);
+    clr_curr_mm = tcpRotResult.clearance_current * 1000;
+    clr_opt_mm = tcpRotResult.clearance_optimal * 1000;
+    fill(ax10b, [xAn, fliplr(xAn)], [clr_curr_mm', fliplr(clr_opt_mm')], ...
+        [0.8 0.9 1.0], 'FaceAlpha',0.3, 'EdgeColor','none'); hold(ax10b,'on');
+    plot(ax10b, xAn, clr_curr_mm, '-', 'Color',[0.2 0.5 0.9], 'LineWidth',1.5);
+    plot(ax10b, xAn, clr_opt_mm, '--', 'Color',[0.9 0.3 0.2], 'LineWidth',1.5);
+    yline(ax10b, cfg_tcpRot.highlightThreshold_m*1000, ':', 'Color',[0.8 0 0], 'LineWidth',1.2);
+    legend(ax10b, '可增益区间', '当前间隙', '最优间隙', '临界阈值', ...
+        'Location','best','FontName',CJK_FONT);
+    xlabel(ax10b,'搬运段采样点','FontSize',10,'FontName',CJK_FONT);
+    ylabel(ax10b,'OBB间隙 (mm)','FontSize',10,'FontName',CJK_FONT);
+    title(ax10b,sprintf('箱子OBB间隙 (gain: avg%.1fmm, max%.1fmm)', ...
+        tcpRotResult.avgGain_mm, tcpRotResult.maxGain_mm),'FontSize',11,'FontWeight','bold','FontName',CJK_FONT);
+    grid(ax10b,'on');
+    
+    % 10c: 间隙增益柱状图 (按采样点)
+    ax10c = subplot(2,3,3,'Parent',fig10);
+    gain_mm = tcpRotResult.clearance_gain * 1000;
+    bGain = bar(ax10c, xAn, gain_mm, 1, 'FaceColor','flat', 'EdgeColor','none');
+    for gi = 1:nAn
+        if gain_mm(gi) > 10
+            bGain.CData(gi,:) = [0.3 0.8 0.4];  % 显著增益: 绿
+        elseif gain_mm(gi) > 0
+            bGain.CData(gi,:) = [1.0 0.8 0.3];  % 小增益: 黄
+        else
+            bGain.CData(gi,:) = [0.7 0.7 0.7];  % 无增益: 灰
+        end
+    end
+    xlabel(ax10c,'搬运段采样点','FontSize',10,'FontName',CJK_FONT);
+    ylabel(ax10c,'间隙增益 (mm)','FontSize',10,'FontName',CJK_FONT);
+    title(ax10c,sprintf('旋转增益分布 (%d/%d可改善)', ...
+        sum(gain_mm>1), nAn),'FontSize',11,'FontWeight','bold','FontName',CJK_FONT);
+    grid(ax10c,'on');
+    
+    % 10d: 俯视图 — 临界姿态箱子OBB + 障碍物
+    ax10d = subplot(2,3,4,'Parent',fig10);
+    hold(ax10d,'on'); axis(ax10d,'equal'); grid(ax10d,'on');
+    
+    % 绘制障碍物 (俯视投影)
+    for oi = 1:length(tcpRotResult.obstacles)
+        obs = tcpRotResult.obstacles(oi);
+        switch obs.type
+            case 'capsule'
+                % 绘制胶囊XY投影 (圆+连线)
+                theta_c = linspace(0,2*pi,24);
+                plot(ax10d, obs.p1(1)+obs.radius*cos(theta_c), obs.p1(2)+obs.radius*sin(theta_c), ...
+                    '-', 'Color',[0.5 0.5 0.5 0.5], 'LineWidth',0.8);
+                plot(ax10d, obs.p2(1)+obs.radius*cos(theta_c), obs.p2(2)+obs.radius*sin(theta_c), ...
+                    '-', 'Color',[0.5 0.5 0.5 0.5], 'LineWidth',0.8);
+            case 'plane'
+                % 绘制半平面边界线
+                pPt = obs.point(1:2); nVec = obs.normal(1:2);
+                tangent = [-nVec(2), nVec(1)];
+                lineP = [pPt - tangent*2; pPt + tangent*2];
+                plot(ax10d, lineP(:,1), lineP(:,2), '-', 'Color',[0.8 0.2 0.2], 'LineWidth',2);
+        end
+    end
+    
+    % 找最临界的采样点 (间隙最小的前5个)
+    [~, critSort] = sort(tcpRotResult.clearance_current);
+    nShow = min(8, nAn);
+    critIdx = critSort(1:nShow);
+    colors_crit = winter(nShow);
+    for ci = 1:nShow
+        ai = critIdx(ci);
+        tcp_m = tcpRotResult.carryTcp_m(tcpRotResult.analyzeIdx(ai), :);
+        yaw_c = tcpRotResult.yaw_current(ai);
+        yaw_o = tcpRotResult.yaw_optimal(ai);
+        
+        % 当前OBB (红色虚线)
+        hx_b = box.lx/2; hy_b = box.wy/2;
+        cC = cos(yaw_c); sC = sin(yaw_c);
+        corners_c = [cC*(-hx_b)-sC*(-hy_b)+tcp_m(1), sC*(-hx_b)+cC*(-hy_b)+tcp_m(2);
+                     cC*(+hx_b)-sC*(-hy_b)+tcp_m(1), sC*(+hx_b)+cC*(-hy_b)+tcp_m(2);
+                     cC*(+hx_b)-sC*(+hy_b)+tcp_m(1), sC*(+hx_b)+cC*(+hy_b)+tcp_m(2);
+                     cC*(-hx_b)-sC*(+hy_b)+tcp_m(1), sC*(-hx_b)+cC*(+hy_b)+tcp_m(2);
+                     cC*(-hx_b)-sC*(-hy_b)+tcp_m(1), sC*(-hx_b)+cC*(-hy_b)+tcp_m(2)];
+        plot(ax10d, corners_c(:,1), corners_c(:,2), '--', 'Color',[1 0.3 0.3 0.7], 'LineWidth',1.2);
+        
+        % 最优OBB (绿色实线)
+        cO = cos(yaw_o); sO = sin(yaw_o);
+        corners_o = [cO*(-hx_b)-sO*(-hy_b)+tcp_m(1), sO*(-hx_b)+cO*(-hy_b)+tcp_m(2);
+                     cO*(+hx_b)-sO*(-hy_b)+tcp_m(1), sO*(+hx_b)+cO*(-hy_b)+tcp_m(2);
+                     cO*(+hx_b)-sO*(+hy_b)+tcp_m(1), sO*(+hx_b)+cO*(+hy_b)+tcp_m(2);
+                     cO*(-hx_b)-sO*(+hy_b)+tcp_m(1), sO*(-hx_b)+cO*(+hy_b)+tcp_m(2);
+                     cO*(-hx_b)-sO*(-hy_b)+tcp_m(1), sO*(-hx_b)+cO*(-hy_b)+tcp_m(2)];
+        plot(ax10d, corners_o(:,1), corners_o(:,2), '-', 'Color',colors_crit(ci,:), 'LineWidth',1.8);
+        
+        % TCP位置标记
+        plot(ax10d, tcp_m(1), tcp_m(2), 'o', 'MarkerSize',6, ...
+            'MarkerFaceColor',colors_crit(ci,:), 'MarkerEdgeColor','k');
+        text(ax10d, tcp_m(1)+0.03, tcp_m(2)+0.03, sprintf('%.0fmm', ...
+            tcpRotResult.clearance_current(ai)*1000), 'FontSize',7,'FontName',CJK_FONT);
+    end
+    xlabel(ax10d,'X (m)','FontSize',10,'FontName',CJK_FONT);
+    ylabel(ax10d,'Y (m)','FontSize',10,'FontName',CJK_FONT);
+    title(ax10d,sprintf('临界姿态OBB俯视图 (top-%d)', nShow),'FontSize',11,'FontWeight','bold','FontName',CJK_FONT);
+    
+    % 10e: 逐任务间隙统计
+    ax10e = subplot(2,3,5,'Parent',fig10);
+    uniqueTasks = unique(tcpRotResult.carryTasks);
+    nTasksRot = length(uniqueTasks);
+    taskMinClr = zeros(nTasksRot,1); taskAvgClr = zeros(nTasksRot,1);
+    taskMinClrOpt = zeros(nTasksRot,1); taskAvgGain = zeros(nTasksRot,1);
+    for tIdx = 1:nTasksRot
+        tMask = (tcpRotResult.carryTasks(tcpRotResult.analyzeIdx) == uniqueTasks(tIdx));
+        if any(tMask)
+            taskMinClr(tIdx) = min(tcpRotResult.clearance_current(tMask)) * 1000;
+            taskAvgClr(tIdx) = mean(tcpRotResult.clearance_current(tMask)) * 1000;
+            taskMinClrOpt(tIdx) = min(tcpRotResult.clearance_optimal(tMask)) * 1000;
+            taskAvgGain(tIdx) = mean(tcpRotResult.clearance_gain(tMask)) * 1000;
+        end
+    end
+    taskX = 1:nTasksRot;
+    bTask = bar(ax10e, taskX, [taskMinClr, taskMinClrOpt], 'grouped');
+    bTask(1).FaceColor = [0.3 0.6 0.9]; bTask(2).FaceColor = [0.3 0.8 0.4];
+    set(ax10e,'XTick',taskX,'XTickLabel',arrayfun(@(x)sprintf('T%d',x),uniqueTasks,'Un',0));
+    legend(ax10e,'当前 min间隙','最优 min间隙','Location','best','FontName',CJK_FONT);
+    xlabel(ax10e,'任务','FontSize',10,'FontName',CJK_FONT);
+    ylabel(ax10e,'最小间隙 (mm)','FontSize',10,'FontName',CJK_FONT);
+    title(ax10e,'逐任务箱子间隙','FontSize',11,'FontWeight','bold','FontName',CJK_FONT);
+    grid(ax10e,'on');
+    
+    % 10f: 统计摘要文本
+    ax10f = subplot(2,3,6,'Parent',fig10); axis(ax10f,'off');
+    xlim(ax10f,[0 1]); ylim(ax10f,[0 1]); hold(ax10f,'on');
+    yP = 0.95;
+    text(ax10f,0.05,yP,'TCP旋转避障分析统计','FontSize',14,'FontWeight','bold',...
+        'FontName',CJK_FONT,'Color',[0.1 0.1 0.3]);
+    yP = yP - 0.07;
+    % 预计算统计值 (避免cell数组内复杂表达式)
+    sweepLo_deg = rad2deg(cfg_tcpRot.sweepRange(1));
+    sweepHi_deg = rad2deg(cfg_tcpRot.sweepRange(2));
+    sweepStep_deg = (sweepHi_deg - sweepLo_deg) / cfg_tcpRot.sweepSteps;
+    nImproveRot = sum(gain_mm > 1);
+    improvePct = nImproveRot / max(nAn, 1) * 100;
+    boxDiag_mm = sqrt((box.lx*1000)^2 + (box.wy*1000)^2);
+    rotStats = {
+        sprintf('分析范围: J6 = [%.0f, %.0f] deg', sweepLo_deg, sweepHi_deg);
+        sprintf('扫描分辨率: %d 步 (每 %.1f deg)', cfg_tcpRot.sweepSteps, sweepStep_deg);
+        sprintf('搬运段采样: %d / %d 点', nAn, tcpRotResult.nCarryPts);
+        '';
+        sprintf('当前间隙: min=%.1fmm  mean=%.1fmm', min(clr_curr_mm), mean(clr_curr_mm));
+        sprintf('最优间隙: min=%.1fmm  mean=%.1fmm', min(clr_opt_mm), mean(clr_opt_mm));
+        sprintf('增益: avg=%.1fmm  max=%.1fmm', tcpRotResult.avgGain_mm, tcpRotResult.maxGain_mm);
+        '';
+        sprintf('临界点 (<%.0fmm): %d', cfg_tcpRot.highlightThreshold_m*1000, tcpRotResult.nCritical);
+        sprintf('可通过旋转改善: %d / %d (%.0f%%)', nImproveRot, nAn, improvePct);
+        '';
+        sprintf('箱子尺寸: %.0fx%.0fmm (OBB对角: %.0fmm)', box.lx*1000, box.wy*1000, boxDiag_mm);
+        sprintf('分析耗时: %.1f ms', timing.tcpAnalysis_ms);
+    };
+    for si = 1:length(rotStats)
+        if isempty(rotStats{si}), yP=yP-0.02; continue; end
+        text(ax10f,0.05,yP,rotStats{si},'FontSize',10,'FontName',CJK_FONT,'Color',[0.2 0.2 0.2]);
+        yP=yP-0.04;
+    end
+    
+    sgtitle(fig10,sprintf('HR\\_S50-2000 v18.0 TCP旋转避障OBB分析 (%d箱, v3.1布局)', nBoxes),...
+        'FontSize',15,'FontWeight','bold','FontName',CJK_FONT,'Color',[0.1 0.1 0.3]);
+    saveFig(fig10, outputDir, '10_tcp_rotation_analysis_v18');
+    timing.rendering_ms = timing.rendering_ms + toc(tFig)*1000;
+    fprintf('  Fig10已保存\n');
+  catch fig10err
+    fprintf('  ⚠ Fig10部分渲染失败: %s (line %d)\n', fig10err.message, fig10err.stack(1).line);
+    timing.rendering_ms = timing.rendering_ms + toc(tFig)*1000;
+  end
+else
+    fprintf('>>> Fig 10: 跳过 (TCP旋转分析未启用或无搬运数据)\n');
+end
 
 %% ╔══════════════════════════════════════════════════════════════════════╗
 %% ║                         完成 + 性能报告                             ║
@@ -2129,7 +2582,7 @@ timing.totalFigures_ms = toc(startTime)*1000;
 
 fprintf('\n');
 fprintf([char(9556) repmat(char(9552),1,72) char(9559) '\n']);
-fprintf([char(9553) '  v15.0 全链路性能分析报告                                            ' char(9553) '\n']);
+fprintf([char(9553) '  v18.0 全链路性能分析报告 (v3.1安全优先布局 + TCP旋转避障)       ' char(9553) '\n']);
 fprintf([char(9562) repmat(char(9552),1,72) char(9565) '\n']);
 fprintf('\n');
 fprintf('  ╔════════════════════════════════════════════════════════════╗\n');
@@ -2140,6 +2593,7 @@ phases = {'碰撞.so初始化', timing.soInit_ms;
           'STL网格加载',   timing.meshLoad_ms;
           'C++数据加载',   timing.dataLoad_ms;
           '碰撞检测(.so)', timing.collisionCheck_ms;
+          'TCP旋转分析',   timing.tcpAnalysis_ms;
           '静态图渲染',    timing.rendering_ms;
           '动画渲染',      timing.animation_ms};
 for ph = 1:size(phases,1)
@@ -2147,7 +2601,7 @@ for ph = 1:size(phases,1)
         phases{ph,1}, phases{ph,2}, phases{ph,2}/1000, phases{ph,2}/totalMs*100);
 end
 otherMs = totalMs - timing.soInit_ms - timing.meshLoad_ms - timing.dataLoad_ms ...
-    - timing.collisionCheck_ms - timing.rendering_ms - timing.animation_ms;
+    - timing.collisionCheck_ms - timing.tcpAnalysis_ms - timing.rendering_ms - timing.animation_ms;
 fprintf('  ║  %-18s %8.1f  %7.2f  %5.1f%%     ║\n', '其他(FK/IO/GC)', otherMs, otherMs/1000, otherMs/totalMs*100);
 fprintf('  ╠════════════════════════════════════════════════════════════╣\n');
 fprintf('  ║  总计               %8.1f  %7.2f  100.0%%     ║\n', totalMs, totalElapsed_s);
@@ -2172,6 +2626,18 @@ if ~isempty(tcpOrientError_deg)
         mean(tcpOrientError_deg), max(tcpOrientError_deg), TCP_ORIENT_TOL_DEG, ...
         sum(tcpOrientError_deg<=TCP_ORIENT_TOL_DEG)/nPall*100);
 end
+if tcpRotResult.enabled && tcpRotResult.nCarryPts > 0
+    fprintf('\n  TCP旋转避障统计:\n');
+    fprintf('    OBB分析点: %d (stride=%d)\n', tcpRotResult.nAnalyze, ...
+        max(1, round(tcpRotResult.nCarryPts/500)));
+    fprintf('    当前间隙: min=%.1fmm  mean=%.1fmm\n', ...
+        min(tcpRotResult.clearance_current)*1000, mean(tcpRotResult.clearance_current)*1000);
+    fprintf('    最优间隙: min=%.1fmm  mean=%.1fmm\n', ...
+        min(tcpRotResult.clearance_optimal)*1000, mean(tcpRotResult.clearance_optimal)*1000);
+    fprintf('    旋转增益: avg=%.1fmm  max=%.1fmm\n', ...
+        tcpRotResult.avgGain_mm, tcpRotResult.maxGain_mm);
+    fprintf('    临界点(<%.0fmm): %d\n', cfg_tcpRot.highlightThreshold_m*1000, tcpRotResult.nCritical);
+end
 fprintf('\n');
 
 fList = dir(fullfile(outputDir, '*.png'));
@@ -2186,10 +2652,10 @@ if soLoaded && libisloaded('libHRCInterface')
 end
 
 if isHeadless, close all; end
-fprintf('\nv15.0 complete! (%.1f s)\n', totalElapsed_s);
+fprintf('\nv18.0 complete! (%.1f s)\n', totalElapsed_s);
 end % testS50_Palletizing_v15
 
 %% ═══════════════════════════════════════════════════════════════════════
-%% 辅助函数已提取到 helpers/ 目录 (33个独立.m文件)
+%% 辅助函数已提取到 helpers/ 目录 (36个独立.m文件, 含3个v18新增)
 %% 参见: ArmCollisionModel/helpers/README.m
 %% ═══════════════════════════════════════════════════════════════════════
